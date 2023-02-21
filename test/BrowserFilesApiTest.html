@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <title>Mocha Tests</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="https://unpkg.com/mocha/mocha.css" />
+</head>
+
+<body>
+  <div>
+    <button id="run">Run Tests</button>
+  </div>
+  <div id="mocha"></div>
+
+  <script src="https://unpkg.com/chai/chai.js"></script>
+  <script src="https://unpkg.com/mocha/mocha.js"></script>
+  <script src="https://unpkg.com/expect.js/index.js"></script>
+  <script class="mocha-init">
+    mocha.setup('bdd');
+    mocha.checkLeaks();
+    mocha.cleanReferencesAfterRun(false);
+  </script>
+
+
+
+  <script type="module">
+    import { get, set } from 'https://unpkg.com/idb-keyval@6.2.0/dist/index.js';
+
+    import runFileSystemTests from "./runFileSystemTests.js";
+    import BrowserFilesApi from "../src/BrowserFilesApi.js";
+
+    const runBtn = document.querySelector("#run");
+
+    const mochaView = document.querySelector("#mocha");
+
+    runBtn.addEventListener("click", async () => {
+      const rootHandlerKey = "test-root-dir";
+      let rootHandler = await get(rootHandlerKey);
+      if (!rootHandler) {
+        rootHandler = await window.showDirectoryPicker();
+        await set(rootHandlerKey, rootHandler);
+      }
+      if (!(await verifyPermission(rootHandler, true))) {
+        alert("Access was not granted");
+        return;
+      };
+
+      runFileSystemTests({
+        expect,
+        crypto,
+        name: "BrowserFilesApi",
+        newFileApi: () => new BrowserFilesApi({ rootHandler }),
+      });
+
+      // const [fileHandle] = await window.showOpenFilePicker();
+
+
+      mocha.run();
+    })
+
+
+    async function verifyPermission(fileHandle, readWrite) {
+      const options = {};
+      if (readWrite) {
+        options.mode = 'readwrite';
+      }
+      // Check if permission was already granted. If so, return true.
+      if ((await fileHandle.queryPermission(options)) === 'granted') {
+        return true;
+      }
+      // Request permission. If the user grants permission, return true.
+      if ((await fileHandle.requestPermission(options)) === 'granted') {
+        return true;
+      }
+      // The user didn't grant permission, so return false.
+      return false;
+    }
+
+  </script>
+</body>
+
+</html>
