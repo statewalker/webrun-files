@@ -17,9 +17,10 @@ export default class MemFilesApi extends FilesApi {
     const filePath = this._normalizePath(file);
     const paths = this._getPaths();
     for (const path of paths) {
-      if (path.indexOf(filePath) !== 0) continue;
-      const suffix = path.substring(filePath.length);
-      if (suffix.length > 0 && (recursive || suffix.indexOf("/") < 0)) {
+      if (path.indexOf(filePath) !== 0 || path === filePath) continue;
+      const suffix = path.substring(filePath.length + 1);
+      const segments = suffix.split('/');
+      if (recursive || segments.length === 1) {
         yield this._getFileInfo(path);
       }
     }
@@ -31,11 +32,12 @@ export default class MemFilesApi extends FilesApi {
   }
 
   async remove(file) {
-    const filePath = this._normalizePath(file);
-    for await (const { path } of this.list(filePath, { recursive: true })) {
+    const fileInfo = await this.stats(file);
+    if (!fileInfo) return false;
+    for await (const { path } of this.list(fileInfo, { recursive: true })) {
       if (path !== '/') delete this.index[path];
     }
-    delete this.index[filePath];
+    delete this.index[fileInfo.path];
   }
 
   async write(file, content) {
@@ -60,17 +62,17 @@ export default class MemFilesApi extends FilesApi {
     info.lastModified = Date.now();
     if (typeof content === "function") content = content();
     for await (let chunk of content) {
-      // chunk = new Uint8Array(chunk);
+      chunk = new Uint8Array(chunk);
       info.content.push(chunk);
       info.size += chunk.length;
     }
   }
 
   async *read(file /* { start = 0, bufferSize = 1024 * 8 } = {} */) {
-    const filePath = this._normalizePath(file);
-    const info = this.index[filePath];
-    if (!info || info.kind !== "file") return;
-    const content = info.content;
+    const filePath = this._normalizePath(file);    
+    const fileInfo  = this.index[filePath];
+    if (fileInfo.kind !== "file") return null;// throw new Error("Not a file");
+    const content = fileInfo.content;
     yield* content;
   }
 
@@ -89,7 +91,7 @@ export default class MemFilesApi extends FilesApi {
 
   _getFileInfo(path) {
     const fileInfo = this.index[path];
-    if (!fileInfo) return;
+    if (!fileInfo) return null;
     const info = { ...fileInfo };
     delete info.content;
     return info;
