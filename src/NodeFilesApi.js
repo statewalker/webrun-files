@@ -140,6 +140,7 @@ export default class NodeFilesApi extends FilesApi {
   }
 
   _toPathSegments(filePath) {
+    filePath = this.normalizePath(filePath);
     const segments = filePath.split("/"); // .filter((s) => !!s);
     // if (segments.length === 0) segments.push("");
     // segments.unshift("");

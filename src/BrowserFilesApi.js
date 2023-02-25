@@ -156,7 +156,8 @@ export default class BrowserFilesApi extends FilesApi {
   }
 
   _getPathSegments(file) {
-    const filePath = typeof file === "object" ? file.path : file + "";
+    let filePath = typeof file === "object" ? file.path : file + "";
+    // filePath = this.normalizePath(filePath);
     const segments = filePath.split("/").filter((s) => !!s);
     return segments;
   }

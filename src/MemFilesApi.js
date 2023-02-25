@@ -5,21 +5,22 @@ export default class MemFilesApi extends FilesApi {
   constructor(options) {
     super(options);
     this.index = {
-      "/": {
+      "/" : {
         "kind": "directory",
         "path": "/",
-        "name": "",
-      },
+        "name": ""
+      }
     };
   }
 
   async *list(file, { recursive = false } = {}) {
-    const filePath = this._normalizePath(file);
+    await this._init();
+    const filePath = this.normalizePath(file);
     const paths = this._getPaths();
     for (const path of paths) {
       if (path.indexOf(filePath) !== 0 || path === filePath) continue;
       const suffix = path.substring(filePath.length + 1);
-      const segments = suffix.split('/');
+      const segments = suffix.split("/");
       if (recursive || segments.length === 1) {
         yield this._getFileInfo(path);
       }
@@ -27,21 +28,48 @@ export default class MemFilesApi extends FilesApi {
   }
 
   async stats(file) {
-    const filePath = this._normalizePath(file);
+    await this._init();
+    const filePath = this.normalizePath(file);
     return this._getFileInfo(filePath);
   }
 
   async remove(file) {
+    await this._init();
     const fileInfo = await this.stats(file);
     if (!fileInfo) return false;
     for await (const { path } of this.list(fileInfo, { recursive: true })) {
-      if (path !== '/') delete this.index[path];
+      if (path !== "/") delete this.index[path];
     }
     delete this.index[fileInfo.path];
   }
 
   async write(file, content) {
-    const filePath = this._normalizePath(file);
+    await this._init();
+    await this._doWrite(file, content);
+  }
+
+  async *read(file /* { start = 0, bufferSize = 1024 * 8 } = {} */) {
+    await this._init();
+    const filePath = this.normalizePath(file);
+    const fileInfo = this.index[filePath];
+    if (!fileInfo || fileInfo.kind !== "file") return ; // throw new Error("Not a file");
+    const content = fileInfo.content;
+    yield* content;
+  }
+
+  // TODO:
+  // async copy(fromPath, toPath, options = {}) { ... }
+
+  // TODO:
+  // async move(fromPath, toPath, options = {}) { ... }
+
+  async _init() {
+    return this._initPromise = this._initPromise ||
+      Promise.resolve().then(() => this._addEntries(this.options.files));
+  }
+
+  async _doWrite(file, content) {
+    const filePath = this.normalizePath(file);
     const segments = filePath.split("/").filter((s) => !!s);
     const pathSegments = [""];
     let info;
@@ -68,22 +96,23 @@ export default class MemFilesApi extends FilesApi {
     }
   }
 
-  async *read(file /* { start = 0, bufferSize = 1024 * 8 } = {} */) {
-    const filePath = this._normalizePath(file);    
-    const fileInfo  = this.index[filePath];
-    if (fileInfo.kind !== "file") return null;// throw new Error("Not a file");
-    const content = fileInfo.content;
-    yield* content;
+  async _addEntries(index = {}) {
+    for (let [path, content] of Object.entries(index)) {
+      if (typeof content === "string") {
+        content = [new TextEncoder().encode(content)];
+      } else if (content instanceof Uint8Array) {
+        content = [content];
+      }
+      await this._doWrite(path, content);
+    }
   }
 
-  // TODO:
-  // async copy(fromPath, toPath, options = {}) { ... }
-
-  // TODO:
-  // async move(fromPath, toPath, options = {}) { ... }
-
   _getPaths() {
-    return Object.keys(this.index).sort(compare);
+    return this._getIndexPaths(this.index);
+  }
+
+  _getIndexPaths(index) {
+    return Object.keys(index).sort(compare);
     function compare(a, b) {
       return a > b ? 1 : a < b ? -1 : 0;
     }
@@ -97,21 +126,4 @@ export default class MemFilesApi extends FilesApi {
     return info;
   }
 
-  _normalizePath(file) {
-    let filePath = typeof file === "object" ? file.path : file + "";
-    const segments = filePath.split("/").filter((s) => !!s && s !== '.');
-    if (segments.length === 0) segments.push("");
-    segments.unshift("");
-    return segments.join("/");
-  }
 }
-
-// function pathJoin(...paths) {
-//   let segments = paths
-//     .map((path) => path.split("/"))
-//     .reduce((result, segments) => (result.push(...segments), result), []);
-//   const firstSegment = segments.shift();
-//   segments = segments.filter((s) => !!s && s !== ".");
-//   segments.unshift(firstSegment);
-//   return segments.join("/");
-// }

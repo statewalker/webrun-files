@@ -1,3 +1,4 @@
+import normalizePath from "./normalizePath.js";
 import notImplemented from "./notImplemented.js";
 
 /*
@@ -93,7 +94,7 @@ export default class FilesApi {
       targetPath = `${targetPath}${suffix}`;
       const content = this.read(sourceFile);
       return await this.write(targetPath, content);
-    }
+    };
     const recursive = options.recursive === undefined || !!options.recursive;
     const sourceFile = await this.stats(source);
     if (sourceFile.kind === "directory") {
@@ -123,4 +124,10 @@ export default class FilesApi {
     await this.remove(fromPath);
     return true;
   }
+
+  normalizePath(file) {
+    let filePath = typeof file === "object" ? file.path : file + "";
+    return normalizePath(filePath);
+  }
 }
+
