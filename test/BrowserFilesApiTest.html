@@ -26,7 +26,7 @@
 
 
   <script type="module">
-    import { get, set } from 'https://unpkg.com/idb-keyval@6.2.0/dist/index.js';
+    import { get, set, del } from 'https://unpkg.com/idb-keyval@6.2.0/dist/index.js';
 
     import runFileSystemTests from "./runFileSystemTests.js";
     import BrowserFilesApi from "../src/BrowserFilesApi.js";
@@ -45,7 +45,13 @@
       if (!(await verifyPermission(rootHandler, true))) {
         alert("Access was not granted");
         return;
-      };
+      }
+      if (!(await isHandlerAccessible(rootHandler))) {
+        // await set(rootHandlerKey, null);
+        await del(rootHandlerKey);
+        alert("Can not access to the folder. Please try again.");
+        return;
+      }
 
       runFileSystemTests({
         expect,
@@ -60,22 +66,42 @@
       mocha.run();
     })
 
+    async function isHandlerAccessible(fileHandle) {
+      // We need to perform a real read operation with the handler 
+      // to check if the file/directory still exists.
+      let exists = false;
+      try {
+        if (fileHandle.kind === 'file') {
+          await fileHandle.getFile();
+        } else {
+          for await (let item of fileHandle.values()) {
+            break;
+          }
+        }
+        exists = true;
+      } catch (error) {
+        console.log(error, fileHandle)
+        exists = false;
+      }
+      return exists;
+    }
 
     async function verifyPermission(fileHandle, readWrite) {
       const options = {};
       if (readWrite) {
         options.mode = 'readwrite';
       }
+      let granted = false;
       // Check if permission was already granted. If so, return true.
       if ((await fileHandle.queryPermission(options)) === 'granted') {
-        return true;
+        granted = true;
       }
       // Request permission. If the user grants permission, return true.
-      if ((await fileHandle.requestPermission(options)) === 'granted') {
-        return true;
+      if (!granted && (await fileHandle.requestPermission(options)) === 'granted') {
+        granted = true;
       }
       // The user didn't grant permission, so return false.
-      return false;
+      return granted;
     }
 
   </script>
