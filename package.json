@@ -25,6 +25,7 @@
     "default": "./src/index.js"
   },
   "devDependencies": {
+    "@statewalker/webrun-files-tests" : "0.0.0",
     "@statewalker/rollup": "^0.1.6",
     "eslint": "^8",
     "expect.js": "^0.3",

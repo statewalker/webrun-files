@@ -28,7 +28,8 @@
   <script type="module">
     import { get, set, del } from 'https://unpkg.com/idb-keyval@6.2.0/dist/index.js';
 
-    import runFileSystemTests from "./runFileSystemTests.js";
+    // import { runFilesApiTests } from "@statewalker/webrun-files-tests";
+    import { runFilesApiTests } from "../../webrun-files-tests/index.js";
     import BrowserFilesApi from "../src/BrowserFilesApi.js";
 
     const runBtn = document.querySelector("#run");
@@ -53,11 +54,11 @@
         return;
       }
 
-      runFileSystemTests({
+      runFilesApiTests({
         expect,
         crypto,
         name: "BrowserFilesApi",
-        newFileApi: () => new BrowserFilesApi({ rootHandler }),
+        newFilesApi: () => new BrowserFilesApi({ rootHandler }),
       });
 
       // const [fileHandle] = await window.showOpenFilePicker();

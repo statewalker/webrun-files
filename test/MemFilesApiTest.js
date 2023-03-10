@@ -1,11 +1,11 @@
 import { MemFilesApi } from "../src/index.js";
 import { webcrypto } from "node:crypto";
-import runFileSystemTests from "./runFileSystemTests.js";
+import { runFilesApiTests } from "@statewalker/webrun-files-tests"
 import expect from "expect.js";
 
-runFileSystemTests({
+runFilesApiTests({
   expect,
   crypto : webcrypto,
   name: "MemFilesApi",
-  newFileApi: () => new MemFilesApi({}),
+  newFilesApi: () => new MemFilesApi({}),
 });

@@ -21,17 +21,18 @@
   </script>
 
   <script type="module">
-    import runFileSystemTests from "./runFileSystemTests.js";
+    // import { runFilesApiTests } from "@statewalker/webrun-files-tests";
+    import { runFilesApiTests } from "../../webrun-files-tests/index.js";
     import MemFilesApi from "../src/MemFilesApi.js";
     initTests();
     mocha.run();
 
     function initTests() {
-      runFileSystemTests({
+      runFilesApiTests({
         expect,
         crypto,
         name: "MemFilesApi",
-        newFileApi: () => new MemFilesApi({}),
+        newFilesApi: () => new MemFilesApi({}),
       });
     }
 
