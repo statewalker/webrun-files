@@ -1,7 +1,7 @@
 
 # @statewalker/webrun-files-tests
 
-This package contains a set of common tests for all FilesApi (@statewalker/files) implementations.
+This package contains a set of common tests for all FilesApi (@statewalker/webrun-files) implementations.
 
 ## Usage
 
