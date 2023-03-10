@@ -1,0 +1,49 @@
+{
+  "name": "@statewalker/webrun-files-tests",
+  "version": "0.0.0",
+  "description": "Basic files API",
+  "keywords": [],
+  "homepage": "https://github.com/statewalker/webrun-files-tests",
+  "author": {
+    "name": "Mikhail Kotelnikov",
+    "email": "mikhail.kotelnikov@gmail.com"
+  },
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "dist/**/package.json",
+    "dist/**/*.js",
+    "src/**/*.js",
+    "index.js"
+  ],
+  "module": "src/index.js",
+  "main": "src/index.js",
+  "jsdelivr": "dist/index.js",
+  "unpkg": "dist/index.js",
+  "exports": {
+    "umd": "./dist/index-umd.min.js",
+    "default": "./src/index.js"
+  },
+  "dependencies": {
+    "expect.js": "^0.3",
+    "mocha": "^10"
+  },
+  "devDependencies": {
+    "@statewalker/rollup": "^0.1.6",
+    "rollup": "^3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:statewalker/webrun-files-tests.git"
+  },
+  "scripts": {
+    "eslint": "echo ''",
+    "rollup": "rollup -c",
+    "test": "echo ''",
+    "prepublishOnly": "rm -rf dist &&  yarn rollup"
+  },
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  }
+}
