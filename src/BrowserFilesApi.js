@@ -139,10 +139,10 @@ export default class BrowserFilesApi extends FilesApi {
     segments.unshift("");
     const path = segments.join("/");
     const info = {
-      kind : "",
+      kind: "",
       path,
-      name
-    }
+      name,
+    };
     if (handle.kind === "directory") {
       info.kind = "directory";
     } else {
@@ -161,5 +161,4 @@ export default class BrowserFilesApi extends FilesApi {
     const segments = filePath.split("/").filter((s) => !!s);
     return segments;
   }
-
 }

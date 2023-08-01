@@ -7,3 +7,4 @@ export { default as addFilesApiLogger } from "./addFilesApiLogger.js";
 
 export { default as getMimeType } from "./getMimeType.js";
 export * from "./mimeTypes.js";
+export { default as openBrowserFilesApi } from "./openBrowserFilesApi.js";
