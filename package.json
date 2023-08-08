@@ -1,6 +1,6 @@
 {
   "name": "@statewalker/webrun-files",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Basic files API",
   "keywords": [],
   "homepage": "https://github.com/statewalker/webrun-files",
@@ -25,8 +25,8 @@
     "default": "./src/index.js"
   },
   "devDependencies": {
-    "@statewalker/webrun-files-tests" : "0.0.0",
     "@statewalker/rollup": "^0.1.6",
+    "@statewalker/webrun-files-tests": "https://github.com/statewalker/webrun-files-test",
     "eslint": "^8",
     "expect.js": "^0.3",
     "mocha": "^10",
@@ -39,7 +39,7 @@
   "scripts": {
     "eslint": "eslint src",
     "rollup": "rollup -c",
-    "test": "mocha -R spec ./test/index.js && yarn eslint",
+    "test": "mocha -R spec ./test/index.js",
     "prepublishOnly": "rm -rf dist && yarn test && yarn rollup"
   },
   "sideEffects": false,
