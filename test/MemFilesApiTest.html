@@ -20,9 +20,8 @@
     mocha.cleanReferencesAfterRun(false);
   </script>
 
-  <script type="module">
-    // import { runFilesApiTests } from "@statewalker/webrun-files-tests";
-    import { runFilesApiTests } from "../../webrun-files-tests/index.js";
+  <script type="module"> 
+    import { runFilesApiTests } from "https://unpkg.com/@statewalker/webrun-files-tests@0.1.0/dist/index.js";
     import MemFilesApi from "../src/MemFilesApi.js";
     initTests();
     mocha.run();

@@ -6,6 +6,7 @@
   <title>Mocha Tests</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="stylesheet" href="https://unpkg.com/mocha/mocha.css" />
+
 </head>
 
 <body>
@@ -28,15 +29,17 @@
   <script type="module">
     import { get, set, del } from 'https://unpkg.com/idb-keyval@6.2.0/dist/index.js';
 
-    // import { runFilesApiTests } from "@statewalker/webrun-files-tests";
-    import { runFilesApiTests } from "../../webrun-files-tests/index.js";
+    import { runFilesApiTests } from "https://unpkg.com/@statewalker/webrun-files-tests@0.1.0/dist/index.js";
+    // import { runFilesApiTests } from "../../webrun-files-tests/index.js";
     import BrowserFilesApi from "../src/BrowserFilesApi.js";
 
     const runBtn = document.querySelector("#run");
 
     const mochaView = document.querySelector("#mocha");
 
-    runBtn.addEventListener("click", async () => {
+    runBtn.addEventListener("click", async (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
       const rootHandlerKey = "test-root-dir";
       let rootHandler = await get(rootHandlerKey);
       if (!rootHandler) {
@@ -63,8 +66,7 @@
 
       // const [fileHandle] = await window.showOpenFilePicker();
 
-
-      mocha.run();
+      await mocha.run();
     })
 
     async function isHandlerAccessible(fileHandle) {
