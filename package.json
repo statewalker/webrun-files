@@ -27,9 +27,9 @@
   "devDependencies": {
     "@statewalker/rollup": "^0.1.6",
     "@statewalker/webrun-files-tests": "^0.1.0",
-    "eslint": "^8.56.0",
-    "expect.js": "^0.3.1",
-    "mocha": "^10.2.0",
+    "eslint": "^8",
+    "expect.js": "^0.3",
+    "mocha": "^10",
     "rollup": "^4.9.6"
   },
   "repository": {
