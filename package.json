@@ -22,8 +22,7 @@
     "lint:fix": "biome check --write --unsafe .",
     "format": "biome format --write .",
     "format:check": "biome format .",
-    "format:fix": "biome check --write --unsafe .",
-    "publish": "turbo run publish"
+    "format:fix": "biome check --write --unsafe ."
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
