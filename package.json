@@ -22,10 +22,15 @@
     "lint:fix": "biome check --write --unsafe .",
     "format": "biome format --write .",
     "format:check": "biome format .",
-    "format:fix": "biome check --write --unsafe ."
+    "format:fix": "biome check --write --unsafe .",
+    "publish-all": "pnpm run build && pnpm -r publish --access public --no-git-checks",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release-packages": "changeset publish"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
+    "@changesets/cli": "^2.29.8",
     "@types/node": "catalog:",
     "@vitest/coverage-v8": "catalog:",
     "pnpm": "catalog:",
