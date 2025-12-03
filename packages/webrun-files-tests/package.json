@@ -1,0 +1,33 @@
+{
+  "name": "@statewalker/webrun-files-tests",
+  "version": "0.3.1",
+  "private": true,
+  "type": "module",
+  "description": "Shared test suites for IFilesApi implementations",
+  "main": "./dist/cjs/index.cjs",
+  "module": "./dist/esm/index.js",
+  "exports": {
+    ".": {
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.cjs"
+    }
+  },
+  "scripts": {
+    "build": "rimraf dist && rolldown -c",
+    "test": "vitest run",
+    "lint": "biome lint src tests"
+  },
+  "dependencies": {
+    "@statewalker/webrun-files": "workspace:*"
+  },
+  "peerDependencies": {
+    "vitest": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "rimraf": "catalog:",
+    "rolldown": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

@@ -1,49 +1,38 @@
 {
-  "name": "@statewalker/webrun-files",
-  "version": "0.3.1",
-  "description": "Basic files API",
-  "keywords": [],
+  "name": "@statewalker/webrun-files-monorepo",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.0",
+  "description": "Basic files API - monorepo",
   "homepage": "https://github.com/statewalker/webrun-files",
   "author": {
     "name": "Mikhail Kotelnikov",
     "email": "mikhail.kotelnikov@gmail.com"
   },
   "license": "MIT",
-  "type": "module",
-  "files": [
-    "dist/**/package.json",
-    "dist/**/*.js",
-    "src/**/*.js",
-    "index.js"
-  ],
-  "module": "src/index.js",
-  "main": "src/index.js",
-  "jsdelivr": "dist/index.js",
-  "unpkg": "dist/index.js",
-  "exports": {
-    "umd": "./dist/index-umd.min.js",
-    "default": "./src/index.js"
-  },
-  "devDependencies": {
-    "@statewalker/rollup": "^0.1.6",
-    "@statewalker/webrun-files-tests": "^0.1.0",
-    "eslint": "^8",
-    "expect.js": "^0.3",
-    "mocha": "^10",
-    "rollup": "^4.9.6"
-  },
   "repository": {
     "type": "git",
     "url": "git@github.com:statewalker/webrun-files.git"
   },
   "scripts": {
-    "eslint": "eslint src",
-    "rollup": "rollup -c",
-    "test": "mocha -R spec ./test/index.js",
-    "prepublishOnly": "rm -rf dist && yarn test && yarn rollup"
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "biome check --write .",
+    "lint:check": "biome check .",
+    "lint:fix": "biome check --write --unsafe .",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "format:fix": "biome check --write --unsafe ."
   },
-  "sideEffects": false,
-  "publishConfig": {
-    "access": "public"
+  "devDependencies": {
+    "@biomejs/biome": "catalog:",
+    "@types/node": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "pnpm": "catalog:",
+    "rolldown": "catalog:",
+    "tsx": "catalog:",
+    "turbo": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }
