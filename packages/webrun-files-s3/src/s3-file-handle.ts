@@ -12,8 +12,8 @@ import {
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
   GetObjectCommand,
-  PutObjectCommand,
   UploadPartCommand,
+  UploadPartCopyCommand,
 } from "@aws-sdk/client-s3";
 import type {
   AppendOptions,
@@ -29,45 +29,33 @@ export interface S3FileHandleOptions {
   bucket: string;
   key: string;
   size: number;
-  bufferSize: number;
   multipartPartSize: number;
 }
 
 /**
- * Helper to consume S3 response body as Uint8Array.
+ * Helper to stream S3 response body as async iterable of Uint8Array chunks.
  * Handles both Node.js Readable streams and browser ReadableStreams.
+ * Yields chunks as they arrive without buffering the entire response.
  */
-async function consumeBody(body: unknown): Promise<Uint8Array> {
-  // AWS SDK v3 provides transformToByteArray on the body
-  if (body && typeof (body as { transformToByteArray?: unknown }).transformToByteArray === "function") {
-    return (body as { transformToByteArray: () => Promise<Uint8Array> }).transformToByteArray();
-  }
+async function* streamBody(body: unknown): AsyncGenerator<Uint8Array> {
+  if (!body) return;
 
-  // Fallback: try to consume as async iterable
-  if (body && (Symbol.asyncIterator in (body as object))) {
-    const chunks: Uint8Array[] = [];
+  // AWS SDK v3 body supports async iteration
+  if (Symbol.asyncIterator in (body as object)) {
     for await (const chunk of body as AsyncIterable<Uint8Array>) {
-      chunks.push(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk as ArrayBufferLike));
+      yield chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk as ArrayBufferLike);
     }
-    if (chunks.length === 0) return new Uint8Array(0);
-    if (chunks.length === 1) return chunks[0];
-
-    const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
-    const result = new Uint8Array(totalLength);
-    let offset = 0;
-    for (const chunk of chunks) {
-      result.set(chunk, offset);
-      offset += chunk.length;
-    }
-    return result;
+    return;
   }
 
   // If it's already a Uint8Array or ArrayBuffer
   if (body instanceof Uint8Array) {
-    return body;
+    yield body;
+    return;
   }
   if (body instanceof ArrayBuffer) {
-    return new Uint8Array(body);
+    yield new Uint8Array(body);
+    return;
   }
 
   throw new Error("Unsupported body type");
@@ -78,7 +66,6 @@ export class S3FileHandle implements FileHandle {
   private bucket: string;
   private key: string;
   private _size: number;
-  private bufferSize: number;
   private multipartPartSize: number;
   private closed = false;
 
@@ -87,7 +74,6 @@ export class S3FileHandle implements FileHandle {
     this.bucket = options.bucket;
     this.key = options.key;
     this._size = options.size;
-    this.bufferSize = options.bufferSize;
     this.multipartPartSize = options.multipartPartSize;
   }
 
@@ -102,6 +88,7 @@ export class S3FileHandle implements FileHandle {
   /**
    * Reads a range of bytes from the S3 object.
    * Uses HTTP Range header for efficient partial reads.
+   * Streams data directly from S3 without buffering the entire response.
    */
   async *createReadStream(
     options: ReadStreamOptions = {},
@@ -115,28 +102,34 @@ export class S3FileHandle implements FileHandle {
 
     if (start >= actualEnd || this._size === 0) return;
 
-    // Read the range and yield in chunks
-    const content = await this.readRange(start, actualEnd, signal);
+    const command = new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: this.key,
+      Range: `bytes=${start}-${actualEnd - 1}`,
+    });
 
-    // Yield content in buffer-sized chunks
-    let position = 0;
-    while (position < content.length) {
+    const response = await this.client.send(command, { abortSignal: signal });
+
+    if (!response.Body) return;
+
+    // Stream directly from S3 response body
+    for await (const chunk of streamBody(response.Body)) {
       if (signal?.aborted) {
         throw new Error("Operation aborted");
       }
-      const chunkEnd = Math.min(position + this.bufferSize, content.length);
-      yield content.subarray(position, chunkEnd);
-      position = chunkEnd;
+      yield chunk;
     }
   }
 
   /**
-   * Writes content to the S3 object.
+   * Writes content to the S3 object using streaming.
    *
    * S3 objects are immutable, so this operation replaces the entire object.
-   * For small files, uses PutObject. For large files, uses multipart upload.
+   * Uses streaming multipart upload to avoid buffering the entire file in memory.
+   * Only buffers one part at a time (5MB by default).
    *
-   * Note: start position > 0 requires downloading existing content first.
+   * Note: start position > 0 uses UploadPartCopy to preserve existing content
+   * without downloading it.
    */
   async createWriteStream(
     data: BinaryStream,
@@ -148,63 +141,15 @@ export class S3FileHandle implements FileHandle {
 
     const { start = 0, signal } = options;
 
-    // Collect all data first (S3 needs content-length or multipart)
-    const chunks: Uint8Array[] = [];
-    let totalLength = 0;
-
-    // If start > 0, we need to preserve existing content
-    if (start > 0 && this._size > 0) {
-      const preserved = await this.readRange(
-        0,
-        Math.min(start, this._size),
-        signal,
-      );
-      chunks.push(preserved);
-      totalLength = preserved.length;
-
-      // Pad with zeros if start is beyond current content
-      if (start > this._size) {
-        const padding = new Uint8Array(start - this._size);
-        chunks.push(padding);
-        totalLength += padding.length;
-      }
-    } else if (start > 0) {
-      // File is empty but start > 0, need to pad
-      const padding = new Uint8Array(start);
-      chunks.push(padding);
-      totalLength += padding.length;
-    }
-
-    // Collect new data
-    let bytesWritten = 0;
-    for await (const chunk of toBinaryAsyncIterable(data)) {
-      if (signal?.aborted) {
-        throw new Error("Operation aborted");
-      }
-      chunks.push(chunk);
-      totalLength += chunk.length;
-      bytesWritten += chunk.length;
-    }
-
-    // Merge chunks
-    const content = this.mergeChunks(chunks, totalLength);
-
-    // Choose upload method based on size
-    if (content.length < this.multipartPartSize) {
-      await this.putObject(content, signal);
-    } else {
-      await this.multipartUpload(content, signal);
-    }
-
-    this._size = content.length;
-    return bytesWritten;
+    // Use streaming multipart upload
+    return this.streamingMultipartUpload(data, start, signal);
   }
 
   /**
-   * Appends content to the end of the S3 object.
+   * Appends content to the end of the S3 object using streaming.
    *
-   * Since S3 objects are immutable, this downloads existing content,
-   * appends new data, and uploads the combined result.
+   * Uses UploadPartCopy to preserve existing content without downloading it,
+   * then streams new data as additional parts.
    */
   async appendFile(data: BinaryStream, options: AppendOptions = {}): Promise<number> {
     if (this.closed) {
@@ -213,99 +158,26 @@ export class S3FileHandle implements FileHandle {
 
     const { signal } = options;
 
-    const chunks: Uint8Array[] = [];
-    let totalLength = 0;
-
-    // Download existing content
-    if (this._size > 0) {
-      const existing = await this.readRange(0, this._size, signal);
-      chunks.push(existing);
-      totalLength = existing.length;
-    }
-
-    // Append new data
-    let bytesWritten = 0;
-    for await (const chunk of toBinaryAsyncIterable(data)) {
-      if (signal?.aborted) {
-        throw new Error("Operation aborted");
-      }
-      chunks.push(chunk);
-      totalLength += chunk.length;
-      bytesWritten += chunk.length;
-    }
-
-    // Merge and upload
-    const content = this.mergeChunks(chunks, totalLength);
-
-    if (content.length < this.multipartPartSize) {
-      await this.putObject(content, signal);
-    } else {
-      await this.multipartUpload(content, signal);
-    }
-
-    this._size = content.length;
-    return bytesWritten;
+    // Use streaming multipart upload starting at current size
+    // This will use UploadPartCopy for existing content
+    return this.streamingMultipartUpload(data, this._size, signal);
   }
 
   // ========================================
   // Private helpers
   // ========================================
 
-  private async readRange(
+  /**
+   * Streaming multipart upload that buffers only one part at a time.
+   * Uses UploadPartCopy to preserve existing content without downloading it
+   * for large files. For small existing content (< part size), downloads and
+   * combines with new data to meet S3's minimum part size requirement.
+   */
+  private async streamingMultipartUpload(
+    data: BinaryStream,
     start: number,
-    end: number,
     signal?: AbortSignal,
-  ): Promise<Uint8Array> {
-    if (end <= start || this._size === 0) {
-      return new Uint8Array(0);
-    }
-
-    const command = new GetObjectCommand({
-      Bucket: this.bucket,
-      Key: this.key,
-      Range: `bytes=${start}-${end - 1}`,
-    });
-
-    const response = await this.client.send(command, { abortSignal: signal });
-
-    if (!response.Body) {
-      return new Uint8Array(0);
-    }
-
-    return consumeBody(response.Body);
-  }
-
-  private mergeChunks(chunks: Uint8Array[], totalLength: number): Uint8Array {
-    if (chunks.length === 0) return new Uint8Array(0);
-    if (chunks.length === 1) return chunks[0];
-
-    const result = new Uint8Array(totalLength);
-    let offset = 0;
-    for (const chunk of chunks) {
-      result.set(chunk, offset);
-      offset += chunk.length;
-    }
-    return result;
-  }
-
-  private async putObject(
-    content: Uint8Array,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    const command = new PutObjectCommand({
-      Bucket: this.bucket,
-      Key: this.key,
-      Body: content,
-      ContentLength: content.length,
-    });
-
-    await this.client.send(command, { abortSignal: signal });
-  }
-
-  private async multipartUpload(
-    content: Uint8Array,
-    signal?: AbortSignal,
-  ): Promise<void> {
+  ): Promise<number> {
     // Initiate multipart upload
     const createCommand = new CreateMultipartUploadCommand({
       Bucket: this.bucket,
@@ -321,36 +193,141 @@ export class S3FileHandle implements FileHandle {
     }
 
     const parts: { ETag: string; PartNumber: number }[] = [];
+    let partNumber = 1;
+    let bytesWritten = 0;
+    let totalSize = 0;
+
+    // Buffer for accumulating data before uploading parts
+    let buffer = new Uint8Array(this.multipartPartSize);
+    let bufferOffset = 0;
 
     try {
-      let offset = 0;
-      let partNumber = 1;
+      // Handle preserving existing content
+      if (start > 0 && this._size > 0) {
+        const preserveEnd = Math.min(start, this._size);
 
-      while (offset < content.length) {
+        // Use UploadPartCopy for full-sized parts (>= 5MB)
+        // Download and buffer remaining bytes that don't fill a complete part
+        const fullPartsEnd = Math.floor(preserveEnd / this.multipartPartSize) * this.multipartPartSize;
+
+        // Copy full parts using UploadPartCopy (no download needed)
+        let copyOffset = 0;
+        while (copyOffset < fullPartsEnd) {
+          if (signal?.aborted) {
+            throw new Error("Operation aborted");
+          }
+
+          const copyEnd = copyOffset + this.multipartPartSize;
+
+          const copyCommand = new UploadPartCopyCommand({
+            Bucket: this.bucket,
+            Key: this.key,
+            UploadId,
+            PartNumber: partNumber,
+            CopySource: `${this.bucket}/${this.key}`,
+            CopySourceRange: `bytes=${copyOffset}-${copyEnd - 1}`,
+          });
+
+          const { CopyPartResult } = await this.client.send(copyCommand, {
+            abortSignal: signal,
+          });
+
+          if (CopyPartResult?.ETag) {
+            parts.push({ ETag: CopyPartResult.ETag, PartNumber: partNumber });
+            partNumber++;
+            totalSize += this.multipartPartSize;
+          }
+
+          copyOffset = copyEnd;
+        }
+
+        // Download remaining bytes (less than part size) and add to buffer
+        if (fullPartsEnd < preserveEnd) {
+          const remainingBytes = await this.downloadRange(fullPartsEnd, preserveEnd, signal);
+          buffer.set(remainingBytes, bufferOffset);
+          bufferOffset += remainingBytes.length;
+          totalSize += remainingBytes.length;
+        }
+
+        // Handle padding if start is beyond current size
+        if (start > this._size) {
+          const paddingSize = start - this._size;
+          // Add padding to buffer, uploading full parts as needed
+          let paddingOffset = 0;
+          while (paddingOffset < paddingSize) {
+            const spaceInBuffer = this.multipartPartSize - bufferOffset;
+            const bytesToAdd = Math.min(spaceInBuffer, paddingSize - paddingOffset);
+
+            // Zero-fill the buffer (it's already zeros from allocation)
+            bufferOffset += bytesToAdd;
+            paddingOffset += bytesToAdd;
+            totalSize += bytesToAdd;
+
+            if (bufferOffset >= this.multipartPartSize) {
+              await this.uploadPart(UploadId, partNumber, buffer, parts, signal);
+              partNumber++;
+              buffer = new Uint8Array(this.multipartPartSize);
+              bufferOffset = 0;
+            }
+          }
+        }
+      } else if (start > 0) {
+        // File is empty but start > 0, need to pad with zeros
+        let paddingOffset = 0;
+        while (paddingOffset < start) {
+          const spaceInBuffer = this.multipartPartSize - bufferOffset;
+          const bytesToAdd = Math.min(spaceInBuffer, start - paddingOffset);
+
+          bufferOffset += bytesToAdd;
+          paddingOffset += bytesToAdd;
+          totalSize += bytesToAdd;
+
+          if (bufferOffset >= this.multipartPartSize) {
+            await this.uploadPart(UploadId, partNumber, buffer, parts, signal);
+            partNumber++;
+            buffer = new Uint8Array(this.multipartPartSize);
+            bufferOffset = 0;
+          }
+        }
+      }
+
+      // Stream new data, buffering only one part at a time
+      for await (const chunk of toBinaryAsyncIterable(data)) {
         if (signal?.aborted) {
           throw new Error("Operation aborted");
         }
 
-        const end = Math.min(offset + this.multipartPartSize, content.length);
-        const partData = content.subarray(offset, end);
+        let chunkOffset = 0;
 
-        const uploadCommand = new UploadPartCommand({
-          Bucket: this.bucket,
-          Key: this.key,
-          UploadId,
-          PartNumber: partNumber,
-          Body: partData,
-          ContentLength: partData.length,
-        });
+        while (chunkOffset < chunk.length) {
+          const spaceInBuffer = this.multipartPartSize - bufferOffset;
+          const bytesToCopy = Math.min(spaceInBuffer, chunk.length - chunkOffset);
 
-        const { ETag } = await this.client.send(uploadCommand, {
-          abortSignal: signal,
-        });
+          buffer.set(chunk.subarray(chunkOffset, chunkOffset + bytesToCopy), bufferOffset);
+          bufferOffset += bytesToCopy;
+          chunkOffset += bytesToCopy;
+          bytesWritten += bytesToCopy;
+          totalSize += bytesToCopy;
 
-        parts.push({ ETag: ETag!, PartNumber: partNumber });
+          // Upload part when buffer is full
+          if (bufferOffset >= this.multipartPartSize) {
+            await this.uploadPart(UploadId, partNumber, buffer, parts, signal);
+            partNumber++;
+            buffer = new Uint8Array(this.multipartPartSize);
+            bufferOffset = 0;
+          }
+        }
+      }
 
-        offset = end;
-        partNumber++;
+      // Upload remaining data in buffer (last part can be smaller than 5MB)
+      if (bufferOffset > 0) {
+        const lastPart = buffer.subarray(0, bufferOffset);
+        await this.uploadPart(UploadId, partNumber, lastPart, parts, signal);
+      }
+
+      // Handle empty file case - S3 requires at least one part
+      if (parts.length === 0) {
+        await this.uploadPart(UploadId, 1, new Uint8Array(0), parts, signal);
       }
 
       // Complete multipart upload
@@ -362,19 +339,97 @@ export class S3FileHandle implements FileHandle {
       });
 
       await this.client.send(completeCommand, { abortSignal: signal });
+
+      this._size = totalSize;
+      return bytesWritten;
     } catch (error) {
       // Abort on failure to clean up
-      const abortCommand = new AbortMultipartUploadCommand({
-        Bucket: this.bucket,
-        Key: this.key,
-        UploadId,
-      });
-
-      await this.client.send(abortCommand).catch(() => {
-        // Ignore abort errors
-      });
-
+      await this.abortMultipartUpload(UploadId);
       throw error;
     }
+  }
+
+  /**
+   * Download a range of bytes from the S3 object.
+   */
+  private async downloadRange(
+    start: number,
+    end: number,
+    signal?: AbortSignal,
+  ): Promise<Uint8Array> {
+    if (end <= start) {
+      return new Uint8Array(0);
+    }
+
+    const command = new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: this.key,
+      Range: `bytes=${start}-${end - 1}`,
+    });
+
+    const response = await this.client.send(command, { abortSignal: signal });
+
+    if (!response.Body) {
+      return new Uint8Array(0);
+    }
+
+    // Collect the streamed response into a single buffer
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of streamBody(response.Body)) {
+      chunks.push(chunk);
+    }
+
+    if (chunks.length === 0) return new Uint8Array(0);
+    if (chunks.length === 1) return chunks[0];
+
+    const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
+    const result = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const chunk of chunks) {
+      result.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return result;
+  }
+
+  /**
+   * Upload a single part and record it in the parts array.
+   */
+  private async uploadPart(
+    uploadId: string,
+    partNumber: number,
+    data: Uint8Array,
+    parts: { ETag: string; PartNumber: number }[],
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const command = new UploadPartCommand({
+      Bucket: this.bucket,
+      Key: this.key,
+      UploadId: uploadId,
+      PartNumber: partNumber,
+      Body: data,
+      ContentLength: data.length,
+    });
+
+    const { ETag } = await this.client.send(command, { abortSignal: signal });
+
+    if (ETag) {
+      parts.push({ ETag, PartNumber: partNumber });
+    }
+  }
+
+  /**
+   * Abort a multipart upload, ignoring errors.
+   */
+  private async abortMultipartUpload(uploadId: string): Promise<void> {
+    const command = new AbortMultipartUploadCommand({
+      Bucket: this.bucket,
+      Key: this.key,
+      UploadId: uploadId,
+    });
+
+    await this.client.send(command).catch(() => {
+      // Ignore abort errors
+    });
   }
 }
