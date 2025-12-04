@@ -44,12 +44,6 @@ export interface S3FilesApiOptions {
   prefix?: string;
 
   /**
-   * Buffer size for streaming operations.
-   * @default 8192
-   */
-  bufferSize?: number;
-
-  /**
    * Minimum part size for multipart uploads (5MB minimum for S3).
    * @default 5 * 1024 * 1024 (5MB)
    */
@@ -60,7 +54,6 @@ export class S3FilesApi implements IFilesApi {
   private client: S3Client;
   private bucket: string;
   private prefix: string;
-  private bufferSize: number;
   private multipartPartSize: number;
 
   constructor(options: S3FilesApiOptions) {
@@ -68,7 +61,6 @@ export class S3FilesApi implements IFilesApi {
     this.bucket = options.bucket;
     // Normalize prefix: remove leading/trailing slashes
     this.prefix = (options.prefix ?? "").replace(/^\/+|\/+$/g, "");
-    this.bufferSize = options.bufferSize ?? 8192;
     this.multipartPartSize = options.multipartPartSize ?? 5 * 1024 * 1024;
   }
 
@@ -350,7 +342,6 @@ export class S3FilesApi implements IFilesApi {
       bucket: this.bucket,
       key,
       size,
-      bufferSize: this.bufferSize,
       multipartPartSize: this.multipartPartSize,
     });
   }
