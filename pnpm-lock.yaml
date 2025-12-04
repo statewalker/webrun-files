@@ -74,6 +74,9 @@ importers:
 
   packages/webrun-files:
     devDependencies:
+      '@statewalker/webrun-files-tests':
+        specifier: workspace:*
+        version: link:../webrun-files-tests
       '@types/node':
         specifier: 'catalog:'
         version: 24.10.1
@@ -99,34 +102,9 @@ importers:
       '@aws-sdk/client-s3':
         specifier: ^3.0.0
         version: 3.943.0
-      '@types/node':
-        specifier: 'catalog:'
-        version: 24.10.1
-      rimraf:
-        specifier: 'catalog:'
-        version: 6.1.2
-      rolldown:
-        specifier: 'catalog:'
-        version: 1.0.0-beta.53
-      typescript:
-        specifier: 'catalog:'
-        version: 5.9.3
-      vitest:
-        specifier: 'catalog:'
-        version: 4.0.15(@types/node@24.10.1)(tsx@4.21.0)(yaml@2.8.2)
-
-  packages/webrun-files-tests:
-    dependencies:
-      '@statewalker/webrun-files':
+      '@statewalker/webrun-files-tests':
         specifier: workspace:*
-        version: link:../webrun-files
-    devDependencies:
-      '@aws-sdk/client-s3':
-        specifier: ^3.0.0
-        version: 3.943.0
-      '@statewalker/webrun-files-s3':
-        specifier: workspace:*
-        version: link:../webrun-files-s3
+        version: link:../webrun-files-tests
       '@testcontainers/minio':
         specifier: ^10.0.0
         version: 10.28.0
@@ -142,6 +120,28 @@ importers:
       testcontainers:
         specifier: ^10.0.0
         version: 10.28.0
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+      vitest:
+        specifier: 'catalog:'
+        version: 4.0.15(@types/node@24.10.1)(tsx@4.21.0)(yaml@2.8.2)
+
+  packages/webrun-files-tests:
+    dependencies:
+      '@statewalker/webrun-files':
+        specifier: workspace:*
+        version: link:../webrun-files
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.10.1
+      rimraf:
+        specifier: 'catalog:'
+        version: 6.1.2
+      rolldown:
+        specifier: 'catalog:'
+        version: 1.0.0-beta.53
       typescript:
         specifier: 'catalog:'
         version: 5.9.3

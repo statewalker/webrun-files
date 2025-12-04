@@ -5,9 +5,11 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { FilesApi, NodeFilesApi } from "@statewalker/webrun-files";
-import { createBigFilesApiTests } from "../src/suites/big-files.suite.js";
-import { createFilesApiTests } from "../src/suites/files-api.suite.js";
+import {
+  createBigFilesApiTests,
+  createFilesApiTests,
+} from "@statewalker/webrun-files-tests";
+import { FilesApi, NodeFilesApi } from "../src/index.js";
 
 createFilesApiTests("NodeFilesApi", async () => {
   // Create unique temp directory for each test

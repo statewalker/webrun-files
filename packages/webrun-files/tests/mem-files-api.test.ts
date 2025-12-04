@@ -2,9 +2,11 @@
  * Tests for MemFilesApi implementation
  */
 
-import { FilesApi, MemFilesApi } from "@statewalker/webrun-files";
-import { createBigFilesApiTests } from "../src/suites/big-files.suite.js";
-import { createFilesApiTests } from "../src/suites/files-api.suite.js";
+import {
+  createBigFilesApiTests,
+  createFilesApiTests,
+} from "@statewalker/webrun-files-tests";
+import { FilesApi, MemFilesApi } from "../src/index.js";
 
 createFilesApiTests("MemFilesApi", async () => ({
   api: new FilesApi(new MemFilesApi()),

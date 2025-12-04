@@ -30,7 +30,8 @@
   ],
   "scripts": {
     "build": "rimraf dist && rolldown -c && tsc --emitDeclarationOnly --declaration",
-    "lint": "biome lint src",
+    "test": "vitest run",
+    "lint": "biome lint src tests",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
@@ -41,10 +42,14 @@
   },
   "devDependencies": {
     "@aws-sdk/client-s3": "^3.0.0",
+    "@statewalker/webrun-files-tests": "workspace:*",
+    "@testcontainers/minio": "^10.0.0",
     "@types/node": "catalog:",
     "rimraf": "catalog:",
     "rolldown": "catalog:",
-    "typescript": "catalog:"
+    "testcontainers": "^10.0.0",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   },
   "sideEffects": false,
   "publishConfig": {
