@@ -35,6 +35,7 @@
     "prepublishOnly": "pnpm run build && pnpm run test"
   },
   "devDependencies": {
+    "@statewalker/webrun-files-tests": "workspace:*",
     "@types/node": "catalog:",
     "rimraf": "catalog:",
     "rolldown": "catalog:",
