@@ -196,7 +196,7 @@ export class NodeFilesApi implements IFilesApi {
     try {
       const stat = await this.fs.stat(fullPath);
       if (stat.isDirectory()) {
-        await this.fs.rm(fullPath, { recursive: true });
+        await this.fs.rm(fullPath, { recursive: true, force: true });
       } else {
         await this.fs.unlink(fullPath);
       }
