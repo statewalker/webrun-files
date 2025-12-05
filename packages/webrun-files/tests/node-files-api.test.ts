@@ -5,10 +5,7 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import {
-  createBigFilesApiTests,
-  createFilesApiTests,
-} from "@statewalker/webrun-files-tests";
+import { createBigFilesApiTests, createFilesApiTests } from "@statewalker/webrun-files-tests";
 import { FilesApi, NodeFilesApi } from "../src/index.js";
 
 createFilesApiTests("NodeFilesApi", async () => {
@@ -38,11 +35,11 @@ createBigFilesApiTests("NodeFilesApi", async () => {
     rootDir: testDir,
   });
 
+  const api = new FilesApi(nodeFs);
   return {
-    api: new FilesApi(nodeFs),
+    api,
     cleanup: async () => {
-      // Remove test directory after each test
-      await fs.rm(testDir, { recursive: true, force: true });
+      await api.remove("/");
     },
   };
 });
