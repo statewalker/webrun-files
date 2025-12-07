@@ -683,6 +683,192 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
           expect(fromBytes(content)).toBe("First Second");
         });
       });
+
+      describe("read() - Random Access", () => {
+        it("should read bytes from the beginning of a file", async () => {
+          const content = toBytes("Hello, World!");
+          await ctx.api.write("/test.txt", [content]);
+
+          const handle = await ctx.api.open("/test.txt");
+          try {
+            const buffer = new Uint8Array(5);
+            const bytesRead = await handle.read(buffer, 0, 5, 0);
+
+            expect(bytesRead).toBe(5);
+            expect(fromBytes(buffer)).toBe("Hello");
+          } finally {
+            await handle.close();
+          }
+        });
+
+        it("should read bytes from the middle of a file", async () => {
+          const content = toBytes("Hello, World!");
+          await ctx.api.write("/test.txt", [content]);
+
+          const handle = await ctx.api.open("/test.txt");
+          try {
+            const buffer = new Uint8Array(5);
+            const bytesRead = await handle.read(buffer, 0, 5, 7);
+
+            expect(bytesRead).toBe(5);
+            expect(fromBytes(buffer)).toBe("World");
+          } finally {
+            await handle.close();
+          }
+        });
+
+        it("should read bytes into buffer at offset", async () => {
+          const content = toBytes("ABCDEFGHIJ");
+          await ctx.api.write("/test.txt", [content]);
+
+          const handle = await ctx.api.open("/test.txt");
+          try {
+            const buffer = new Uint8Array(10);
+            buffer.fill(0);
+
+            const bytesRead = await handle.read(buffer, 3, 4, 2);
+
+            expect(bytesRead).toBe(4);
+            expect(Array.from(buffer)).toEqual([0, 0, 0, 67, 68, 69, 70, 0, 0, 0]); // C, D, E, F
+          } finally {
+            await handle.close();
+          }
+        });
+
+        it("should return fewer bytes at end of file", async () => {
+          const content = toBytes("Short");
+          await ctx.api.write("/test.txt", [content]);
+
+          const handle = await ctx.api.open("/test.txt");
+          try {
+            const buffer = new Uint8Array(100);
+            const bytesRead = await handle.read(buffer, 0, 100, 0);
+
+            expect(bytesRead).toBe(5);
+            expect(fromBytes(buffer.subarray(0, bytesRead))).toBe("Short");
+          } finally {
+            await handle.close();
+          }
+        });
+
+        it("should return 0 when reading past end of file", async () => {
+          const content = toBytes("Hello");
+          await ctx.api.write("/test.txt", [content]);
+
+          const handle = await ctx.api.open("/test.txt");
+          try {
+            const buffer = new Uint8Array(10);
+            const bytesRead = await handle.read(buffer, 0, 10, 100);
+
+            expect(bytesRead).toBe(0);
+          } finally {
+            await handle.close();
+          }
+        });
+
+        it("should handle reading from empty file", async () => {
+          await ctx.api.write("/empty.txt", [new Uint8Array(0)]);
+
+          const handle = await ctx.api.open("/empty.txt");
+          try {
+            const buffer = new Uint8Array(10);
+            const bytesRead = await handle.read(buffer, 0, 10, 0);
+
+            expect(bytesRead).toBe(0);
+          } finally {
+            await handle.close();
+          }
+        });
+
+        it("should handle multiple sequential reads", async () => {
+          const content = toBytes("ABCDEFGHIJ");
+          await ctx.api.write("/test.txt", [content]);
+
+          const handle = await ctx.api.open("/test.txt");
+          try {
+            const buffer = new Uint8Array(2);
+
+            let bytesRead = await handle.read(buffer, 0, 2, 0);
+            expect(bytesRead).toBe(2);
+            expect(fromBytes(buffer)).toBe("AB");
+
+            bytesRead = await handle.read(buffer, 0, 2, 4);
+            expect(bytesRead).toBe(2);
+            expect(fromBytes(buffer)).toBe("EF");
+
+            bytesRead = await handle.read(buffer, 0, 2, 8);
+            expect(bytesRead).toBe(2);
+            expect(fromBytes(buffer)).toBe("IJ");
+          } finally {
+            await handle.close();
+          }
+        });
+
+        it("should handle random access reads in non-sequential order", async () => {
+          const content = toBytes("0123456789");
+          await ctx.api.write("/test.txt", [content]);
+
+          const handle = await ctx.api.open("/test.txt");
+          try {
+            const buffer = new Uint8Array(1);
+
+            await handle.read(buffer, 0, 1, 5);
+            expect(fromBytes(buffer)).toBe("5");
+
+            await handle.read(buffer, 0, 1, 2);
+            expect(fromBytes(buffer)).toBe("2");
+
+            await handle.read(buffer, 0, 1, 9);
+            expect(fromBytes(buffer)).toBe("9");
+
+            await handle.read(buffer, 0, 1, 0);
+            expect(fromBytes(buffer)).toBe("0");
+          } finally {
+            await handle.close();
+          }
+        });
+
+        it("should handle reading large files in chunks", async () => {
+          const size = 1024 * 100; // 100KB
+          const content = randomBytes(size);
+          await ctx.api.write("/large.bin", [content]);
+
+          const handle = await ctx.api.open("/large.bin");
+          try {
+            const chunkSize = 8192;
+            let position = 0;
+            const result = new Uint8Array(size);
+
+            while (position < size) {
+              const buffer = new Uint8Array(chunkSize);
+              const bytesRead = await handle.read(buffer, 0, chunkSize, position);
+              result.set(buffer.subarray(0, bytesRead), position);
+              position += bytesRead;
+            }
+
+            expect(result).toEqual(content);
+          } finally {
+            await handle.close();
+          }
+        });
+
+        it("should respect buffer offset limits", async () => {
+          const content = toBytes("ABCDEFGHIJ");
+          await ctx.api.write("/test.txt", [content]);
+
+          const handle = await ctx.api.open("/test.txt");
+          try {
+            const buffer = new Uint8Array(5);
+            // Request to write at offset 3, but buffer only has 2 bytes left
+            const bytesRead = await handle.read(buffer, 3, 10, 0);
+
+            expect(bytesRead).toBe(2); // Only 2 bytes fit in buffer
+            expect(fromBytes(buffer.subarray(3, 5))).toBe("AB");
+          } finally {
+            await handle.close();
+          }
+        });
+      });
     });
 
     // ========================================

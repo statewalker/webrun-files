@@ -160,4 +160,35 @@ export class BrowserFileHandle implements FileHandle {
 
     return bytesWritten;
   }
+
+  /**
+   * Random access read from file at a specific position.
+   * Uses File.slice() for efficient partial reads.
+   */
+  async read(buffer: Uint8Array, offset: number, length: number, position: number): Promise<number> {
+    if (this.closed) {
+      throw new Error("FileHandle is closed");
+    }
+
+    // Ensure we have a fresh file reference
+    if (!this.file) {
+      this.file = await this.fileHandle.getFile();
+      this._size = this.file.size;
+    }
+
+    // Calculate actual bytes to read
+    let len = Math.min(length, buffer.length - offset);
+    len = Math.min(len, this._size - position);
+    len = Math.max(0, len);
+
+    if (len === 0) {
+      return 0;
+    }
+
+    const slice = this.file.slice(position, position + len);
+    const arrayBuffer = await slice.arrayBuffer();
+    const data = new Uint8Array(arrayBuffer);
+    buffer.set(data, offset);
+    return len;
+  }
 }

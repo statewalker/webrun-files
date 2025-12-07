@@ -432,4 +432,60 @@ export class S3FileHandle implements FileHandle {
       // Ignore abort errors
     });
   }
+
+  /**
+   * Random access read from S3 object using HTTP Range header.
+   */
+  async read(buffer: Uint8Array, offset: number, length: number, position: number): Promise<number> {
+    if (this.closed) {
+      throw new Error("FileHandle is closed");
+    }
+
+    // Calculate actual bytes to read
+    let len = Math.min(length, buffer.length - offset);
+    len = Math.min(len, this._size - position);
+    len = Math.max(0, len);
+
+    if (len === 0) {
+      return 0;
+    }
+
+    const command = new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: this.key,
+      Range: `bytes=${position}-${position + len - 1}`,
+    });
+
+    const response = await this.client.send(command);
+
+    if (!response.Body) {
+      return 0;
+    }
+
+    // Collect the streamed response into a single buffer
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of streamBody(response.Body)) {
+      chunks.push(chunk);
+    }
+
+    if (chunks.length === 0) return 0;
+
+    // Merge chunks if needed
+    let data: Uint8Array;
+    if (chunks.length === 1) {
+      data = chunks[0];
+    } else {
+      const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
+      data = new Uint8Array(totalLength);
+      let pos = 0;
+      for (const chunk of chunks) {
+        data.set(chunk, pos);
+        pos += chunk.length;
+      }
+    }
+
+    const bytesToCopy = Math.min(data.length, len);
+    buffer.set(data.subarray(0, bytesToCopy), offset);
+    return bytesToCopy;
+  }
 }
