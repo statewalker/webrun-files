@@ -13,9 +13,10 @@ import type {
   ReadStreamOptions,
 } from "./types.js";
 import { toBinaryAsyncIterable } from "./utils/collect-stream.js";
-import { joinPath, resolveFileRef } from "./utils/index.js";
+import { resolveFileRef } from "./utils/index.js";
+import { joinPath } from "./utils/path-utils.js";
 
-const IGNORE_FILE = ".gitkeep";
+const IGNORE_FILE = ".ignore";
 
 export class FilesApi implements IFilesApi {
   constructor(private fs: IFilesApi) {}

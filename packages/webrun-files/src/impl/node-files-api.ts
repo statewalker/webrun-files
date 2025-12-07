@@ -118,6 +118,16 @@ class NodeFileHandleWrapper implements FileHandle {
   async chown(uid: number, gid: number): Promise<void> {
     await this.handle.chown(uid, gid);
   }
+
+  async read(buffer: Uint8Array, offset: number, length: number, position: number): Promise<number> {
+    // Limit length to what can fit in the buffer at the given offset
+    const actualLength = Math.min(length, buffer.length - offset);
+    if (actualLength <= 0) {
+      return 0;
+    }
+    const result = await this.handle.read(buffer, offset, actualLength, position);
+    return result.bytesRead;
+  }
 }
 
 export class NodeFilesApi implements IFilesApi {

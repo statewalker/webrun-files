@@ -48,6 +48,17 @@ export interface FileHandle {
   createReadStream(options?: ReadStreamOptions): AsyncGenerator<Uint8Array>;
   createWriteStream(data: BinaryStream, options?: WriteStreamOptions): Promise<number>;
 
+  /**
+   * Read bytes from the file at a specific position.
+   *
+   * @param buffer - The buffer to read bytes into
+   * @param offset - The offset in the buffer to start writing at
+   * @param length - The number of bytes to read
+   * @param position - The position in the file to start reading from
+   * @returns The number of bytes actually read (may be less than length at EOF)
+   */
+  read(buffer: Uint8Array, offset: number, length: number, position: number): Promise<number>;
+
   chmod?(mode: number): Promise<void>;
   chown?(uid: number, gid: number): Promise<void>;
 }
