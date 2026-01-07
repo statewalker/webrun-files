@@ -1,9 +1,9 @@
 {
-  "name": "@statewalker/webrun-files",
+  "name": "@statewalker/webrun-files-mem",
   "version": "0.6.0",
   "private": false,
   "type": "module",
-  "description": "FilesApi interface and utilities for cross-platform filesystem abstraction",
+  "description": "In-memory FilesApi implementation",
   "homepage": "https://github.com/statewalker/webrun-files",
   "author": {
     "name": "Mikhail Kotelnikov",
@@ -30,13 +30,19 @@
   ],
   "scripts": {
     "build": "rimraf dist && rolldown -c && tsc --emitDeclarationOnly --declaration",
-    "lint": "biome lint src"
+    "test": "vitest run",
+    "lint": "biome lint src tests"
+  },
+  "dependencies": {
+    "@statewalker/webrun-files": "workspace:*"
   },
   "devDependencies": {
+    "@statewalker/webrun-files-tests": "workspace:*",
     "@types/node": "catalog:",
     "rimraf": "catalog:",
     "rolldown": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   },
   "sideEffects": false,
   "publishConfig": {

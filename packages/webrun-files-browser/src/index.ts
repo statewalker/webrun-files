@@ -2,7 +2,6 @@
  * webrun-files-browser - Browser File System Access API implementation
  */
 
-export { BrowserFileHandle, type BrowserFileHandleOptions } from "./browser-file-handle.js";
 export {
   BrowserFilesApi,
   type BrowserFilesApiOptions,

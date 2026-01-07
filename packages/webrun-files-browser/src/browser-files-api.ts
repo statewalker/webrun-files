@@ -1,20 +1,18 @@
 /**
- * Browser implementation of IFilesApi using the File System Access API.
+ * Browser implementation of FilesApi using the File System Access API.
  *
  * Provides a filesystem-like interface over browser's FileSystemDirectoryHandle.
  * Works with directories obtained via showDirectoryPicker() or OPFS.
  */
 
 import type {
-  CopyOptions,
-  FileHandle,
   FileInfo,
-  FileRef,
-  IFilesApi,
+  FilesApi,
+  FileStats,
   ListOptions,
+  ReadOptions,
 } from "@statewalker/webrun-files";
-import { basename, dirname, joinPath, resolveFileRef } from "@statewalker/webrun-files";
-import { BrowserFileHandle } from "./browser-file-handle.js";
+import { basename, dirname, joinPath, normalizePath } from "@statewalker/webrun-files";
 
 export interface BrowserFilesApiOptions {
   /**
@@ -27,37 +25,17 @@ export interface BrowserFilesApiOptions {
 /**
  * Browser filesystem implementation using the File System Access API.
  *
- * Provides IFilesApi interface over browser's FileSystemDirectoryHandle.
+ * Provides FilesApi interface over browser's FileSystemDirectoryHandle.
  * This enables web applications to read/write files in user-selected directories
  * or the Origin Private File System (OPFS).
- *
- * Browser-specific considerations:
- * - Requires secure context (HTTPS) for showDirectoryPicker()
- * - User must grant permission before accessing files
- * - OPFS is sandboxed and doesn't require user permission after first access
- * - No native move operation; move is implemented as copy + delete
  */
-export class BrowserFilesApi implements IFilesApi {
+export class BrowserFilesApi implements FilesApi {
   private rootHandle: FileSystemDirectoryHandle;
 
-  /**
-   * Creates a BrowserFilesApi instance.
-   * @param options - Configuration with the root directory handle.
-   */
   constructor(options: BrowserFilesApiOptions) {
     this.rootHandle = options.rootHandle;
   }
 
-  /**
-   * Navigates to a directory handle by traversing path segments.
-   *
-   * The File System Access API requires traversing directories one at a time,
-   * so this method walks the path segments sequentially.
-   *
-   * @param path - Virtual path to the directory.
-   * @param options - If create is true, creates missing directories.
-   * @returns Directory handle or null if not found and create is false.
-   */
   private async getDirectoryHandle(
     path: string,
     options: { create?: boolean } = {},
@@ -76,21 +54,11 @@ export class BrowserFilesApi implements IFilesApi {
     return current;
   }
 
-  /**
-   * Gets a file handle from a path.
-   *
-   * Navigates to the parent directory first, then gets the file handle.
-   * This two-step process is required by the File System Access API.
-   *
-   * @param path - Virtual path to the file.
-   * @param options - If create is true, creates the file and parent directories.
-   * @returns File handle or null if not found and create is false.
-   */
   private async getFileHandle(
     path: string,
     options: { create?: boolean } = {},
   ): Promise<FileSystemFileHandle | null> {
-    const normalized = resolveFileRef(path);
+    const normalized = normalizePath(path);
     const parentPath = dirname(normalized);
     const fileName = basename(normalized);
 
@@ -104,20 +72,71 @@ export class BrowserFilesApi implements IFilesApi {
     }
   }
 
-  /**
-   * Lists entries in a directory.
-   *
-   * Uses FileSystemDirectoryHandle.entries() to iterate over directory contents.
-   * For files, fetches additional metadata (size, lastModified, type) from the File object.
-   *
-   * @inheritdoc
-   */
-  async *list(file: FileRef, options: ListOptions = {}): AsyncGenerator<FileInfo> {
-    const normalized = resolveFileRef(file);
+  async *read(path: string, options?: ReadOptions): AsyncIterable<Uint8Array> {
+    const fileHandle = await this.getFileHandle(path);
+    if (!fileHandle) return;
+
+    try {
+      const file = await fileHandle.getFile();
+      const start = options?.start ?? 0;
+      const length = options?.length;
+      const end = length !== undefined ? start + length : file.size;
+
+      if (start >= file.size) return;
+
+      const bufferSize = 8192;
+      let position = start;
+      const actualEnd = Math.min(end, file.size);
+
+      while (position < actualEnd) {
+        const remaining = actualEnd - position;
+        const toRead = Math.min(bufferSize, remaining);
+        const slice = file.slice(position, position + toRead);
+        const buffer = await slice.arrayBuffer();
+        yield new Uint8Array(buffer);
+        position += buffer.byteLength;
+      }
+    } catch {
+      return;
+    }
+  }
+
+  async write(
+    path: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  ): Promise<void> {
+    const normalized = normalizePath(path);
+    const parentPath = dirname(normalized);
+    const fileName = basename(normalized);
+
+    const parent = await this.getDirectoryHandle(parentPath, { create: true });
+    if (!parent) {
+      throw new Error(`Cannot create directory: ${parentPath}`);
+    }
+
+    const fileHandle = await parent.getFileHandle(fileName, { create: true });
+    const writable = await fileHandle.createWritable();
+
+    try {
+      for await (const chunk of content) {
+        await writable.write(chunk as Uint8Array<ArrayBuffer>);
+      }
+    } finally {
+      await writable.close();
+    }
+  }
+
+  async mkdir(path: string): Promise<void> {
+    const normalized = normalizePath(path);
+    await this.getDirectoryHandle(normalized, { create: true });
+  }
+
+  async *list(path: string, options?: ListOptions): AsyncIterable<FileInfo> {
+    const normalized = normalizePath(path);
     const dirHandle = await this.getDirectoryHandle(normalized);
     if (!dirHandle) return;
 
-    const { recursive = false } = options;
+    const recursive = options?.recursive ?? false;
 
     for await (const [name, handle] of dirHandle.entries()) {
       const entryPath = joinPath(normalized, name);
@@ -136,7 +155,6 @@ export class BrowserFilesApi implements IFilesApi {
           const file = await fileHandle.getFile();
           info.size = file.size;
           info.lastModified = file.lastModified;
-          info.type = file.type;
         } catch {
           // Ignore errors getting file metadata
         }
@@ -150,28 +168,12 @@ export class BrowserFilesApi implements IFilesApi {
     }
   }
 
-  /**
-   * Gets file or directory metadata.
-   *
-   * Tries to resolve the path as a file first, then as a directory.
-   * This order is used because files are more common than directories
-   * in typical filesystem operations.
-   *
-   * Note: Directories don't have lastModified in the File System Access API,
-   * so we return 0 for directory timestamps.
-   *
-   * @inheritdoc
-   */
-  async stats(file: FileRef): Promise<FileInfo | undefined> {
-    const normalized = resolveFileRef(file);
-    const fileName = basename(normalized);
+  async stats(path: string): Promise<FileStats | undefined> {
+    const normalized = normalizePath(path);
 
-    // Handle root directory
     if (normalized === "/") {
       return {
         kind: "directory",
-        name: "",
-        path: "/",
         lastModified: 0,
       };
     }
@@ -183,11 +185,8 @@ export class BrowserFilesApi implements IFilesApi {
         const f = await fileHandle.getFile();
         return {
           kind: "file",
-          name: fileName,
-          path: normalized,
           size: f.size,
           lastModified: f.lastModified,
-          type: f.type,
         };
       } catch {
         return undefined;
@@ -199,8 +198,6 @@ export class BrowserFilesApi implements IFilesApi {
     if (dirHandle) {
       return {
         kind: "directory",
-        name: fileName,
-        path: normalized,
         lastModified: 0,
       };
     }
@@ -208,16 +205,13 @@ export class BrowserFilesApi implements IFilesApi {
     return undefined;
   }
 
-  /**
-   * Removes a file or directory.
-   *
-   * Uses FileSystemDirectoryHandle.removeEntry() which requires operating
-   * from the parent directory. The recursive option handles directory deletion.
-   *
-   * @inheritdoc
-   */
-  async remove(file: FileRef): Promise<boolean> {
-    const normalized = resolveFileRef(file);
+  async exists(path: string): Promise<boolean> {
+    const stats = await this.stats(path);
+    return stats !== undefined;
+  }
+
+  async remove(path: string): Promise<boolean> {
+    const normalized = normalizePath(path);
     const parentPath = dirname(normalized);
     const name = basename(normalized);
 
@@ -232,86 +226,26 @@ export class BrowserFilesApi implements IFilesApi {
     }
   }
 
-  /**
-   * Opens a file for reading and writing.
-   *
-   * Creates the file and parent directories if they don't exist.
-   * Returns a BrowserFileHandle which wraps the FileSystemFileHandle
-   * and provides the IFilesApi FileHandle interface.
-   *
-   * @inheritdoc
-   */
-  async open(file: FileRef): Promise<FileHandle> {
-    const normalized = resolveFileRef(file);
-    const parentPath = dirname(normalized);
-    const fileName = basename(normalized);
-
-    // Ensure parent directory exists
-    const parent = await this.getDirectoryHandle(parentPath, { create: true });
-    if (!parent) {
-      throw new Error(`Cannot create directory: ${parentPath}`);
-    }
-
-    // Get or create file
-    const fileHandle = await parent.getFileHandle(fileName, { create: true });
-    const f = await fileHandle.getFile();
-
-    return new BrowserFileHandle({ fileHandle, initialFile: f });
-  }
-
-  /**
-   * Creates a directory and all parent directories.
-   *
-   * Uses getDirectoryHandle with create: true, which creates all
-   * directories in the path that don't exist.
-   *
-   * @inheritdoc
-   */
-  async mkdir(file: FileRef): Promise<void> {
-    const normalized = resolveFileRef(file);
-    await this.getDirectoryHandle(normalized, { create: true });
-  }
-
-  /**
-   * Moves a file or directory.
-   *
-   * The File System Access API doesn't have a native move operation,
-   * so this is implemented as copy + delete. This means moves are not
-   * atomic and may leave partial results if interrupted.
-   *
-   * @inheritdoc
-   */
-  async move(source: FileRef, target: FileRef): Promise<boolean> {
+  async move(source: string, target: string): Promise<boolean> {
     const copied = await this.copy(source, target);
     if (!copied) return false;
     return this.remove(source);
   }
 
-  /**
-   * Copies a file or directory.
-   *
-   * Uses File.stream() and FileSystemWritableFileStream for efficient
-   * streaming copy without loading the entire file into memory.
-   * For directories, recursively copies all files.
-   *
-   * @inheritdoc
-   */
-  async copy(source: FileRef, target: FileRef, options: CopyOptions = {}): Promise<boolean> {
-    const sourcePath = resolveFileRef(source);
-    const targetPath = resolveFileRef(target);
-    const { recursive = true } = options;
+  async copy(source: string, target: string): Promise<boolean> {
+    const sourcePath = normalizePath(source);
+    const targetPath = normalizePath(target);
 
-    const sourceInfo = await this.stats(source);
-    if (!sourceInfo) return false;
+    const sourceStats = await this.stats(source);
+    if (!sourceStats) return false;
 
-    if (sourceInfo.kind === "file") {
+    if (sourceStats.kind === "file") {
       // Copy single file
       const sourceHandle = await this.getFileHandle(sourcePath);
       if (!sourceHandle) return false;
 
       const sourceFile = await sourceHandle.getFile();
 
-      // Create target file
       const targetParentPath = dirname(targetPath);
       const targetFileName = basename(targetPath);
 
@@ -322,7 +256,6 @@ export class BrowserFilesApi implements IFilesApi {
       const writable = await targetHandle.createWritable();
 
       try {
-        // Stream the file content
         const reader = sourceFile.stream().getReader();
         while (true) {
           const { done, value } = await reader.read();
@@ -336,13 +269,9 @@ export class BrowserFilesApi implements IFilesApi {
       return true;
     }
 
-    // Copy directory
-    if (!recursive) return false;
-
-    // Create target directory
+    // Copy directory recursively
     await this.getDirectoryHandle(targetPath, { create: true });
 
-    // Copy all entries recursively
     for await (const entry of this.list(source, { recursive: true })) {
       if (entry.kind === "directory") continue;
 
@@ -383,7 +312,6 @@ export class BrowserFilesApi implements IFilesApi {
 
 /**
  * Gets a BrowserFilesApi instance backed by the Origin Private File System (OPFS).
- * OPFS provides a sandboxed filesystem that persists between sessions.
  */
 export async function getOPFSFilesApi(): Promise<BrowserFilesApi> {
   const rootHandle = await navigator.storage.getDirectory();
