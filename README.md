@@ -40,11 +40,19 @@ for await (const entry of files.list('/')) {
 
 ## Packages
 
-This repository is organized as a monorepo containing two packages that work together.
+This repository is organized as a monorepo containing four packages that work together.
 
 ### @statewalker/webrun-files
 
 The core library lives here. It provides the `IFilesApi` interface that defines the contract for all file system operations, plus two ready-to-use implementations. The `MemFilesApi` keeps everything in memory, perfect for testing or browser applications. The `NodeFilesApi` wraps the standard Node.js filesystem, giving you real disk access when you need it. The package also includes `FilesApi`, a convenience wrapper that adds helpful methods on top of any backend implementation.
+
+### @statewalker/webrun-files-browser
+
+Browser implementation using the [File System Access API](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API). Enables web applications to read and write files to user-selected directories via `showDirectoryPicker()` or the Origin Private File System (OPFS). Works in Chrome, Edge, and other Chromium-based browsers.
+
+### @statewalker/webrun-files-s3
+
+S3-backed implementation for cloud storage. Works with Amazon S3 and S3-compatible services (MinIO, DigitalOcean Spaces, Backblaze B2, Cloudflare R2, etc.). Uses streaming multipart uploads for large files and server-side copy for efficient copy/move operations.
 
 ### @statewalker/webrun-files-tests
 

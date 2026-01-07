@@ -33,11 +33,15 @@ For Node.js applications that need to work with the actual filesystem, switch to
 
 ```typescript
 import { FilesApi, NodeFilesApi } from '@statewalker/webrun-files';
+import * as fs from 'node:fs/promises';
 
-const files = new FilesApi(new NodeFilesApi('/path/to/root'));
+const files = new FilesApi(new NodeFilesApi({
+  fs,
+  rootDir: '/path/to/root'  // optional: sandbox all operations to this directory
+}));
 ```
 
-The `NodeFilesApi` constructor accepts an optional root directory path. When provided, all file operations will be relative to this directory, effectively sandboxing the API.
+The `NodeFilesApi` constructor requires an options object with the `fs` module (allowing you to inject the module for testing). The optional `rootDir` makes all file operations relative to this directory, effectively sandboxing the API.
 
 ## Working with Files
 
@@ -126,10 +130,15 @@ const handle = await files.open('/data.bin');
 // Get the current file size
 console.log(`File is ${handle.size} bytes`);
 
-// Read a specific range
+// Read a specific range as a stream
 for await (const chunk of handle.createReadStream({ start: 0, end: 100 })) {
   // First 100 bytes
 }
+
+// Random access read at a specific position
+const buffer = new Uint8Array(100);
+const bytesRead = await handle.read(buffer, 0, 100, 500);  // Read 100 bytes starting at position 500
+console.log(`Read ${bytesRead} bytes`);
 
 // Write at a specific position
 await handle.createWriteStream([newData], { start: 50 });
@@ -167,12 +176,13 @@ import type {
   IFilesApi,        // Core interface for backends
   FilesApi,         // Wrapper class with convenience methods
   FileInfo,         // Metadata returned by stats() and list()
-  FileHandle,       // Low-level file operations
+  FileHandle,       // Low-level file operations (read, write, append)
   FileRef,          // string | { path: string }
   FileKind,         // "file" | "directory"
   BinaryStream,     // AsyncIterable<Uint8Array> | Iterable<Uint8Array>
   ListOptions,      // { recursive?: boolean }
   CopyOptions,      // { recursive?: boolean }
+  AppendOptions,    // { signal?: AbortSignal }
   ReadStreamOptions,  // { start?: number, end?: number, signal?: AbortSignal }
   WriteStreamOptions, // { start?: number, signal?: AbortSignal }
 } from '@statewalker/webrun-files';
@@ -180,17 +190,22 @@ import type {
 
 ## Utility Functions
 
-The package includes helpful utilities for working with paths and streams:
+The package includes helpful utilities for working with paths, streams, and file info:
 
 ```typescript
 import {
+  // Path utilities
   normalizePath,    // Clean up path strings
   resolveFileRef,   // Convert FileRef to normalized path
+  toPath,           // Extract path string from FileRef
   joinPath,         // Join path segments
   dirname,          // Get directory portion of path
   basename,         // Get filename portion
   extname,          // Get file extension
-  collectGenerator, // Collect async iterable into array
+
+  // File info utilities
+  isFile,           // Check if FileInfo is a file
+  isDirectory,      // Check if FileInfo is a directory
 } from '@statewalker/webrun-files';
 ```
 

@@ -21,13 +21,15 @@ export type {
   ReadStreamOptions,
   WriteStreamOptions,
 } from "./types.js";
+// Stream utilities
 export {
   collectGenerator,
   toAsyncIterable,
   toBinaryAsyncIterable,
 } from "./utils/collect-stream.js";
+// File info utilities
 export { isDirectory, isFile } from "./utils/file-info-utils.js";
-// Utilities
+// Path utilities
 export {
   normalizePath,
   resolveFileRef,

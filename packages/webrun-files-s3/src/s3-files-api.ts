@@ -50,16 +50,35 @@ export interface S3FilesApiOptions {
   multipartPartSize?: number;
 }
 
+/**
+ * S3 filesystem implementation of IFilesApi.
+ *
+ * Provides a filesystem-like interface over S3 object storage.
+ * Works with AWS S3 and S3-compatible services (MinIO, Backblaze B2,
+ * Cloudflare R2, DigitalOcean Spaces, etc.).
+ *
+ * Key design decisions:
+ * - Directories are virtual (simulated using key prefixes with "/" delimiter)
+ * - The prefix option allows scoping all operations to a "subdirectory"
+ * - Large files use multipart uploads for memory efficiency
+ * - Server-side copy is used for copy/move operations (no data transfer through client)
+ */
 export class S3FilesApi implements IFilesApi {
   private client: S3Client;
   private bucket: string;
+  /** Key prefix that acts as the virtual root directory. */
   private prefix: string;
+  /** Part size for multipart uploads (5MB minimum required by S3). */
   private multipartPartSize: number;
 
+  /**
+   * Creates an S3FilesApi instance.
+   * @param options - Configuration including S3 client, bucket, and optional prefix.
+   */
   constructor(options: S3FilesApiOptions) {
     this.client = options.client;
     this.bucket = options.bucket;
-    // Normalize prefix: remove leading/trailing slashes
+    // Normalize prefix: remove leading/trailing slashes for consistent key construction
     this.prefix = (options.prefix ?? "").replace(/^\/+|\/+$/g, "");
     this.multipartPartSize = options.multipartPartSize ?? 5 * 1024 * 1024;
   }
@@ -97,7 +116,12 @@ export class S3FilesApi implements IFilesApi {
    * Lists objects in a virtual directory.
    *
    * Uses S3's delimiter feature to simulate directory listing.
-   * CommonPrefixes represent subdirectories.
+   * When not recursive, S3 returns CommonPrefixes for subdirectories
+   * (objects that share a common prefix up to the next "/").
+   *
+   * Handles pagination automatically using ContinuationToken.
+   *
+   * @inheritdoc
    */
   async *list(file: FileRef, options: ListOptions = {}): AsyncGenerator<FileInfo> {
     const { recursive = false } = options;
@@ -170,6 +194,15 @@ export class S3FilesApi implements IFilesApi {
 
   /**
    * Gets object metadata using HEAD request.
+   *
+   * First tries to get the object as a file (HEAD request).
+   * If not found, checks if it's a virtual directory by listing
+   * objects with that prefix.
+   *
+   * Note: S3 doesn't store directory metadata, so directories
+   * always return lastModified: 0.
+   *
+   * @inheritdoc
    */
   async stats(file: FileRef): Promise<FileInfo | undefined> {
     const normalized = resolveFileRef(file);
@@ -236,6 +269,14 @@ export class S3FilesApi implements IFilesApi {
 
   /**
    * Deletes an object or all objects under a prefix (directory).
+   *
+   * First tries to delete as a single object. If not found, lists
+   * all objects under the prefix and deletes them one by one.
+   *
+   * Uses individual DeleteObject calls instead of DeleteObjects batch
+   * for better compatibility with S3-compatible services like MinIO.
+   *
+   * @inheritdoc
    */
   async remove(file: FileRef): Promise<boolean> {
     const key = this.resolveKey(file);
@@ -311,7 +352,15 @@ export class S3FilesApi implements IFilesApi {
 
   /**
    * Opens an S3 object for random access.
-   * Creates the object if it doesn't exist.
+   *
+   * Returns an S3FileHandle that provides read/write operations.
+   * The object is created lazily on first write if it doesn't exist.
+   *
+   * Note: Unlike traditional filesystems, S3 objects are immutable.
+   * Writes require re-uploading the entire object, though the S3FileHandle
+   * uses UploadPartCopy to preserve existing content efficiently.
+   *
+   * @inheritdoc
    */
   async open(file: FileRef): Promise<FileHandle> {
     const key = this.resolveKey(file);
@@ -345,7 +394,13 @@ export class S3FilesApi implements IFilesApi {
   }
 
   /**
-   * Moves an object using Copy + Delete.
+   * Moves an object using server-side Copy + Delete.
+   *
+   * S3 doesn't have a native move operation, so this is implemented
+   * as copy + delete. The copy uses S3's server-side copy which doesn't
+   * transfer data through the client.
+   *
+   * @inheritdoc
    */
   async move(source: FileRef, target: FileRef): Promise<boolean> {
     const copied = await this.copy(source, target);
@@ -356,6 +411,15 @@ export class S3FilesApi implements IFilesApi {
 
   /**
    * Copies an object or directory using S3 CopyObject.
+   *
+   * Uses S3's server-side copy which copies data directly within S3
+   * without transferring through the client. This is efficient for
+   * large files and directories.
+   *
+   * For directories, copies all objects with the source prefix to
+   * the target prefix.
+   *
+   * @inheritdoc
    */
   async copy(source: FileRef, target: FileRef, options: CopyOptions = {}): Promise<boolean> {
     const sourceKey = this.resolveKey(source);
@@ -425,10 +489,14 @@ export class S3FilesApi implements IFilesApi {
   /**
    * Creates a directory marker in S3.
    *
-   * S3 doesn't have real directories, but some tools expect
-   * a zero-byte object with trailing slash as a directory marker.
-   * However, for our purposes we don't actually need to create markers
-   * since directories are implied by files within them.
+   * S3 doesn't have real directories, but some tools (AWS Console,
+   * s3cmd, etc.) expect a zero-byte object with trailing slash as
+   * a directory marker. We create this marker for compatibility.
+   *
+   * Note: Directories also exist implicitly when files are created
+   * under them, so mkdir() is optional for most use cases.
+   *
+   * @inheritdoc
    */
   async mkdir(file: FileRef): Promise<void> {
     // For S3, directories don't really need to be created explicitly
