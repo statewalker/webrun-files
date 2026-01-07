@@ -13,7 +13,6 @@ import type {
   ReadStreamOptions,
   WriteStreamOptions,
 } from "@statewalker/webrun-files";
-import { toBinaryAsyncIterable } from "@statewalker/webrun-files";
 
 export interface BrowserFileHandleOptions {
   fileHandle: FileSystemFileHandle;
@@ -57,7 +56,7 @@ export class BrowserFileHandle implements FileHandle {
       // Seek to end of file
       await writable.seek(this._size);
 
-      for await (const chunk of toBinaryAsyncIterable(data)) {
+      for await (const chunk of data) {
         if (signal?.aborted) {
           throw new Error("Operation aborted");
         }
@@ -142,7 +141,7 @@ export class BrowserFileHandle implements FileHandle {
         await writable.truncate(start);
       }
 
-      for await (const chunk of toBinaryAsyncIterable(data)) {
+      for await (const chunk of data) {
         if (signal?.aborted) {
           throw new Error("Operation aborted");
         }

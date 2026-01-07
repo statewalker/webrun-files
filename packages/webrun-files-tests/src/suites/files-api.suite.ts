@@ -988,17 +988,3 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
     });
   });
 }
-
-/**
- * Legacy function for backwards compatibility
- * @deprecated Use createFilesApiTests instead
- */
-export function runFilesApiTestSuite(options: TestSuiteOptions): void {
-  createFilesApiTests(options.name, async () => {
-    const api = await options.createApi();
-    return {
-      api,
-      cleanup: options.cleanup ? () => options.cleanup?.(api) : undefined,
-    };
-  });
-}

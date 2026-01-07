@@ -57,7 +57,6 @@ import {
   toBytes,          // Convert string to Uint8Array
   fromBytes,        // Convert Uint8Array to string
   collectStream,    // Gather async stream into single Uint8Array
-  collectGenerator, // Collect async iterable into array
   randomBytes,      // Generate random binary data
   patternContent,   // Generate predictable byte patterns
   allBytesContent,  // Generate Uint8Array with all 256 byte values

@@ -1,5 +1,14 @@
 /**
- * Node.js implementation of IFilesApi
+ * Node.js implementation of IFilesApi.
+ *
+ * Wraps the Node.js fs/promises module to provide IFilesApi compatibility.
+ * This allows seamless integration with Node.js applications while maintaining
+ * the same API used by browser and cloud storage implementations.
+ *
+ * Key features:
+ * - Uses native fs operations for optimal performance
+ * - Supports optional rootDir prefix to sandbox operations to a subdirectory
+ * - Automatic parent directory creation when opening files for writing
  */
 
 import type * as NodeFS from "node:fs/promises";
@@ -16,50 +25,93 @@ import type {
   ReadStreamOptions,
   WriteStreamOptions,
 } from "../types.js";
-import { toBinaryAsyncIterable } from "../utils/collect-stream.js";
 import { basename, dirname, joinPath, resolveFileRef } from "../utils/index.js";
 
+/**
+ * Configuration options for NodeFilesApi.
+ */
 interface NodeFilesApiOptions {
+  /**
+   * The Node.js fs/promises module. Passed explicitly to allow mocking in tests
+   * and to support different Node.js module resolution strategies.
+   */
   fs: typeof NodeFS;
+  /**
+   * Optional root directory path. When set, all operations are relative to this path.
+   * Useful for sandboxing file operations to a specific directory.
+   * @example "/var/app/data" - all paths become relative to this directory
+   */
   rootDir?: string;
 }
 
 /**
- * Wraps Node.js FileHandle to implement our FileHandle interface.
+ * Adapts Node.js FileHandle to the IFilesApi FileHandle interface.
+ *
+ * Wraps the native fs.FileHandle and translates between the Node.js API
+ * (which uses separate parameters) and our interface (which uses options objects).
  */
 class NodeFileHandleWrapper implements FileHandle {
+  /**
+   * Creates a wrapper around a Node.js file handle.
+   * @param handle - The native Node.js file handle.
+   * @param _size - Initial file size (updated after write operations).
+   */
   constructor(
     private handle: NodeFileHandle,
     private _size: number,
   ) {}
 
+  /** @inheritdoc */
   get size(): number {
     return this._size;
   }
 
+  /**
+   * Closes the file handle and releases the file descriptor.
+   * Important: Always call this to avoid file descriptor leaks.
+   */
   async close(): Promise<void> {
     await this.handle.close();
   }
 
+  /**
+   * Appends data to the end of the file.
+   *
+   * Uses positional writes at the current end of file.
+   * Note: We can't use Node.js appendFile() because it replaces content
+   * when the file is opened with r+ mode.
+   *
+   * @inheritdoc
+   */
   async appendFile(data: BinaryStream, options: AppendOptions = {}): Promise<number> {
+    let position = this._size;
     let bytesWritten = 0;
-    const asyncData = toBinaryAsyncIterable(data);
 
-    for await (const chunk of asyncData) {
+    for await (const chunk of data) {
       if (options.signal?.aborted) {
         throw new Error("Operation aborted");
       }
-      await this.handle.appendFile(chunk);
-      bytesWritten += chunk.length;
+      const { bytesWritten: written } = await this.handle.write(chunk, 0, chunk.length, position);
+      position += written;
+      bytesWritten += written;
     }
 
-    // Update size
+    // Update cached size from actual file stats
     const stat = await this.handle.stat();
     this._size = stat.size;
 
     return bytesWritten;
   }
 
+  /**
+   * Streams file content in 8KB chunks.
+   *
+   * Uses positional reads to avoid the overhead of seeking and to support
+   * concurrent access patterns. The chunk size balances memory usage and
+   * syscall overhead.
+   *
+   * @inheritdoc
+   */
   async *createReadStream(options: ReadStreamOptions = {}): AsyncGenerator<Uint8Array> {
     const { start = 0, end = Infinity, signal } = options;
     const bufferSize = 8192;
@@ -84,17 +136,23 @@ class NodeFileHandleWrapper implements FileHandle {
     }
   }
 
+  /**
+   * Writes data to the file starting at the specified position.
+   *
+   * Truncates the file at the start position before writing, which removes
+   * any content after start. Content before start is preserved.
+   *
+   * @inheritdoc
+   */
   async createWriteStream(data: BinaryStream, options: WriteStreamOptions = {}): Promise<number> {
     const { start = 0, signal } = options;
     let position = start;
     let bytesWritten = 0;
 
-    const asyncData = toBinaryAsyncIterable(data);
-
-    // Truncate file at start position
+    // Truncate file at start position to remove content after start
     await this.handle.truncate(start);
 
-    for await (const chunk of asyncData) {
+    for await (const chunk of data) {
       if (signal?.aborted) {
         throw new Error("Operation aborted");
       }
@@ -104,21 +162,37 @@ class NodeFileHandleWrapper implements FileHandle {
       bytesWritten += written;
     }
 
-    // Update size
+    // Update cached size from actual file stats
     const stat = await this.handle.stat();
     this._size = stat.size;
 
     return bytesWritten;
   }
 
+  /**
+   * Changes file permissions.
+   * Delegates directly to Node.js handle.chmod().
+   */
   async chmod(mode: number): Promise<void> {
     await this.handle.chmod(mode);
   }
 
+  /**
+   * Changes file ownership.
+   * Delegates directly to Node.js handle.chown().
+   */
   async chown(uid: number, gid: number): Promise<void> {
     await this.handle.chown(uid, gid);
   }
 
+  /**
+   * Reads bytes from the file at a specific position.
+   *
+   * Uses positional read which doesn't affect the file's seek position,
+   * allowing safe concurrent reads from different positions.
+   *
+   * @inheritdoc
+   */
   async read(
     buffer: Uint8Array,
     offset: number,
@@ -135,20 +209,44 @@ class NodeFileHandleWrapper implements FileHandle {
   }
 }
 
+/**
+ * Node.js filesystem implementation of IFilesApi.
+ *
+ * Wraps Node.js fs/promises to provide the IFilesApi interface.
+ * All paths are virtual (starting with "/") and mapped to real filesystem
+ * paths using the configured rootDir.
+ */
 export class NodeFilesApi implements IFilesApi {
   private fs: typeof NodeFS;
+  /** Root directory path prepended to all virtual paths. */
   private rootDir: string;
 
+  /**
+   * Creates a new NodeFilesApi instance.
+   * @param options - Configuration options including fs module and optional root directory.
+   */
   constructor(options: NodeFilesApiOptions) {
     this.fs = options.fs;
     this.rootDir = options.rootDir ?? "";
   }
 
+  /**
+   * Converts a virtual path (e.g., "/docs/file.txt") to a real filesystem path.
+   * Prepends the rootDir to create the actual path used for fs operations.
+   */
   private resolvePath(file: FileRef): string {
     const normalized = resolveFileRef(file);
     return this.rootDir + normalized;
   }
 
+  /**
+   * Lists entries in a directory using Node.js readdir.
+   *
+   * Uses withFileTypes option for efficiency (avoids extra stat calls).
+   * Silently returns empty results for non-existent directories.
+   *
+   * @inheritdoc
+   */
   async *list(file: FileRef, options: ListOptions = {}): AsyncGenerator<FileInfo> {
     const dirPath = this.resolvePath(file);
     const { recursive = false } = options;
@@ -183,10 +281,17 @@ export class NodeFilesApi implements IFilesApi {
         }
       }
     } catch {
-      // Directory doesn't exist or isn't readable
+      // Directory doesn't exist or isn't readable - return empty results
     }
   }
 
+  /**
+   * Gets file or directory metadata using Node.js stat.
+   *
+   * Returns undefined for non-existent paths rather than throwing.
+   *
+   * @inheritdoc
+   */
   async stats(file: FileRef): Promise<FileInfo | undefined> {
     const fullPath = this.resolvePath(file);
     const normalized = resolveFileRef(file);
@@ -205,6 +310,14 @@ export class NodeFilesApi implements IFilesApi {
     }
   }
 
+  /**
+   * Removes a file or directory.
+   *
+   * Uses fs.rm with recursive option for directories to remove all contents.
+   * Uses fs.unlink for files.
+   *
+   * @inheritdoc
+   */
   async remove(file: FileRef): Promise<boolean> {
     const fullPath = this.resolvePath(file);
 
@@ -221,21 +334,51 @@ export class NodeFilesApi implements IFilesApi {
     }
   }
 
+  /**
+   * Opens a file for reading and writing.
+   *
+   * Uses "r+" mode for existing files (read/write) or creates the file
+   * if it doesn't exist. Parent directories are created automatically.
+   *
+   * Note: We can't use "a+" because it doesn't allow truncation.
+   * We can't use "w+" because it truncates existing files.
+   * So we try "r+" first, and fall back to "w+" for new files.
+   *
+   * @inheritdoc
+   */
   async open(file: FileRef): Promise<FileHandle> {
     const fullPath = this.resolvePath(file);
     const normalized = resolveFileRef(file);
 
-    // Ensure parent directory exists
+    // Ensure parent directory exists before opening file
     const dir = this.rootDir + dirname(normalized);
     await this.fs.mkdir(dir, { recursive: true });
 
-    // Open file with read/write access, create if doesn't exist
-    const handle = await this.fs.open(fullPath, "a+");
-    const stat = await handle.stat();
+    let handle: NodeFileHandle;
+    let size: number;
 
-    return new NodeFileHandleWrapper(handle, stat.size);
+    try {
+      // Try to open existing file with read/write access
+      handle = await this.fs.open(fullPath, "r+");
+      const stat = await handle.stat();
+      size = stat.size;
+    } catch {
+      // File doesn't exist, create it with read/write access
+      handle = await this.fs.open(fullPath, "w+");
+      size = 0;
+    }
+
+    return new NodeFileHandleWrapper(handle, size);
   }
 
+  /**
+   * Moves a file or directory using Node.js fs.rename.
+   *
+   * This is an atomic operation on the same filesystem.
+   * Ensures target parent directory exists before moving.
+   *
+   * @inheritdoc
+   */
   async move(source: FileRef, target: FileRef): Promise<boolean> {
     const sourcePath = this.resolvePath(source);
     const targetPath = this.resolvePath(target);
@@ -252,6 +395,14 @@ export class NodeFilesApi implements IFilesApi {
     }
   }
 
+  /**
+   * Copies a file or directory using Node.js fs.cp.
+   *
+   * Uses native fs.cp for efficient copying with recursive support.
+   * Ensures target parent directory exists before copying.
+   *
+   * @inheritdoc
+   */
   async copy(source: FileRef, target: FileRef, options: CopyOptions = {}): Promise<boolean> {
     const sourcePath = this.resolvePath(source);
     const targetPath = this.resolvePath(target);
@@ -269,6 +420,14 @@ export class NodeFilesApi implements IFilesApi {
     }
   }
 
+  /**
+   * Creates a directory and all parent directories.
+   *
+   * Uses fs.mkdir with recursive option to create all missing directories
+   * in the path.
+   *
+   * @inheritdoc
+   */
   async mkdir(file: FileRef): Promise<void> {
     const fullPath = this.resolvePath(file);
     await this.fs.mkdir(fullPath, { recursive: true });

@@ -1,5 +1,15 @@
 /**
- * In-memory implementation of IFilesApi for testing
+ * In-memory implementation of IFilesApi.
+ *
+ * MemFilesApi provides a complete filesystem simulation that stores all data
+ * in memory. Primary use cases:
+ *
+ * - **Unit testing**: Fast, isolated tests without disk I/O or cleanup.
+ * - **Development**: Quick prototyping without setting up real storage.
+ * - **Sandboxing**: Temporary filesystem that disappears when the process ends.
+ *
+ * The implementation mirrors real filesystem behavior as closely as possible
+ * to ensure tests using MemFilesApi remain valid for other implementations.
  */
 
 import type {
@@ -13,28 +23,51 @@ import type {
   ReadStreamOptions,
   WriteStreamOptions,
 } from "../types.js";
-import { toBinaryAsyncIterable } from "../utils/collect-stream.js";
 import { basename, joinPath, resolveFileRef } from "../utils/index.js";
 
+/**
+ * Internal representation of a file entry in the memory store.
+ */
 interface FileEntry {
   kind: "file";
+  /** File content stored as a single contiguous buffer. */
   content: Uint8Array;
+  /** Last modification timestamp in milliseconds. */
   lastModified: number;
 }
 
+/**
+ * Internal representation of an explicitly created directory.
+ * Note: Directories can also exist implicitly when files have nested paths.
+ */
 interface DirEntry {
   kind: "directory";
+  /** Creation/modification timestamp in milliseconds. */
   lastModified: number;
 }
 
+/** Union of all entry types stored in the memory filesystem. */
 type Entry = FileEntry | DirEntry;
 
+/**
+ * FileHandle implementation for in-memory files.
+ *
+ * Provides random access to file content stored in the memory map.
+ * All operations are synchronous internally but wrapped in Promises
+ * to match the FileHandle interface.
+ */
 class MemFileHandle implements FileHandle {
+  /**
+   * Creates a handle for accessing a file in the memory store.
+   * @param store - Reference to the MemFilesApi's internal storage map.
+   * @param path - Normalized path to the file.
+   */
   constructor(
     private store: Map<string, Entry>,
     private path: string,
   ) {}
 
+  /** @inheritdoc */
   get size(): number {
     const entry = this.store.get(this.path);
     if (entry?.kind === "file") {
@@ -43,6 +76,10 @@ class MemFileHandle implements FileHandle {
     return 0;
   }
 
+  /**
+   * Gets the file entry, creating an empty file if it doesn't exist.
+   * This lazy creation allows opening files for writing before they exist.
+   */
   private getOrCreateFile(): FileEntry {
     let entry = this.store.get(this.path);
     if (!entry || entry.kind !== "file") {
@@ -56,16 +93,25 @@ class MemFileHandle implements FileHandle {
     return entry;
   }
 
+  /**
+   * Closes the file handle.
+   * No-op for in-memory files since there are no OS resources to release.
+   */
   async close(): Promise<void> {
     // No-op for memory implementation
   }
 
+  /**
+   * Appends data to the end of the file.
+   * Creates the file if it doesn't exist.
+   * @inheritdoc
+   */
   async appendFile(data: BinaryStream, options: AppendOptions = {}): Promise<number> {
     const file = this.getOrCreateFile();
     const chunks: Uint8Array[] = [file.content];
     let bytesWritten = 0;
 
-    for await (const chunk of toBinaryAsyncIterable(data)) {
+    for await (const chunk of data) {
       if (options.signal?.aborted) {
         throw new Error("Operation aborted");
       }
@@ -73,7 +119,7 @@ class MemFileHandle implements FileHandle {
       bytesWritten += chunk.length;
     }
 
-    // Merge all chunks
+    // Merge all chunks into a single buffer
     const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
     const merged = new Uint8Array(totalLength);
     let offset = 0;
@@ -88,6 +134,15 @@ class MemFileHandle implements FileHandle {
     return bytesWritten;
   }
 
+  /**
+   * Streams file content in chunks.
+   *
+   * Uses 8KB chunks to simulate streaming behavior even though the entire
+   * content is already in memory. This ensures consistent behavior with
+   * real filesystem implementations where chunked reading is necessary.
+   *
+   * @inheritdoc
+   */
   async *createReadStream(options: ReadStreamOptions = {}): AsyncGenerator<Uint8Array> {
     const entry = this.store.get(this.path);
     if (!entry || entry.kind !== "file") return;
@@ -112,6 +167,14 @@ class MemFileHandle implements FileHandle {
     }
   }
 
+  /**
+   * Writes data to the file starting at the specified position.
+   *
+   * Preserves content before the start position and truncates content after.
+   * Pads with zeros if start is beyond current file length.
+   *
+   * @inheritdoc
+   */
   async createWriteStream(data: BinaryStream, options: WriteStreamOptions = {}): Promise<number> {
     const { start = 0, signal } = options;
     const file = this.getOrCreateFile();
@@ -129,7 +192,7 @@ class MemFileHandle implements FileHandle {
       chunks.push(new Uint8Array(start - file.content.length));
     }
 
-    for await (const chunk of toBinaryAsyncIterable(data)) {
+    for await (const chunk of data) {
       if (signal?.aborted) {
         throw new Error("Operation aborted");
       }
@@ -137,7 +200,7 @@ class MemFileHandle implements FileHandle {
       bytesWritten += chunk.length;
     }
 
-    // Merge all chunks
+    // Merge all chunks into a single buffer
     const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
     const merged = new Uint8Array(totalLength);
     let offset = 0;
@@ -152,6 +215,14 @@ class MemFileHandle implements FileHandle {
     return bytesWritten;
   }
 
+  /**
+   * Reads bytes from the file at a specific position.
+   *
+   * Copies data from the in-memory buffer into the provided buffer.
+   * Returns 0 if the file doesn't exist or position is past EOF.
+   *
+   * @inheritdoc
+   */
   async read(
     buffer: Uint8Array,
     offset: number,
@@ -175,9 +246,33 @@ class MemFileHandle implements FileHandle {
   }
 }
 
+/**
+ * In-memory filesystem implementation.
+ *
+ * Uses a Map to store file and directory entries keyed by their normalized paths.
+ * The root directory "/" always exists implicitly.
+ *
+ * Directory handling:
+ * - Directories can be created explicitly via mkdir() or implicitly by creating files.
+ * - When listing, implicit directories (inferred from file paths) are included.
+ * - The list() method handles both explicit DirEntry and implicit directories.
+ */
 export class MemFilesApi implements IFilesApi {
+  /**
+   * Internal storage mapping normalized paths to their entries.
+   * Keys are absolute paths like "/foo/bar.txt".
+   */
   private store = new Map<string, Entry>();
 
+  /**
+   * Lists entries in a directory.
+   *
+   * Handles both explicit entries stored in the map and implicit directories
+   * that are inferred from nested file paths. For example, if "/a/b/c.txt" exists,
+   * listing "/" will show directory "a" even if no DirEntry exists for "/a".
+   *
+   * @inheritdoc
+   */
   async *list(file: FileRef, options: ListOptions = {}): AsyncGenerator<FileInfo> {
     const normalized = resolveFileRef(file);
     const prefix = normalized === "/" ? "/" : `${normalized}/`;
@@ -247,6 +342,14 @@ export class MemFilesApi implements IFilesApi {
     }
   }
 
+  /**
+   * Gets metadata about a file or directory.
+   *
+   * Returns info for explicit entries, the implicit root directory,
+   * and implicit directories inferred from nested file paths.
+   *
+   * @inheritdoc
+   */
   async stats(file: FileRef): Promise<FileInfo | undefined> {
     const normalized = resolveFileRef(file);
 
@@ -264,7 +367,7 @@ export class MemFilesApi implements IFilesApi {
       return info;
     }
 
-    // Check if it's an implicit directory (root always exists)
+    // Root directory always exists implicitly
     if (normalized === "/") {
       return {
         kind: "directory",
@@ -274,6 +377,7 @@ export class MemFilesApi implements IFilesApi {
       };
     }
 
+    // Check if it's an implicit directory (has files under it)
     const prefix = `${normalized}/`;
     for (const path of this.store.keys()) {
       if (path.startsWith(prefix)) {
@@ -289,6 +393,15 @@ export class MemFilesApi implements IFilesApi {
     return undefined;
   }
 
+  /**
+   * Removes a file or directory and all its contents.
+   *
+   * For directories, removes all entries with paths starting with the
+   * directory's path prefix. This handles both explicit entries and
+   * nested files that create implicit directory structure.
+   *
+   * @inheritdoc
+   */
   async remove(file: FileRef): Promise<boolean> {
     const normalized = resolveFileRef(file);
     const prefix = `${normalized}/`;
@@ -311,11 +424,28 @@ export class MemFilesApi implements IFilesApi {
     return removed;
   }
 
+  /**
+   * Opens a file handle for reading and writing.
+   *
+   * The file is created lazily when first written to. Unlike real filesystems,
+   * parent directories don't need to exist - they're handled implicitly.
+   *
+   * @inheritdoc
+   */
   async open(file: FileRef): Promise<FileHandle> {
     const normalized = resolveFileRef(file);
     return new MemFileHandle(this.store, normalized);
   }
 
+  /**
+   * Creates a directory explicitly.
+   *
+   * While directories exist implicitly when files are created under them,
+   * mkdir() creates an explicit DirEntry which can be useful when an
+   * empty directory needs to persist.
+   *
+   * @inheritdoc
+   */
   async mkdir(file: FileRef): Promise<void> {
     const normalized = resolveFileRef(file);
     if (!this.store.has(normalized)) {
