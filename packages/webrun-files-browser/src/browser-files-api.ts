@@ -7,8 +7,8 @@
 
 import type {
   FileInfo,
-  FilesApi,
   FileStats,
+  FilesApi,
   ListOptions,
   ReadOptions,
 } from "@statewalker/webrun-files";
