@@ -85,6 +85,11 @@ export class S3FilesApi implements FilesApi {
       const start = options?.start ?? 0;
       const length = options?.length;
 
+      // Return empty if length is explicitly 0
+      if (length === 0) {
+        return;
+      }
+
       let range: string | undefined;
       if (start > 0 || length !== undefined) {
         const end = length !== undefined ? start + length - 1 : "";
@@ -107,7 +112,13 @@ export class S3FilesApi implements FilesApi {
       }
     } catch (error: unknown) {
       const err = error as { name?: string; $metadata?: { httpStatusCode?: number } };
-      if (err.name === "NotFound" || err.$metadata?.httpStatusCode === 404) {
+      // Handle NotFound (404) and InvalidRange (416) - return empty
+      if (
+        err.name === "NotFound" ||
+        err.name === "InvalidRange" ||
+        err.$metadata?.httpStatusCode === 404 ||
+        err.$metadata?.httpStatusCode === 416
+      ) {
         return;
       }
       throw error;

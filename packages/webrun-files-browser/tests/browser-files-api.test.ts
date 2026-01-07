@@ -4,6 +4,8 @@
 
 import { createFilesApiTests } from "@statewalker/webrun-files-tests";
 import { getOriginPrivateDirectory } from "native-file-system-adapter";
+// @ts-expect-error - no type declarations for this module
+import * as driver from "native-file-system-adapter/src/adapters/memory.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { BrowserFilesApi } from "../src/browser-files-api.js";
 
@@ -11,10 +13,8 @@ describe("BrowserFilesApi with Memory Backend", () => {
   createFilesApiTests("BrowserFilesApi", async () => {
     // Create a fresh in-memory filesystem for each test
     // Using the memory adapter from native-file-system-adapter
-    const rootHandle = await getOriginPrivateDirectory(
-      // @ts-expect-error - adapter type
-      import("native-file-system-adapter/src/adapters/memory.js"),
-    );
+
+    const rootHandle = (await getOriginPrivateDirectory(driver)) as FileSystemDirectoryHandle;
 
     return {
       api: new BrowserFilesApi({ rootHandle }),
