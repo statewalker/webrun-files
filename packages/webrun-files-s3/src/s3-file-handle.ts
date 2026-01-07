@@ -16,7 +16,6 @@ import {
   UploadPartCopyCommand,
 } from "@aws-sdk/client-s3";
 import type {
-  AppendOptions,
   BinaryStream,
   FileHandle,
   ReadStreamOptions,
@@ -128,8 +127,9 @@ export class S3FileHandle implements FileHandle {
    *
    * Note: start position > 0 uses UploadPartCopy to preserve existing content
    * without downloading it.
+   * To append data, use `writeStream(data, { start: this.size })`.
    */
-  async createWriteStream(data: BinaryStream, options: WriteStreamOptions = {}): Promise<number> {
+  async writeStream(data: BinaryStream, options: WriteStreamOptions = {}): Promise<number> {
     if (this.closed) {
       throw new Error("FileHandle is closed");
     }
@@ -138,24 +138,6 @@ export class S3FileHandle implements FileHandle {
 
     // Use streaming multipart upload
     return this.streamingMultipartUpload(data, start, signal);
-  }
-
-  /**
-   * Appends content to the end of the S3 object using streaming.
-   *
-   * Uses UploadPartCopy to preserve existing content without downloading it,
-   * then streams new data as additional parts.
-   */
-  async appendFile(data: BinaryStream, options: AppendOptions = {}): Promise<number> {
-    if (this.closed) {
-      throw new Error("FileHandle is closed");
-    }
-
-    const { signal } = options;
-
-    // Use streaming multipart upload starting at current size
-    // This will use UploadPartCopy for existing content
-    return this.streamingMultipartUpload(data, this._size, signal);
   }
 
   // ========================================

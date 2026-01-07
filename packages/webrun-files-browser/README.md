@@ -132,9 +132,8 @@ class BrowserFileHandle implements FileHandle {
   readonly size: number;
 
   close(): Promise<void>;
-  appendFile(data: BinaryStream, options?: AppendOptions): Promise<number>;
   createReadStream(options?: ReadStreamOptions): AsyncGenerator<Uint8Array>;
-  createWriteStream(data: BinaryStream, options?: WriteStreamOptions): Promise<number>;
+  writeStream(data: BinaryStream, options?: WriteStreamOptions): Promise<number>;
 
   // Random access read at specific position
   read(buffer: Uint8Array, offset: number, length: number, position: number): Promise<number>;

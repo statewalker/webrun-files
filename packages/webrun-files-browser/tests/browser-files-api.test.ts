@@ -113,11 +113,11 @@ describe("BrowserFilesApi specific tests", () => {
 
     // Create file via handle
     const handle = await api.open("/handle-test.txt");
-    await handle.createWriteStream([encoder.encode("initial content")]);
+    await handle.writeStream([encoder.encode("initial content")]);
     expect(handle.size).toBe(15);
 
-    // Append via handle
-    await handle.appendFile([encoder.encode(" - appended")]);
+    // Append via handle using writeStream with start: size
+    await handle.writeStream([encoder.encode(" - appended")], { start: handle.size });
     expect(handle.size).toBe(26);
 
     // Read via handle

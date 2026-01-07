@@ -7,7 +7,6 @@
  */
 
 import type {
-  AppendOptions,
   BinaryStream,
   FileHandle,
   ReadStreamOptions,
@@ -38,41 +37,6 @@ export class BrowserFileHandle implements FileHandle {
   async close(): Promise<void> {
     this.closed = true;
     this.file = null;
-  }
-
-  /**
-   * Appends data to the end of the file.
-   */
-  async appendFile(data: BinaryStream, options: AppendOptions = {}): Promise<number> {
-    if (this.closed) {
-      throw new Error("FileHandle is closed");
-    }
-
-    const { signal } = options;
-    const writable = await this.fileHandle.createWritable({ keepExistingData: true });
-    let bytesWritten = 0;
-
-    try {
-      // Seek to end of file
-      await writable.seek(this._size);
-
-      for await (const chunk of data) {
-        if (signal?.aborted) {
-          throw new Error("Operation aborted");
-        }
-        // Cast to Uint8Array<ArrayBuffer> to satisfy FileSystemWritableFileStream.write()
-        await writable.write(chunk as Uint8Array<ArrayBuffer>);
-        bytesWritten += chunk.length;
-      }
-    } finally {
-      await writable.close();
-    }
-
-    // Refresh file reference and size
-    this.file = await this.fileHandle.getFile();
-    this._size = this.file.size;
-
-    return bytesWritten;
   }
 
   /**
@@ -118,8 +82,9 @@ export class BrowserFileHandle implements FileHandle {
    * Writes data to the file starting at the specified position.
    * If start > 0, preserves content before start position.
    * Truncates file at start position before writing.
+   * To append data, use `writeStream(data, { start: this.size })`.
    */
-  async createWriteStream(data: BinaryStream, options: WriteStreamOptions = {}): Promise<number> {
+  async writeStream(data: BinaryStream, options: WriteStreamOptions = {}): Promise<number> {
     if (this.closed) {
       throw new Error("FileHandle is closed");
     }
