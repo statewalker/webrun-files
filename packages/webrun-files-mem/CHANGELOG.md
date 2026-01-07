@@ -1,4 +1,4 @@
-# @statewalker/webrun-files
+# @statewalker/webrun-files-mem
 
 ## 0.7.0
 
@@ -13,14 +13,7 @@
   - Updated test suite with new factory pattern for FilesApi testing
   - Improved documentation across all packages
 
-## 0.5.0
+### Patch Changes
 
-### Minor Changes
-
-- Add random access read method to file handles
-
-## 0.4.0
-
-### Minor Changes
-
-- Restructure the code and tests
+- Updated dependencies
+  - @statewalker/webrun-files@0.7.0
