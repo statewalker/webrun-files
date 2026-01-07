@@ -4,14 +4,8 @@
 
 import { CreateBucketCommand, S3Client } from "@aws-sdk/client-s3";
 import { FilesApi } from "@statewalker/webrun-files";
-import {
-  createBigFilesApiTests,
-  createFilesApiTests,
-} from "@statewalker/webrun-files-tests";
-import {
-  MinioContainer,
-  type StartedMinioContainer,
-} from "@testcontainers/minio";
+import { createBigFilesApiTests, createFilesApiTests } from "@statewalker/webrun-files-tests";
+import { MinioContainer, type StartedMinioContainer } from "@testcontainers/minio";
 import { afterAll, beforeAll, describe } from "vitest";
 import { S3FilesApi } from "../src/s3-files-api.js";
 

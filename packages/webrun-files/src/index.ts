@@ -26,11 +26,11 @@ export {
   toAsyncIterable,
   toBinaryAsyncIterable,
 } from "./utils/collect-stream.js";
+export { isDirectory, isFile } from "./utils/file-info-utils.js";
 // Utilities
 export {
   normalizePath,
   resolveFileRef,
   toPath,
 } from "./utils/normalize-path.js";
-export { isDirectory, isFile } from "./utils/file-info-utils.js";
 export { basename, dirname, extname, joinPath } from "./utils/path-utils.js";

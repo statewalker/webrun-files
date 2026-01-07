@@ -42,6 +42,27 @@ for await (const entry of api.list("/notes")) {
 }
 ```
 
+### With Persistent Directory Handle
+
+You can persist the directory handle using IndexedDB (via `idb-keyval` or similar) to avoid prompting the user every time:
+
+```typescript
+import { openBrowserFilesApi } from "@statewalker/webrun-files-browser";
+import { get, set, del } from "idb-keyval";
+import { FilesApi } from "@statewalker/webrun-files";
+
+// Opens directory picker if no stored handle, otherwise reuses the stored one
+const browserFs = await openBrowserFilesApi({
+  handlerKey: "my-project-dir",  // Key for storing the handle
+  readwrite: true,                // Request read-write access
+  get,                            // Retrieve stored handle
+  set,                            // Store the handle
+  del,                            // Delete stored handle if inaccessible
+});
+
+const api = new FilesApi(browserFs);
+```
+
 ### With Origin Private File System (OPFS)
 
 OPFS provides a sandboxed filesystem that doesn't require user interaction:
@@ -121,10 +142,30 @@ class BrowserFileHandle implements FileHandle {
 
 ```typescript
 // Opens a directory picker and returns a BrowserFilesApi instance
-function openBrowserFilesApi(): Promise<BrowserFilesApi>;
+// Supports persistent storage of directory handles
+function openBrowserFilesApi(options?: OpenBrowserFilesApiOptions): Promise<BrowserFilesApi>;
+
+interface OpenBrowserFilesApiOptions {
+  handlerKey?: string;  // Key for storing the handle (default: "root-dir")
+  readwrite?: boolean;  // Request read-write access (default: true)
+  get?: (key: string) => Promise<FileSystemDirectoryHandle | undefined>;
+  set?: (key: string, handler: FileSystemDirectoryHandle) => Promise<void>;
+  del?: (key: string) => Promise<void>;
+}
 
 // Returns a BrowserFilesApi backed by the Origin Private File System
 function getOPFSFilesApi(): Promise<BrowserFilesApi>;
+
+// Checks if a file system handle is still accessible
+function isHandlerAccessible(
+  fileHandle: FileSystemFileHandle | FileSystemDirectoryHandle
+): Promise<boolean>;
+
+// Verifies and requests file system permissions for a handle
+function verifyPermission(
+  fileHandle: FileSystemFileHandle | FileSystemDirectoryHandle,
+  readWrite?: boolean  // default: false
+): Promise<boolean>;
 ```
 
 ## How It Works
@@ -182,6 +223,33 @@ For other browsers, you may need a polyfill like [native-file-system-adapter](ht
 - **Secure context**: The API only works in secure contexts (HTTPS or localhost)
 - **Permission prompts**: Users must grant permission to access directories
 - **OPFS isolation**: Origin Private File System is isolated per-origin and not accessible to the user
+
+## Permission and Accessibility Utilities
+
+When working with persistent directory handles, you may need to verify permissions and check if handles are still accessible:
+
+```typescript
+import {
+  verifyPermission,
+  isHandlerAccessible
+} from "@statewalker/webrun-files-browser";
+
+// Check if we have read-write permission
+const hasPermission = await verifyPermission(directoryHandle, true);
+
+// Check if the directory still exists and is accessible
+const isAccessible = await isHandlerAccessible(directoryHandle);
+
+if (!hasPermission) {
+  console.log("Permission denied - user may need to re-grant access");
+}
+
+if (!isAccessible) {
+  console.log("Directory no longer accessible - may have been deleted or moved");
+}
+```
+
+These utilities are used internally by `openBrowserFilesApi()` when persistence options are provided, but you can also use them directly when managing directory handles manually.
 
 ## Testing
 

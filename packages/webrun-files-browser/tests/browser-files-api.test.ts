@@ -3,16 +3,13 @@
  */
 
 import { FilesApi } from "@statewalker/webrun-files";
-import {
-  createBigFilesApiTests,
-  createFilesApiTests,
-} from "@statewalker/webrun-files-tests";
+import { createBigFilesApiTests, createFilesApiTests } from "@statewalker/webrun-files-tests";
 import { getOriginPrivateDirectory } from "native-file-system-adapter";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { BrowserFilesApi } from "../src/browser-files-api.js";
 
 describe("BrowserFilesApi with Memory Backend", () => {
-  let testCounter = 0;
+  const _testCounter = 0;
 
   createFilesApiTests("BrowserFilesApi", async () => {
     // Create a fresh in-memory filesystem for each test

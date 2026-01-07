@@ -165,7 +165,12 @@ export class BrowserFileHandle implements FileHandle {
    * Random access read from file at a specific position.
    * Uses File.slice() for efficient partial reads.
    */
-  async read(buffer: Uint8Array, offset: number, length: number, position: number): Promise<number> {
+  async read(
+    buffer: Uint8Array,
+    offset: number,
+    length: number,
+    position: number,
+  ): Promise<number> {
     if (this.closed) {
       throw new Error("FileHandle is closed");
     }

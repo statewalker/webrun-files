@@ -152,7 +152,12 @@ class MemFileHandle implements FileHandle {
     return bytesWritten;
   }
 
-  async read(buffer: Uint8Array, offset: number, length: number, position: number): Promise<number> {
+  async read(
+    buffer: Uint8Array,
+    offset: number,
+    length: number,
+    position: number,
+  ): Promise<number> {
     const entry = this.store.get(this.path);
     if (!entry || entry.kind !== "file") {
       return 0;
