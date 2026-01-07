@@ -356,7 +356,7 @@ export function createBigFilesApiTests(
     });
 
     // ========================================
-    // APPEND TO LARGE FILES
+    // APPEND TO LARGE FILES (using writeStream with start: size)
     // ========================================
 
     describe("FileHandle - append to large files", () => {
@@ -375,11 +375,11 @@ export function createBigFilesApiTests(
             const data = patternContent(size, seed);
             await ctx.api.write(path, [data]);
 
-            // Append additional data
+            // Append additional data using writeStream with start: handle.size
             const handle = await ctx.api.open(path);
             try {
               const appendData = new Uint8Array(1024).fill(0xff); // Append 0xFF bytes
-              await handle.appendFile([appendData]);
+              await handle.writeStream([appendData], { start: handle.size });
             } finally {
               await handle.close();
             }

@@ -13,7 +13,6 @@
  */
 
 import type {
-  AppendOptions,
   BinaryStream,
   FileHandle,
   FileInfo,
@@ -102,39 +101,6 @@ class MemFileHandle implements FileHandle {
   }
 
   /**
-   * Appends data to the end of the file.
-   * Creates the file if it doesn't exist.
-   * @inheritdoc
-   */
-  async appendFile(data: BinaryStream, options: AppendOptions = {}): Promise<number> {
-    const file = this.getOrCreateFile();
-    const chunks: Uint8Array[] = [file.content];
-    let bytesWritten = 0;
-
-    for await (const chunk of data) {
-      if (options.signal?.aborted) {
-        throw new Error("Operation aborted");
-      }
-      chunks.push(chunk);
-      bytesWritten += chunk.length;
-    }
-
-    // Merge all chunks into a single buffer
-    const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
-    const merged = new Uint8Array(totalLength);
-    let offset = 0;
-    for (const chunk of chunks) {
-      merged.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    file.content = merged;
-    file.lastModified = Date.now();
-
-    return bytesWritten;
-  }
-
-  /**
    * Streams file content in chunks.
    *
    * Uses 8KB chunks to simulate streaming behavior even though the entire
@@ -172,10 +138,11 @@ class MemFileHandle implements FileHandle {
    *
    * Preserves content before the start position and truncates content after.
    * Pads with zeros if start is beyond current file length.
+   * To append data, use `writeStream(data, { start: this.size })`.
    *
    * @inheritdoc
    */
-  async createWriteStream(data: BinaryStream, options: WriteStreamOptions = {}): Promise<number> {
+  async writeStream(data: BinaryStream, options: WriteStreamOptions = {}): Promise<number> {
     const { start = 0, signal } = options;
     const file = this.getOrCreateFile();
 

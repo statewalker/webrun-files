@@ -9,7 +9,6 @@ export { MemFilesApi } from "./impl/mem-files-api.js";
 export { NodeFilesApi } from "./impl/node-files-api.js";
 // Types
 export type {
-  AppendOptions,
   BinaryStream,
   CopyOptions,
   FileHandle,

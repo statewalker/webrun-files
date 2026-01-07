@@ -57,14 +57,6 @@ export interface CopyOptions {
 }
 
 /**
- * Options for appending data to a file.
- */
-export interface AppendOptions {
-  /** Signal to abort the operation. Checked between chunks during streaming. */
-  signal?: AbortSignal;
-}
-
-/**
  * Options for reading file content as a stream.
  */
 export interface ReadStreamOptions {
@@ -115,14 +107,6 @@ export interface FileHandle {
   close(): Promise<void>;
 
   /**
-   * Appends data to the end of the file.
-   * @param data - Binary data to append (streamed for memory efficiency).
-   * @param options - Optional abort signal for cancellation.
-   * @returns Number of bytes written.
-   */
-  appendFile(data: BinaryStream, options?: AppendOptions): Promise<number>;
-
-  /**
    * Creates an async generator that yields file content as chunks.
    * Uses streaming to handle large files without loading them entirely into memory.
    * @param options - Range options (start/end) and abort signal.
@@ -133,11 +117,12 @@ export interface FileHandle {
   /**
    * Writes data to the file, truncating any existing content after the start position.
    * Content before the start position is preserved.
+   * To append data, use `writeStream(data, { start: handle.size })`.
    * @param data - Binary data to write (streamed for memory efficiency).
    * @param options - Start position and abort signal.
    * @returns Number of bytes written.
    */
-  createWriteStream(data: BinaryStream, options?: WriteStreamOptions): Promise<number>;
+  writeStream(data: BinaryStream, options?: WriteStreamOptions): Promise<number>;
 
   /**
    * Read bytes from the file at a specific position.

@@ -122,7 +122,7 @@ await files.remove('/old-stuff'); // Recursively deletes directories
 
 ## Low-Level File Handle Operations
 
-When you need fine-grained control over file operations, work directly with file handles. Opening a file gives you a handle that supports reading, writing, and appending at specific positions:
+When you need fine-grained control over file operations, work directly with file handles. Opening a file gives you a handle that supports reading and writing at specific positions:
 
 ```typescript
 const handle = await files.open('/data.bin');
@@ -140,11 +140,11 @@ const buffer = new Uint8Array(100);
 const bytesRead = await handle.read(buffer, 0, 100, 500);  // Read 100 bytes starting at position 500
 console.log(`Read ${bytesRead} bytes`);
 
-// Write at a specific position
-await handle.createWriteStream([newData], { start: 50 });
+// Write at a specific position (truncates content after start)
+await handle.writeStream([newData], { start: 50 });
 
-// Append to the end
-await handle.appendFile([moreData]);
+// Append to the end by writing at current size
+await handle.writeStream([moreData], { start: handle.size });
 
 // Always close when done
 await handle.close();
@@ -176,13 +176,12 @@ import type {
   IFilesApi,        // Core interface for backends
   FilesApi,         // Wrapper class with convenience methods
   FileInfo,         // Metadata returned by stats() and list()
-  FileHandle,       // Low-level file operations (read, write, append)
+  FileHandle,       // Low-level file operations (read, write)
   FileRef,          // string | { path: string }
   FileKind,         // "file" | "directory"
   BinaryStream,     // AsyncIterable<Uint8Array> | Iterable<Uint8Array>
   ListOptions,      // { recursive?: boolean }
   CopyOptions,      // { recursive?: boolean }
-  AppendOptions,    // { signal?: AbortSignal }
   ReadStreamOptions,  // { start?: number, end?: number, signal?: AbortSignal }
   WriteStreamOptions, // { start?: number, signal?: AbortSignal }
 } from '@statewalker/webrun-files';

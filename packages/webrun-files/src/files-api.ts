@@ -118,7 +118,7 @@ export class FilesApi implements IFilesApi {
   async write(file: FileRef, content: BinaryStream): Promise<void> {
     const handle = await this.open(file);
     try {
-      await handle.createWriteStream(content);
+      await handle.writeStream(content);
     } finally {
       await handle.close();
     }

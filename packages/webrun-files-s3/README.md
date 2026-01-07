@@ -115,8 +115,8 @@ for await (const chunk of handle.createReadStream({ start: 1000, end: 2000 })) {
   console.log("Chunk:", chunk.length);
 }
 
-// Append data
-await handle.appendFile([new TextEncoder().encode(" - appended")]);
+// Append data by writing at current size
+await handle.writeStream([new TextEncoder().encode(" - appended")], { start: handle.size });
 
 await handle.close();
 ```
@@ -186,9 +186,8 @@ class S3FileHandle implements FileHandle {
   readonly size: number;
 
   close(): Promise<void>;
-  appendFile(data: BinaryStream, options?: AppendOptions): Promise<number>;
   createReadStream(options?: ReadStreamOptions): AsyncGenerator<Uint8Array>;
-  createWriteStream(data: BinaryStream, options?: WriteStreamOptions): Promise<number>;
+  writeStream(data: BinaryStream, options?: WriteStreamOptions): Promise<number>;
 
   // Random access read using HTTP Range header
   read(buffer: Uint8Array, offset: number, length: number, position: number): Promise<number>;

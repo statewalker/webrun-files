@@ -14,7 +14,6 @@
 import type * as NodeFS from "node:fs/promises";
 import type { FileHandle as NodeFileHandle } from "node:fs/promises";
 import type {
-  AppendOptions,
   BinaryStream,
   CopyOptions,
   FileHandle,
@@ -75,35 +74,6 @@ class NodeFileHandleWrapper implements FileHandle {
   }
 
   /**
-   * Appends data to the end of the file.
-   *
-   * Uses positional writes at the current end of file.
-   * Note: We can't use Node.js appendFile() because it replaces content
-   * when the file is opened with r+ mode.
-   *
-   * @inheritdoc
-   */
-  async appendFile(data: BinaryStream, options: AppendOptions = {}): Promise<number> {
-    let position = this._size;
-    let bytesWritten = 0;
-
-    for await (const chunk of data) {
-      if (options.signal?.aborted) {
-        throw new Error("Operation aborted");
-      }
-      const { bytesWritten: written } = await this.handle.write(chunk, 0, chunk.length, position);
-      position += written;
-      bytesWritten += written;
-    }
-
-    // Update cached size from actual file stats
-    const stat = await this.handle.stat();
-    this._size = stat.size;
-
-    return bytesWritten;
-  }
-
-  /**
    * Streams file content in 8KB chunks.
    *
    * Uses positional reads to avoid the overhead of seeking and to support
@@ -141,10 +111,11 @@ class NodeFileHandleWrapper implements FileHandle {
    *
    * Truncates the file at the start position before writing, which removes
    * any content after start. Content before start is preserved.
+   * To append data, use `writeStream(data, { start: this.size })`.
    *
    * @inheritdoc
    */
-  async createWriteStream(data: BinaryStream, options: WriteStreamOptions = {}): Promise<number> {
+  async writeStream(data: BinaryStream, options: WriteStreamOptions = {}): Promise<number> {
     const { start = 0, signal } = options;
     let position = start;
     let bytesWritten = 0;

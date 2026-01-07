@@ -545,10 +545,10 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
           const handle = await ctx.api.open("/growing.txt");
           expect(handle.size).toBe(0);
 
-          await handle.createWriteStream([toBytes("hello")]);
+          await handle.writeStream([toBytes("hello")]);
           expect(handle.size).toBe(5);
 
-          await handle.appendFile([toBytes(" world")]);
+          await handle.writeStream([toBytes(" world")], { start: handle.size });
           expect(handle.size).toBe(11);
 
           await handle.close();
@@ -611,11 +611,11 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
         });
       });
 
-      describe("createWriteStream()", () => {
+      describe("writeStream()", () => {
         it("should write to new file", async () => {
           const handle = await ctx.api.open("/handle-write.txt");
           try {
-            const written = await handle.createWriteStream([toBytes("Hello")]);
+            const written = await handle.writeStream([toBytes("Hello")]);
             expect(written).toBe(5);
           } finally {
             await handle.close();
@@ -630,7 +630,7 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
 
           const handle = await ctx.api.open("/handle-overwrite.txt");
           try {
-            await handle.createWriteStream([toBytes("new")]);
+            await handle.writeStream([toBytes("new")]);
           } finally {
             await handle.close();
           }
@@ -644,7 +644,7 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
 
           const handle = await ctx.api.open("/handle-position.txt");
           try {
-            await handle.createWriteStream([toBytes("XXXXX")], { start: 6 });
+            await handle.writeStream([toBytes("XXXXX")], { start: 6 });
           } finally {
             await handle.close();
           }
@@ -652,15 +652,13 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
           const content = await ctx.api.readFile("/handle-position.txt");
           expect(fromBytes(content)).toBe("Hello XXXXX");
         });
-      });
 
-      describe("appendFile()", () => {
-        it("should append to existing file", async () => {
+        it("should append to existing file using start: size", async () => {
           await ctx.api.write("/handle-append.txt", [toBytes("Hello")]);
 
           const handle = await ctx.api.open("/handle-append.txt");
           try {
-            const written = await handle.appendFile([toBytes(" World!")]);
+            const written = await handle.writeStream([toBytes(" World!")], { start: handle.size });
             expect(written).toBe(7);
           } finally {
             await handle.close();
@@ -670,11 +668,11 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
           expect(fromBytes(content)).toBe("Hello World!");
         });
 
-        it("should append to new file", async () => {
+        it("should append to new file using start: size", async () => {
           const handle = await ctx.api.open("/handle-append-new.txt");
           try {
-            await handle.appendFile([toBytes("First")]);
-            await handle.appendFile([toBytes(" Second")]);
+            await handle.writeStream([toBytes("First")], { start: handle.size });
+            await handle.writeStream([toBytes(" Second")], { start: handle.size });
           } finally {
             await handle.close();
           }
