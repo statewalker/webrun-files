@@ -1,7 +1,7 @@
 import type {
   FileInfo,
-  FilesApi,
   FileStats,
+  FilesApi,
   ListOptions,
   ReadOptions,
 } from "@statewalker/webrun-files";
@@ -33,10 +33,7 @@ export class MemFilesApi implements FilesApi {
     if (options?.initialFiles) {
       for (const [path, content] of Object.entries(options.initialFiles)) {
         const normalizedPath = normalizePath(path);
-        const bytes =
-          typeof content === "string"
-            ? new TextEncoder().encode(content)
-            : content;
+        const bytes = typeof content === "string" ? new TextEncoder().encode(content) : content;
         this.setFile(normalizedPath, bytes);
       }
     }
@@ -55,7 +52,7 @@ export class MemFilesApi implements FilesApi {
     const parts = path.split("/").filter(Boolean);
     let current = "";
     for (let i = 0; i < parts.length - 1; i++) {
-      current += "/" + parts[i];
+      current += `/${parts[i]}`;
       if (!this.entries.has(current)) {
         this.entries.set(current, {
           kind: "directory",
@@ -109,7 +106,7 @@ export class MemFilesApi implements FilesApi {
 
   async mkdir(path: string): Promise<void> {
     const normalizedPath = normalizePath(path);
-    this.ensureParentDirs(normalizedPath + "/dummy");
+    this.ensureParentDirs(`${normalizedPath}/dummy`);
     if (!this.entries.has(normalizedPath)) {
       this.entries.set(normalizedPath, {
         kind: "directory",
@@ -125,7 +122,7 @@ export class MemFilesApi implements FilesApi {
       return;
     }
 
-    const prefix = normalizedPath === "/" ? "/" : normalizedPath + "/";
+    const prefix = normalizedPath === "/" ? "/" : `${normalizedPath}/`;
     const seen = new Set<string>();
 
     for (const [entryPath, entryValue] of this.entries) {
@@ -179,7 +176,7 @@ export class MemFilesApi implements FilesApi {
     const entry = this.entries.get(normalizedPath);
     if (!entry) {
       // Check if it's an implicit directory
-      const prefix = normalizedPath === "/" ? "/" : normalizedPath + "/";
+      const prefix = normalizedPath === "/" ? "/" : `${normalizedPath}/`;
       for (const key of this.entries.keys()) {
         if (key.startsWith(prefix)) {
           return {
@@ -204,7 +201,7 @@ export class MemFilesApi implements FilesApi {
       return true;
     }
     // Check if it's an implicit directory
-    const prefix = normalizedPath === "/" ? "/" : normalizedPath + "/";
+    const prefix = normalizedPath === "/" ? "/" : `${normalizedPath}/`;
     for (const key of this.entries.keys()) {
       if (key.startsWith(prefix)) {
         return true;
@@ -217,7 +214,7 @@ export class MemFilesApi implements FilesApi {
     const normalizedPath = normalizePath(path);
     if (!this.entries.has(normalizedPath)) {
       // Check if it's an implicit directory
-      const prefix = normalizedPath + "/";
+      const prefix = `${normalizedPath}/`;
       let hasChildren = false;
       for (const key of this.entries.keys()) {
         if (key.startsWith(prefix)) {
@@ -231,7 +228,7 @@ export class MemFilesApi implements FilesApi {
     }
 
     // Remove entry and all children
-    const prefix = normalizedPath === "/" ? "/" : normalizedPath + "/";
+    const prefix = normalizedPath === "/" ? "/" : `${normalizedPath}/`;
     const toDelete: string[] = [normalizedPath];
     for (const key of this.entries.keys()) {
       if (key.startsWith(prefix)) {
@@ -268,7 +265,7 @@ export class MemFilesApi implements FilesApi {
     const sourceEntry = this.entries.get(normalizedSource);
     if (!sourceEntry) {
       // Check if it's an implicit directory
-      const prefix = normalizedSource + "/";
+      const prefix = `${normalizedSource}/`;
       let isImplicitDir = false;
       for (const key of this.entries.keys()) {
         if (key.startsWith(prefix)) {
@@ -306,8 +303,7 @@ export class MemFilesApi implements FilesApi {
     } else {
       // Copy directory recursively
       await this.mkdir(normalizedTarget);
-      const prefix =
-        normalizedSource === "/" ? "/" : normalizedSource + "/";
+      const prefix = normalizedSource === "/" ? "/" : `${normalizedSource}/`;
       for (const [entryPath, entryValue] of this.entries) {
         if (entryPath.startsWith(prefix)) {
           const relativePath = entryPath.slice(normalizedSource.length);

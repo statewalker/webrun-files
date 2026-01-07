@@ -13,32 +13,30 @@
  * - @statewalker/webrun-files-s3 (S3)
  */
 
+// File utilities
+export {
+  readAt,
+  readFile,
+  readRange,
+  readText,
+  tryReadFile,
+  tryReadText,
+  writeText,
+} from "./file-utils.js";
+// Path utilities
+export {
+  basename,
+  dirname,
+  extname,
+  joinPath,
+  normalizePath,
+} from "./path-utils.js";
 // Core types
 export type {
   FileInfo,
   FileKind,
-  FilesApi,
   FileStats,
+  FilesApi,
   ListOptions,
   ReadOptions,
 } from "./types.js";
-
-// File utilities
-export {
-  readFile,
-  readText,
-  tryReadFile,
-  tryReadText,
-  readRange,
-  readAt,
-  writeText,
-} from "./file-utils.js";
-
-// Path utilities
-export {
-  normalizePath,
-  joinPath,
-  dirname,
-  basename,
-  extname,
-} from "./path-utils.js";
