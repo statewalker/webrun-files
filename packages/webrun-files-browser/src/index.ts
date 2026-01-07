@@ -2,11 +2,15 @@
  * webrun-files-browser - Browser File System Access API implementation
  */
 
+export { BrowserFileHandle, type BrowserFileHandleOptions } from "./browser-file-handle.js";
 export {
   BrowserFilesApi,
-  getOPFSFilesApi,
-  openBrowserFilesApi,
   type BrowserFilesApiOptions,
+  getOPFSFilesApi,
 } from "./browser-files-api.js";
-
-export { BrowserFileHandle, type BrowserFileHandleOptions } from "./browser-file-handle.js";
+export {
+  isHandlerAccessible,
+  type OpenBrowserFilesApiOptions,
+  openBrowserFilesApi,
+  verifyPermission,
+} from "./open-browser-files-api.js";

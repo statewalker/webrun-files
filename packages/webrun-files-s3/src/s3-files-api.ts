@@ -71,9 +71,7 @@ export class S3FilesApi implements IFilesApi {
   private resolveKey(file: FileRef): string {
     const normalized = resolveFileRef(file);
     // Remove leading slash and combine with prefix
-    const relativePath = normalized.startsWith("/")
-      ? normalized.substring(1)
-      : normalized;
+    const relativePath = normalized.startsWith("/") ? normalized.substring(1) : normalized;
 
     if (this.prefix) {
       return relativePath ? `${this.prefix}/${relativePath}` : this.prefix;
@@ -92,7 +90,7 @@ export class S3FilesApi implements IFilesApi {
         relativePath = relativePath.substring(1);
       }
     }
-    return "/" + relativePath;
+    return `/${relativePath}`;
   }
 
   /**
@@ -106,7 +104,7 @@ export class S3FilesApi implements IFilesApi {
     const prefix = this.resolveKey(file);
     // For root path ("/"), resolveKey returns empty string or prefix
     // We need to ensure proper prefix handling
-    const normalizedPrefix = prefix ? prefix + "/" : (this.prefix ? this.prefix + "/" : "");
+    const normalizedPrefix = prefix ? `${prefix}/` : this.prefix ? `${this.prefix}/` : "";
 
     let continuationToken: string | undefined;
 
@@ -149,7 +147,7 @@ export class S3FilesApi implements IFilesApi {
 
           // Skip if it's just the prefix itself (directory marker)
           if (obj.Key === normalizedPrefix) continue;
-          if (obj.Key + "/" === normalizedPrefix) continue;
+          if (`${obj.Key}/` === normalizedPrefix) continue;
 
           // Skip directory markers (keys ending with /)
           if (obj.Key.endsWith("/")) continue;
@@ -212,7 +210,7 @@ export class S3FilesApi implements IFilesApi {
     }
 
     // Check if it's a virtual directory by listing with prefix
-    const prefix = key ? key + "/" : "";
+    const prefix = key ? `${key}/` : "";
     const listCommand = new ListObjectsV2Command({
       Bucket: this.bucket,
       Prefix: prefix,
@@ -269,7 +267,7 @@ export class S3FilesApi implements IFilesApi {
     }
 
     // Delete all objects under this prefix (directory)
-    const prefix = key ? key + "/" : "";
+    const prefix = key ? `${key}/` : "";
     const keysToDelete: string[] = [];
 
     let continuationToken: string | undefined;
@@ -359,11 +357,7 @@ export class S3FilesApi implements IFilesApi {
   /**
    * Copies an object or directory using S3 CopyObject.
    */
-  async copy(
-    source: FileRef,
-    target: FileRef,
-    options: CopyOptions = {},
-  ): Promise<boolean> {
+  async copy(source: FileRef, target: FileRef, options: CopyOptions = {}): Promise<boolean> {
     const sourceKey = this.resolveKey(source);
     const targetKey = this.resolveKey(target);
     const { recursive = true } = options;
@@ -389,8 +383,8 @@ export class S3FilesApi implements IFilesApi {
       return false;
     }
 
-    const sourcePrefix = sourceKey + "/";
-    const targetPrefix = targetKey + "/";
+    const sourcePrefix = `${sourceKey}/`;
+    const targetPrefix = `${targetKey}/`;
 
     let continuationToken: string | undefined;
     let copied = false;
@@ -441,7 +435,7 @@ export class S3FilesApi implements IFilesApi {
     // They exist implicitly when files exist inside them
     // But we create an empty object as a marker for compatibility
     const key = this.resolveKey(file);
-    const dirKey = key.endsWith("/") ? key : key + "/";
+    const dirKey = key.endsWith("/") ? key : `${key}/`;
 
     const command = new PutObjectCommand({
       Bucket: this.bucket,

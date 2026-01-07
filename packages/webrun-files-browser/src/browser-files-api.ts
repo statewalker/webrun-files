@@ -291,7 +291,9 @@ export class BrowserFilesApi implements IFilesApi {
       const newTargetParent = await this.getDirectoryHandle(newTargetParentPath, { create: true });
       if (!newTargetParent) continue;
 
-      const newTargetHandle = await newTargetParent.getFileHandle(newTargetFileName, { create: true });
+      const newTargetHandle = await newTargetParent.getFileHandle(newTargetFileName, {
+        create: true,
+      });
       const writable = await newTargetHandle.createWritable();
 
       try {
@@ -308,16 +310,6 @@ export class BrowserFilesApi implements IFilesApi {
 
     return true;
   }
-}
-
-/**
- * Opens a browser directory picker and returns a BrowserFilesApi instance.
- * Only works in secure contexts (HTTPS) and requires user gesture.
- */
-export async function openBrowserFilesApi(): Promise<BrowserFilesApi> {
-  // Cast to any since TypeScript's lib.dom.d.ts may not include showDirectoryPicker
-  const rootHandle = await (globalThis as unknown as { showDirectoryPicker: () => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker();
-  return new BrowserFilesApi({ rootHandle });
 }
 
 /**

@@ -119,7 +119,12 @@ class NodeFileHandleWrapper implements FileHandle {
     await this.handle.chown(uid, gid);
   }
 
-  async read(buffer: Uint8Array, offset: number, length: number, position: number): Promise<number> {
+  async read(
+    buffer: Uint8Array,
+    offset: number,
+    length: number,
+    position: number,
+  ): Promise<number> {
     // Limit length to what can fit in the buffer at the given offset
     const actualLength = Math.min(length, buffer.length - offset);
     if (actualLength <= 0) {

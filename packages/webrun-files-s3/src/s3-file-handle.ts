@@ -90,9 +90,7 @@ export class S3FileHandle implements FileHandle {
    * Uses HTTP Range header for efficient partial reads.
    * Streams data directly from S3 without buffering the entire response.
    */
-  async *createReadStream(
-    options: ReadStreamOptions = {},
-  ): AsyncGenerator<Uint8Array> {
+  async *createReadStream(options: ReadStreamOptions = {}): AsyncGenerator<Uint8Array> {
     if (this.closed) {
       throw new Error("FileHandle is closed");
     }
@@ -131,10 +129,7 @@ export class S3FileHandle implements FileHandle {
    * Note: start position > 0 uses UploadPartCopy to preserve existing content
    * without downloading it.
    */
-  async createWriteStream(
-    data: BinaryStream,
-    options: WriteStreamOptions = {},
-  ): Promise<number> {
+  async createWriteStream(data: BinaryStream, options: WriteStreamOptions = {}): Promise<number> {
     if (this.closed) {
       throw new Error("FileHandle is closed");
     }
@@ -208,7 +203,8 @@ export class S3FileHandle implements FileHandle {
 
         // Use UploadPartCopy for full-sized parts (>= 5MB)
         // Download and buffer remaining bytes that don't fill a complete part
-        const fullPartsEnd = Math.floor(preserveEnd / this.multipartPartSize) * this.multipartPartSize;
+        const fullPartsEnd =
+          Math.floor(preserveEnd / this.multipartPartSize) * this.multipartPartSize;
 
         // Copy full parts using UploadPartCopy (no download needed)
         let copyOffset = 0;
@@ -436,7 +432,12 @@ export class S3FileHandle implements FileHandle {
   /**
    * Random access read from S3 object using HTTP Range header.
    */
-  async read(buffer: Uint8Array, offset: number, length: number, position: number): Promise<number> {
+  async read(
+    buffer: Uint8Array,
+    offset: number,
+    length: number,
+    position: number,
+  ): Promise<number> {
     if (this.closed) {
       throw new Error("FileHandle is closed");
     }
