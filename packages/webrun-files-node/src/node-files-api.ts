@@ -1,12 +1,13 @@
+import type { Stats } from "node:fs";
 import * as fs from "node:fs/promises";
 import type {
   FileInfo,
-  FilesApi,
   FileStats,
+  FilesApi,
   ListOptions,
   ReadOptions,
 } from "@statewalker/webrun-files";
-import { basename, dirname, joinPath, normalizePath } from "@statewalker/webrun-files";
+import { dirname, joinPath, normalizePath } from "@statewalker/webrun-files";
 
 export interface NodeFilesApiOptions {
   /**
@@ -119,7 +120,7 @@ export class NodeFilesApi implements FilesApi {
         const entryPath = joinPath(normalizedPath, entry.name);
         const fullPath = this.resolvePath(entryPath);
 
-        let stat;
+        let stat: Stats;
         try {
           stat = await fs.stat(fullPath);
         } catch {
