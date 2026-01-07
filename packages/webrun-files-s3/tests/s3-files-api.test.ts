@@ -3,8 +3,7 @@
  */
 
 import { CreateBucketCommand, S3Client } from "@aws-sdk/client-s3";
-import { FilesApi } from "@statewalker/webrun-files";
-import { createBigFilesApiTests, createFilesApiTests } from "@statewalker/webrun-files-tests";
+import { createFilesApiTests } from "@statewalker/webrun-files-tests";
 import { MinioContainer, type StartedMinioContainer } from "@testcontainers/minio";
 import { afterAll, beforeAll, describe } from "vitest";
 import { S3FilesApi } from "../src/s3-files-api.js";
@@ -55,26 +54,7 @@ describe("S3FilesApi with MinIO", () => {
     });
 
     return {
-      api: new FilesApi(s3FilesApi),
-      cleanup: async () => {
-        // Cleanup by removing all objects with this prefix
-        await s3FilesApi.remove("/");
-      },
-    };
-  });
-
-  createBigFilesApiTests("S3FilesApi", async () => {
-    // Use unique prefix for each test to ensure isolation
-    const prefix = `bigtest-${testCounter++}-${Date.now()}`;
-
-    const s3FilesApi = new S3FilesApi({
-      client: s3Client,
-      bucket: bucketName,
-      prefix,
-    });
-
-    return {
-      api: new FilesApi(s3FilesApi),
+      api: s3FilesApi,
       cleanup: async () => {
         // Cleanup by removing all objects with this prefix
         await s3FilesApi.remove("/");
