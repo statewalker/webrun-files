@@ -2,15 +2,12 @@
  * Tests for BrowserFilesApi implementation using native-file-system-adapter's memory backend
  */
 
-import { FilesApi } from "@statewalker/webrun-files";
-import { createBigFilesApiTests, createFilesApiTests } from "@statewalker/webrun-files-tests";
+import { createFilesApiTests } from "@statewalker/webrun-files-tests";
 import { getOriginPrivateDirectory } from "native-file-system-adapter";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { BrowserFilesApi } from "../src/browser-files-api.js";
 
 describe("BrowserFilesApi with Memory Backend", () => {
-  const _testCounter = 0;
-
   createFilesApiTests("BrowserFilesApi", async () => {
     // Create a fresh in-memory filesystem for each test
     // Using the memory adapter from native-file-system-adapter
@@ -19,30 +16,8 @@ describe("BrowserFilesApi with Memory Backend", () => {
       import("native-file-system-adapter/src/adapters/memory.js"),
     );
 
-    const browserFilesApi = new BrowserFilesApi({ rootHandle });
-
     return {
-      api: new FilesApi(browserFilesApi),
-      cleanup: async () => {
-        // Clean up by removing all entries
-        for await (const [name] of rootHandle.entries()) {
-          await rootHandle.removeEntry(name, { recursive: true });
-        }
-      },
-    };
-  });
-
-  createBigFilesApiTests("BrowserFilesApi", async () => {
-    // Create a fresh in-memory filesystem for each test
-    const rootHandle = await getOriginPrivateDirectory(
-      // @ts-expect-error - adapter type
-      import("native-file-system-adapter/src/adapters/memory.js"),
-    );
-
-    const browserFilesApi = new BrowserFilesApi({ rootHandle });
-
-    return {
-      api: new FilesApi(browserFilesApi),
+      api: new BrowserFilesApi({ rootHandle }),
       cleanup: async () => {
         // Clean up by removing all entries
         for await (const [name] of rootHandle.entries()) {
@@ -58,15 +33,14 @@ describe("BrowserFilesApi with Memory Backend", () => {
  */
 describe("BrowserFilesApi specific tests", () => {
   let rootHandle: FileSystemDirectoryHandle;
-  let api: FilesApi;
+  let api: BrowserFilesApi;
 
   beforeEach(async () => {
     rootHandle = await getOriginPrivateDirectory(
       // @ts-expect-error - adapter type
       import("native-file-system-adapter/src/adapters/memory.js"),
     );
-    const browserFilesApi = new BrowserFilesApi({ rootHandle });
-    api = new FilesApi(browserFilesApi);
+    api = new BrowserFilesApi({ rootHandle });
   });
 
   afterEach(async () => {
@@ -76,15 +50,15 @@ describe("BrowserFilesApi specific tests", () => {
     }
   });
 
-  it("should preserve file type/mime type", async () => {
-    // Write a file and check if type is preserved
+  it("should preserve file metadata", async () => {
+    // Write a file and check if stats work
     const encoder = new TextEncoder();
     await api.write("/test.json", [encoder.encode('{"key": "value"}')]);
 
     const stats = await api.stats("/test.json");
     expect(stats).toBeDefined();
     expect(stats?.kind).toBe("file");
-    // Note: The mime type detection depends on the adapter implementation
+    expect(stats?.size).toBe(16);
   });
 
   it("should handle empty directory listing", async () => {
@@ -106,37 +80,5 @@ describe("BrowserFilesApi specific tests", () => {
     expect(await api.exists("/a/b/c")).toBe(true);
     expect(await api.exists("/a/b/c/d")).toBe(true);
     expect(await api.exists("/a/b/c/d/e")).toBe(true);
-  });
-
-  it("should handle file handle operations", async () => {
-    const encoder = new TextEncoder();
-
-    // Create file via handle
-    const handle = await api.open("/handle-test.txt");
-    await handle.writeStream([encoder.encode("initial content")]);
-    expect(handle.size).toBe(15);
-
-    // Append via handle using writeStream with start: size
-    await handle.writeStream([encoder.encode(" - appended")], { start: handle.size });
-    expect(handle.size).toBe(26);
-
-    // Read via handle
-    const chunks: Uint8Array[] = [];
-    for await (const chunk of handle.createReadStream()) {
-      chunks.push(chunk);
-    }
-
-    const decoder = new TextDecoder();
-    const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
-    const result = new Uint8Array(totalLength);
-    let offset = 0;
-    for (const chunk of chunks) {
-      result.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    expect(decoder.decode(result)).toBe("initial content - appended");
-
-    await handle.close();
   });
 });
