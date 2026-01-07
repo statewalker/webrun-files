@@ -158,7 +158,7 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
     });
 
     // ========================================
-    // 2. READ OPTIONS
+    // 2. READ OPTIONS (start/length)
     // ========================================
 
     describe("read() with options", () => {
@@ -176,22 +176,22 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
         expect(result[49]).toBe(99);
       });
 
-      it("should read to end position", async () => {
-        const result = await collectStream(ctx.api.read("/range.bin", { end: 30 }));
+      it("should read specified length from beginning", async () => {
+        const result = await collectStream(ctx.api.read("/range.bin", { length: 30 }));
         expect(result.length).toBe(30);
         expect(result[0]).toBe(0);
         expect(result[29]).toBe(29);
       });
 
-      it("should read a range (start and end)", async () => {
-        const result = await collectStream(ctx.api.read("/range.bin", { start: 20, end: 40 }));
+      it("should read a range (start and length)", async () => {
+        const result = await collectStream(ctx.api.read("/range.bin", { start: 20, length: 20 }));
         expect(result.length).toBe(20);
         expect(result[0]).toBe(20);
         expect(result[19]).toBe(39);
       });
 
-      it("should return empty when start equals end", async () => {
-        const result = await collectStream(ctx.api.read("/range.bin", { start: 50, end: 50 }));
+      it("should return empty when length is 0", async () => {
+        const result = await collectStream(ctx.api.read("/range.bin", { start: 50, length: 0 }));
         expect(result.length).toBe(0);
       });
 
@@ -200,63 +200,34 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
         expect(result.length).toBe(0);
       });
 
-      it("should clamp end to file size", async () => {
-        const result = await collectStream(ctx.api.read("/range.bin", { start: 90, end: 200 }));
+      it("should clamp length to remaining file size", async () => {
+        const result = await collectStream(ctx.api.read("/range.bin", { start: 90, length: 100 }));
         expect(result.length).toBe(10);
         expect(result[9]).toBe(99);
       });
     });
 
     // ========================================
-    // 3. READFILE CONVENIENCE METHOD
-    // ========================================
-
-    describe("readFile()", () => {
-      it("should read entire file into buffer", async () => {
-        await ctx.api.write("/complete.txt", [toBytes("Complete content")]);
-
-        const result = await ctx.api.readFile("/complete.txt");
-        expect(fromBytes(result)).toBe("Complete content");
-      });
-
-      it("should return empty buffer for empty file", async () => {
-        await ctx.api.write("/empty.txt", [new Uint8Array(0)]);
-
-        const result = await ctx.api.readFile("/empty.txt");
-        expect(result.length).toBe(0);
-      });
-
-      it("should return empty for non-existent file", async () => {
-        const result = await ctx.api.readFile("/nonexistent.txt");
-        expect(result.length).toBe(0);
-      });
-    });
-
-    // ========================================
-    // 4. STATS
+    // 3. STATS
     // ========================================
 
     describe("stats()", () => {
-      it("should return file info for existing file", async () => {
+      it("should return file stats for existing file", async () => {
         await ctx.api.write("/info.txt", [toBytes("content here")]);
 
         const stats = await ctx.api.stats("/info.txt");
         expect(stats).toBeDefined();
         expect(stats?.kind).toBe("file");
-        expect(stats?.name).toBe("info.txt");
-        expect(stats?.path).toBe("/info.txt");
         expect(stats?.size).toBe(12);
         expect(stats?.lastModified).toBeGreaterThan(0);
       });
 
-      it("should return directory info", async () => {
+      it("should return directory stats", async () => {
         await ctx.api.write("/mydir/file.txt", [toBytes("x")]);
 
         const stats = await ctx.api.stats("/mydir");
         expect(stats).toBeDefined();
         expect(stats?.kind).toBe("directory");
-        expect(stats?.name).toBe("mydir");
-        expect(stats?.path).toBe("/mydir");
       });
 
       it("should return undefined for non-existent path", async () => {
@@ -282,7 +253,7 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
     });
 
     // ========================================
-    // 5. EXISTS
+    // 4. EXISTS
     // ========================================
 
     describe("exists()", () => {
@@ -308,7 +279,7 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
     });
 
     // ========================================
-    // 6. LIST
+    // 5. LIST
     // ========================================
 
     describe("list()", () => {
@@ -371,7 +342,7 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
     });
 
     // ========================================
-    // 7. REMOVE
+    // 6. REMOVE
     // ========================================
 
     describe("remove()", () => {
@@ -411,7 +382,7 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
     });
 
     // ========================================
-    // 8. COPY
+    // 7. COPY
     // ========================================
 
     describe("copy()", () => {
@@ -421,7 +392,7 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
         const result = await ctx.api.copy("/original.txt", "/copied.txt");
         expect(result).toBe(true);
 
-        const content = await ctx.api.readFile("/copied.txt");
+        const content = await collectStream(ctx.api.read("/copied.txt"));
         expect(fromBytes(content)).toBe("original content");
 
         // Original should still exist
@@ -438,7 +409,7 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
         expect(await ctx.api.exists("/dest-dir/a.txt")).toBe(true);
         expect(await ctx.api.exists("/dest-dir/sub/b.txt")).toBe(true);
 
-        const contentA = await ctx.api.readFile("/dest-dir/a.txt");
+        const contentA = await collectStream(ctx.api.read("/dest-dir/a.txt"));
         expect(fromBytes(contentA)).toBe("a");
       });
 
@@ -453,13 +424,13 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
 
         await ctx.api.copy("/src.txt", "/dest.txt");
 
-        const content = await ctx.api.readFile("/dest.txt");
+        const content = await collectStream(ctx.api.read("/dest.txt"));
         expect(fromBytes(content)).toBe("new content");
       });
     });
 
     // ========================================
-    // 9. MOVE
+    // 8. MOVE
     // ========================================
 
     describe("move()", () => {
@@ -472,7 +443,7 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
         expect(await ctx.api.exists("/to-move.txt")).toBe(false);
         expect(await ctx.api.exists("/moved.txt")).toBe(true);
 
-        const content = await ctx.api.readFile("/moved.txt");
+        const content = await collectStream(ctx.api.read("/moved.txt"));
         expect(fromBytes(content)).toBe("move me");
       });
 
@@ -493,7 +464,7 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
     });
 
     // ========================================
-    // 10. MKDIR
+    // 9. MKDIR
     // ========================================
 
     describe("mkdir()", () => {
@@ -522,355 +493,7 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
     });
 
     // ========================================
-    // 11. OPEN / FILEHANDLE
-    // ========================================
-
-    describe("open() and FileHandle", () => {
-      describe("basic operations", () => {
-        it("should open a new file", async () => {
-          const handle = await ctx.api.open("/new-handle.txt");
-          expect(handle.size).toBe(0);
-          await handle.close();
-        });
-
-        it("should open an existing file with correct size", async () => {
-          await ctx.api.write("/existing.txt", [toBytes("existing content")]);
-
-          const handle = await ctx.api.open("/existing.txt");
-          expect(handle.size).toBe(16);
-          await handle.close();
-        });
-
-        it("should report updated size after write", async () => {
-          const handle = await ctx.api.open("/growing.txt");
-          expect(handle.size).toBe(0);
-
-          await handle.writeStream([toBytes("hello")]);
-          expect(handle.size).toBe(5);
-
-          await handle.writeStream([toBytes(" world")], { start: handle.size });
-          expect(handle.size).toBe(11);
-
-          await handle.close();
-        });
-      });
-
-      describe("createReadStream()", () => {
-        beforeEach(async () => {
-          const data = new Uint8Array(100);
-          for (let i = 0; i < 100; i++) data[i] = i;
-          await ctx.api.write("/handle-read.bin", [data]);
-        });
-
-        it("should read entire file", async () => {
-          const handle = await ctx.api.open("/handle-read.bin");
-          try {
-            const result = await collectStream(handle.createReadStream());
-            expect(result.length).toBe(100);
-            expect(result[0]).toBe(0);
-            expect(result[99]).toBe(99);
-          } finally {
-            await handle.close();
-          }
-        });
-
-        it("should read from start position", async () => {
-          const handle = await ctx.api.open("/handle-read.bin");
-          try {
-            const result = await collectStream(handle.createReadStream({ start: 50 }));
-            expect(result.length).toBe(50);
-            expect(result[0]).toBe(50);
-          } finally {
-            await handle.close();
-          }
-        });
-
-        it("should read a specific range", async () => {
-          const handle = await ctx.api.open("/handle-read.bin");
-          try {
-            const result = await collectStream(handle.createReadStream({ start: 25, end: 75 }));
-            expect(result.length).toBe(50);
-            expect(result[0]).toBe(25);
-            expect(result[49]).toBe(74);
-          } finally {
-            await handle.close();
-          }
-        });
-
-        it("should support multiple sequential reads", async () => {
-          const handle = await ctx.api.open("/handle-read.bin");
-          try {
-            const read1 = await collectStream(handle.createReadStream({ start: 0, end: 10 }));
-            const read2 = await collectStream(handle.createReadStream({ start: 90, end: 100 }));
-
-            expect(read1[0]).toBe(0);
-            expect(read2[0]).toBe(90);
-          } finally {
-            await handle.close();
-          }
-        });
-      });
-
-      describe("writeStream()", () => {
-        it("should write to new file", async () => {
-          const handle = await ctx.api.open("/handle-write.txt");
-          try {
-            const written = await handle.writeStream([toBytes("Hello")]);
-            expect(written).toBe(5);
-          } finally {
-            await handle.close();
-          }
-
-          const content = await ctx.api.readFile("/handle-write.txt");
-          expect(fromBytes(content)).toBe("Hello");
-        });
-
-        it("should overwrite existing content", async () => {
-          await ctx.api.write("/handle-overwrite.txt", [toBytes("original")]);
-
-          const handle = await ctx.api.open("/handle-overwrite.txt");
-          try {
-            await handle.writeStream([toBytes("new")]);
-          } finally {
-            await handle.close();
-          }
-
-          const content = await ctx.api.readFile("/handle-overwrite.txt");
-          expect(fromBytes(content)).toBe("new");
-        });
-
-        it("should write at specific position", async () => {
-          await ctx.api.write("/handle-position.txt", [toBytes("Hello World!")]);
-
-          const handle = await ctx.api.open("/handle-position.txt");
-          try {
-            await handle.writeStream([toBytes("XXXXX")], { start: 6 });
-          } finally {
-            await handle.close();
-          }
-
-          const content = await ctx.api.readFile("/handle-position.txt");
-          expect(fromBytes(content)).toBe("Hello XXXXX");
-        });
-
-        it("should append to existing file using start: size", async () => {
-          await ctx.api.write("/handle-append.txt", [toBytes("Hello")]);
-
-          const handle = await ctx.api.open("/handle-append.txt");
-          try {
-            const written = await handle.writeStream([toBytes(" World!")], { start: handle.size });
-            expect(written).toBe(7);
-          } finally {
-            await handle.close();
-          }
-
-          const content = await ctx.api.readFile("/handle-append.txt");
-          expect(fromBytes(content)).toBe("Hello World!");
-        });
-
-        it("should append to new file using start: size", async () => {
-          const handle = await ctx.api.open("/handle-append-new.txt");
-          try {
-            await handle.writeStream([toBytes("First")], { start: handle.size });
-            await handle.writeStream([toBytes(" Second")], { start: handle.size });
-          } finally {
-            await handle.close();
-          }
-
-          const content = await ctx.api.readFile("/handle-append-new.txt");
-          expect(fromBytes(content)).toBe("First Second");
-        });
-      });
-
-      describe("read() - Random Access", () => {
-        it("should read bytes from the beginning of a file", async () => {
-          const content = toBytes("Hello, World!");
-          await ctx.api.write("/test.txt", [content]);
-
-          const handle = await ctx.api.open("/test.txt");
-          try {
-            const buffer = new Uint8Array(5);
-            const bytesRead = await handle.read(buffer, 0, 5, 0);
-
-            expect(bytesRead).toBe(5);
-            expect(fromBytes(buffer)).toBe("Hello");
-          } finally {
-            await handle.close();
-          }
-        });
-
-        it("should read bytes from the middle of a file", async () => {
-          const content = toBytes("Hello, World!");
-          await ctx.api.write("/test.txt", [content]);
-
-          const handle = await ctx.api.open("/test.txt");
-          try {
-            const buffer = new Uint8Array(5);
-            const bytesRead = await handle.read(buffer, 0, 5, 7);
-
-            expect(bytesRead).toBe(5);
-            expect(fromBytes(buffer)).toBe("World");
-          } finally {
-            await handle.close();
-          }
-        });
-
-        it("should read bytes into buffer at offset", async () => {
-          const content = toBytes("ABCDEFGHIJ");
-          await ctx.api.write("/test.txt", [content]);
-
-          const handle = await ctx.api.open("/test.txt");
-          try {
-            const buffer = new Uint8Array(10);
-            buffer.fill(0);
-
-            const bytesRead = await handle.read(buffer, 3, 4, 2);
-
-            expect(bytesRead).toBe(4);
-            expect(Array.from(buffer)).toEqual([0, 0, 0, 67, 68, 69, 70, 0, 0, 0]); // C, D, E, F
-          } finally {
-            await handle.close();
-          }
-        });
-
-        it("should return fewer bytes at end of file", async () => {
-          const content = toBytes("Short");
-          await ctx.api.write("/test.txt", [content]);
-
-          const handle = await ctx.api.open("/test.txt");
-          try {
-            const buffer = new Uint8Array(100);
-            const bytesRead = await handle.read(buffer, 0, 100, 0);
-
-            expect(bytesRead).toBe(5);
-            expect(fromBytes(buffer.subarray(0, bytesRead))).toBe("Short");
-          } finally {
-            await handle.close();
-          }
-        });
-
-        it("should return 0 when reading past end of file", async () => {
-          const content = toBytes("Hello");
-          await ctx.api.write("/test.txt", [content]);
-
-          const handle = await ctx.api.open("/test.txt");
-          try {
-            const buffer = new Uint8Array(10);
-            const bytesRead = await handle.read(buffer, 0, 10, 100);
-
-            expect(bytesRead).toBe(0);
-          } finally {
-            await handle.close();
-          }
-        });
-
-        it("should handle reading from empty file", async () => {
-          await ctx.api.write("/empty.txt", [new Uint8Array(0)]);
-
-          const handle = await ctx.api.open("/empty.txt");
-          try {
-            const buffer = new Uint8Array(10);
-            const bytesRead = await handle.read(buffer, 0, 10, 0);
-
-            expect(bytesRead).toBe(0);
-          } finally {
-            await handle.close();
-          }
-        });
-
-        it("should handle multiple sequential reads", async () => {
-          const content = toBytes("ABCDEFGHIJ");
-          await ctx.api.write("/test.txt", [content]);
-
-          const handle = await ctx.api.open("/test.txt");
-          try {
-            const buffer = new Uint8Array(2);
-
-            let bytesRead = await handle.read(buffer, 0, 2, 0);
-            expect(bytesRead).toBe(2);
-            expect(fromBytes(buffer)).toBe("AB");
-
-            bytesRead = await handle.read(buffer, 0, 2, 4);
-            expect(bytesRead).toBe(2);
-            expect(fromBytes(buffer)).toBe("EF");
-
-            bytesRead = await handle.read(buffer, 0, 2, 8);
-            expect(bytesRead).toBe(2);
-            expect(fromBytes(buffer)).toBe("IJ");
-          } finally {
-            await handle.close();
-          }
-        });
-
-        it("should handle random access reads in non-sequential order", async () => {
-          const content = toBytes("0123456789");
-          await ctx.api.write("/test.txt", [content]);
-
-          const handle = await ctx.api.open("/test.txt");
-          try {
-            const buffer = new Uint8Array(1);
-
-            await handle.read(buffer, 0, 1, 5);
-            expect(fromBytes(buffer)).toBe("5");
-
-            await handle.read(buffer, 0, 1, 2);
-            expect(fromBytes(buffer)).toBe("2");
-
-            await handle.read(buffer, 0, 1, 9);
-            expect(fromBytes(buffer)).toBe("9");
-
-            await handle.read(buffer, 0, 1, 0);
-            expect(fromBytes(buffer)).toBe("0");
-          } finally {
-            await handle.close();
-          }
-        });
-
-        it("should handle reading large files in chunks", async () => {
-          const size = 1024 * 100; // 100KB
-          const content = randomBytes(size);
-          await ctx.api.write("/large.bin", [content]);
-
-          const handle = await ctx.api.open("/large.bin");
-          try {
-            const chunkSize = 8192;
-            let position = 0;
-            const result = new Uint8Array(size);
-
-            while (position < size) {
-              const buffer = new Uint8Array(chunkSize);
-              const bytesRead = await handle.read(buffer, 0, chunkSize, position);
-              result.set(buffer.subarray(0, bytesRead), position);
-              position += bytesRead;
-            }
-
-            expect(result).toEqual(content);
-          } finally {
-            await handle.close();
-          }
-        });
-
-        it("should respect buffer offset limits", async () => {
-          const content = toBytes("ABCDEFGHIJ");
-          await ctx.api.write("/test.txt", [content]);
-
-          const handle = await ctx.api.open("/test.txt");
-          try {
-            const buffer = new Uint8Array(5);
-            // Request to write at offset 3, but buffer only has 2 bytes left
-            const bytesRead = await handle.read(buffer, 3, 10, 0);
-
-            expect(bytesRead).toBe(2); // Only 2 bytes fit in buffer
-            expect(fromBytes(buffer.subarray(3, 5))).toBe("AB");
-          } finally {
-            await handle.close();
-          }
-        });
-      });
-    });
-
-    // ========================================
-    // 12. PATH EDGE CASES
+    // 10. PATH EDGE CASES
     // ========================================
 
     describe("path handling", () => {
@@ -916,7 +539,7 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
     });
 
     // ========================================
-    // 13. CONCURRENT OPERATIONS
+    // 11. CONCURRENT OPERATIONS
     // ========================================
 
     describe("concurrent operations", () => {
@@ -928,7 +551,7 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
         await Promise.all(writes);
 
         for (let i = 0; i < 10; i++) {
-          const content = await ctx.api.readFile(`/concurrent/file-${i}.txt`);
+          const content = await collectStream(ctx.api.read(`/concurrent/file-${i}.txt`));
           expect(fromBytes(content)).toBe(`content ${i}`);
         }
       });
@@ -938,7 +561,7 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
 
         const reads = [];
         for (let i = 0; i < 10; i++) {
-          reads.push(ctx.api.readFile("/concurrent-read.txt"));
+          reads.push(collectStream(ctx.api.read("/concurrent-read.txt")));
         }
 
         const results = await Promise.all(reads);
@@ -965,7 +588,7 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
     });
 
     // ========================================
-    // 14. ERROR HANDLING
+    // 12. ERROR HANDLING
     // ========================================
 
     describe("error handling", () => {

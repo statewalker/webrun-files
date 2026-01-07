@@ -1,8 +1,22 @@
 /**
- * Path manipulation utilities
+ * Path manipulation utilities for virtual filesystem paths.
+ * All paths use forward slashes and start with "/".
  */
 
-import { normalizePath } from "./normalize-path.js";
+/**
+ * Normalizes a file path to a consistent format.
+ * - Adds leading slash if missing
+ * - Removes trailing slash
+ * - Removes `.` segments
+ * - Collapses multiple slashes
+ */
+export function normalizePath(filePath: string): string {
+  const segments = filePath.split("/").filter((s) => !!s && s !== ".");
+  if (segments.length === 0) {
+    return "/";
+  }
+  return `/${segments.join("/")}`;
+}
 
 /**
  * Joins path segments with proper normalization.

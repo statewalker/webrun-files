@@ -1,214 +1,116 @@
 /**
- * Type definitions for IFilesApi
- *
- * This module defines the core interfaces for the cross-platform filesystem API.
- * The design prioritizes minimal abstractions that work consistently across
- * Node.js, browsers, and cloud storage backends.
+ * Core types for FilesApi abstraction
  */
 
-/**
- * Discriminator for filesystem entry types.
- * Only "file" and "directory" are supported to maintain cross-platform compatibility.
- * Symlinks, devices, and other special types are not represented because they lack
- * universal support across all target platforms (especially browsers and S3).
- */
 export type FileKind = "file" | "directory";
 
 /**
- * Metadata about a file or directory entry.
- * Represents the common subset of information available across all platforms.
+ * Options for reading file content with range support.
+ *
+ * @example
+ * // Read 100 bytes starting at position 50
+ * api.read("/file.bin", { start: 50, length: 100 })
+ *
+ * @example
+ * // Read from position 1000 to end of file
+ * api.read("/file.bin", { start: 1000 })
  */
-export interface FileInfo {
-  /** Whether this entry is a file or directory. */
-  kind: FileKind;
-  /** The base name of the entry (without path). */
-  name: string;
-  /** The full path to the entry. Always uses forward slashes and starts with "/". */
-  path: string;
-  /** MIME type of the file (when available, e.g., from browser File API). */
-  type?: string;
-  /** Size in bytes. Only meaningful for files; may be undefined for directories. */
-  size?: number;
-  /** Last modification timestamp in milliseconds since Unix epoch. */
-  lastModified: number;
+export interface ReadOptions {
+  /** Starting byte position (0-indexed). Defaults to 0. */
+  start?: number;
+  /** Number of bytes to read. If omitted, reads to end of file. */
+  length?: number;
+  /** AbortSignal for cancellation support. */
+  signal?: AbortSignal;
 }
-
-/**
- * Reference to a file or directory.
- * Can be a simple path string or an object with a path property.
- * The object form allows extending with additional metadata in future versions.
- */
-export type FileRef = string | { path: string };
 
 /**
  * Options for listing directory contents.
  */
 export interface ListOptions {
-  /** If true, lists all descendants recursively. Default: false (immediate children only). */
+  /** If true, lists all descendants recursively. Defaults to false. */
   recursive?: boolean;
 }
 
 /**
- * Options for copying files or directories.
+ * File or directory metadata returned by stats().
+ * Simplified type without path information.
  */
-export interface CopyOptions {
-  /** If true, copies directory contents recursively. Default: true for convenience. */
-  recursive?: boolean;
+export interface FileStats {
+  kind: FileKind;
+  size?: number;
+  lastModified?: number;
 }
 
 /**
- * Options for reading file content as a stream.
+ * File or directory information returned by list().
+ * Includes name and path for directory traversal.
  */
-export interface ReadStreamOptions {
-  /** Byte offset to start reading from. Default: 0 (beginning of file). */
-  start?: number;
-  /** Byte offset to stop reading at (exclusive). Default: Infinity (end of file). */
-  end?: number;
-  /** Signal to abort the operation. Checked between chunks during streaming. */
-  signal?: AbortSignal;
+export interface FileInfo {
+  name: string;
+  path: string;
+  kind: FileKind;
+  size?: number;
+  lastModified?: number;
 }
 
 /**
- * Options for writing data to a file.
- */
-export interface WriteStreamOptions {
-  /** Byte offset to start writing at. Content before this position is preserved. Default: 0. */
-  start?: number;
-  /** Signal to abort the operation. Checked between chunks during streaming. */
-  signal?: AbortSignal;
-}
-
-/**
- * Binary data source for file operations.
- * Accepts both sync and async iterables to support streaming from various sources.
- * Uses Uint8Array chunks for cross-platform binary data compatibility.
- */
-export type BinaryStream = AsyncIterable<Uint8Array> | Iterable<Uint8Array>;
-
-/**
- * Handle for reading and writing a specific file.
+ * Cross-platform filesystem abstraction interface.
  *
- * FileHandle provides random access operations on a file. The handle must be
- * explicitly closed after use to release resources (especially important for
- * Node.js where file descriptors are limited).
- *
- * Design rationale: Using handles instead of direct read/write methods allows
- * efficient multiple operations on the same file without repeated path resolution
- * and permission checks.
+ * All paths are virtual paths using forward slashes and starting with "/".
+ * Implementations handle mapping to underlying storage.
  */
-export interface FileHandle {
-  /** Current file size in bytes. Updated after write operations. */
-  readonly size: number;
+export interface FilesApi {
+  /**
+   * Read file content as an async iterable of chunks.
+   * Returns empty iterable for non-existent files.
+   */
+  read(path: string, options?: ReadOptions): AsyncIterable<Uint8Array>;
 
   /**
-   * Closes the file handle and releases associated resources.
-   * Should always be called when done with the handle.
+   * Write content to a file, creating parent directories as needed.
+   * Overwrites existing file content.
    */
-  close(): Promise<void>;
+  write(path: string, content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>): Promise<void>;
 
   /**
-   * Creates an async generator that yields file content as chunks.
-   * Uses streaming to handle large files without loading them entirely into memory.
-   * @param options - Range options (start/end) and abort signal.
-   * @yields Uint8Array chunks of file content.
+   * Create a directory and all parent directories.
+   * No-op if directory already exists.
    */
-  createReadStream(options?: ReadStreamOptions): AsyncGenerator<Uint8Array>;
+  mkdir(path: string): Promise<void>;
 
   /**
-   * Writes data to the file, truncating any existing content after the start position.
-   * Content before the start position is preserved.
-   * To append data, use `writeStream(data, { start: handle.size })`.
-   * @param data - Binary data to write (streamed for memory efficiency).
-   * @param options - Start position and abort signal.
-   * @returns Number of bytes written.
+   * List directory contents.
+   * Returns empty iterable for non-existent or non-directory paths.
    */
-  writeStream(data: BinaryStream, options?: WriteStreamOptions): Promise<number>;
+  list(path: string, options?: ListOptions): AsyncIterable<FileInfo>;
 
   /**
-   * Read bytes from the file at a specific position.
-   * Enables random access patterns without streaming the entire file.
-   *
-   * @param buffer - The buffer to read bytes into
-   * @param offset - The offset in the buffer to start writing at
-   * @param length - The number of bytes to read
-   * @param position - The position in the file to start reading from
-   * @returns The number of bytes actually read (may be less than length at EOF)
+   * Get file or directory metadata.
+   * Returns undefined for non-existent paths.
    */
-  read(buffer: Uint8Array, offset: number, length: number, position: number): Promise<number>;
+  stats(path: string): Promise<FileStats | undefined>;
 
   /**
-   * Changes file permissions (Unix-style mode).
-   * Optional because not all platforms support permissions (e.g., browsers, S3).
+   * Check if a path exists.
    */
-  chmod?(mode: number): Promise<void>;
+  exists(path: string): Promise<boolean>;
 
   /**
-   * Changes file ownership (Unix-style uid/gid).
-   * Optional because not all platforms support ownership (e.g., browsers, S3).
+   * Remove a file or directory (recursively).
+   * Returns true if something was removed, false if path didn't exist.
    */
-  chown?(uid: number, gid: number): Promise<void>;
-}
-
-/**
- * Core filesystem interface - minimal contract for implementations.
- *
- * IFilesApi defines the essential operations that all filesystem implementations
- * must support. The interface is intentionally minimal to ensure consistent behavior
- * across diverse backends (Node.js fs, browser File System Access API, S3, etc.).
- *
- * Design principles:
- * - Required methods (list, stats, remove, open) represent the absolute minimum
- *   needed for a functional filesystem.
- * - Optional methods (move, copy, mkdir) allow implementations to provide
- *   optimized native operations when available.
- * - All paths use forward slashes and start with "/" for consistency.
- */
-export interface IFilesApi {
-  /**
-   * Lists entries in a directory.
-   * @param file - Path to the directory to list.
-   * @param options - Listing options (recursive flag).
-   * @yields FileInfo for each entry in the directory.
-   */
-  list(file: FileRef, options?: ListOptions): AsyncGenerator<FileInfo>;
+  remove(path: string): Promise<boolean>;
 
   /**
-   * Gets metadata about a file or directory.
-   * @param file - Path to the file or directory.
-   * @returns FileInfo if the entry exists, undefined otherwise.
+   * Move/rename a file or directory.
+   * Returns true on success, false if source doesn't exist.
    */
-  stats(file: FileRef): Promise<FileInfo | undefined>;
+  move(source: string, target: string): Promise<boolean>;
 
   /**
-   * Removes a file or directory (recursively for directories).
-   * @param file - Path to remove.
-   * @returns True if something was removed, false if the path didn't exist.
+   * Copy a file or directory (recursively).
+   * Returns true on success, false if source doesn't exist.
    */
-  remove(file: FileRef): Promise<boolean>;
-
-  /**
-   * Opens a file for reading and writing.
-   * Creates the file and parent directories if they don't exist.
-   * @param file - Path to the file to open.
-   * @returns A FileHandle for the file.
-   */
-  open(file: FileRef): Promise<FileHandle>;
-
-  /**
-   * Moves a file or directory to a new location.
-   * Optional because some backends (e.g., browsers) lack native move support.
-   */
-  move?(source: FileRef, target: FileRef): Promise<boolean>;
-
-  /**
-   * Copies a file or directory.
-   * Optional because implementations may need to fall back to read/write.
-   */
-  copy?(source: FileRef, target: FileRef, options?: CopyOptions): Promise<boolean>;
-
-  /**
-   * Creates a directory (and parent directories if needed).
-   * Optional because some backends create directories implicitly on file write.
-   */
-  mkdir?(file: FileRef): Promise<void>;
+  copy(source: string, target: string): Promise<boolean>;
 }

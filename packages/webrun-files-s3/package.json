@@ -1,9 +1,9 @@
 {
   "name": "@statewalker/webrun-files-s3",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": false,
   "type": "module",
-  "description": "S3-backed IFilesApi implementation for webrun-files",
+  "description": "S3-backed FilesApi implementation for webrun-files",
   "homepage": "https://github.com/statewalker/webrun-files",
   "author": {
     "name": "Mikhail Kotelnikov",

@@ -1,6 +1,5 @@
 /**
- * webrun-files-s3 - S3-backed IFilesApi implementation
+ * webrun-files-s3 - S3-backed FilesApi implementation
  */
 
-export { S3FileHandle, type S3FileHandleOptions } from "./s3-file-handle.js";
 export { S3FilesApi, type S3FilesApiOptions } from "./s3-files-api.js";

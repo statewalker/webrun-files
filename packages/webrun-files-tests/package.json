@@ -1,9 +1,9 @@
 {
   "name": "@statewalker/webrun-files-tests",
-  "version": "1.0.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
-  "description": "Shared test suites for IFilesApi implementations",
+  "description": "Shared test suites for FilesApi implementations",
   "main": "./dist/cjs/index.cjs",
   "module": "./dist/esm/index.js",
   "exports": {
