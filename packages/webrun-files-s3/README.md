@@ -1,15 +1,14 @@
 # @statewalker/webrun-files-s3
 
-S3-backed implementation of the `IFilesApi` interface from `@statewalker/webrun-files`.
+S3 implementation of the `FilesApi` interface from `@statewalker/webrun-files`.
 
 ## Overview
 
-This package provides an `IFilesApi` implementation that stores files in Amazon S3 or S3-compatible object storage services (MinIO, DigitalOcean Spaces, Backblaze B2, etc.). It maps filesystem-like operations to S3 API calls, providing:
+This package provides a `FilesApi` implementation that stores files in Amazon S3 or S3-compatible object storage services (MinIO, DigitalOcean Spaces, Backblaze B2, Cloudflare R2, etc.). It maps filesystem-like operations to S3 API calls, providing:
 
 - **Virtual directory structure** using key prefixes
-- **Streaming reads** with HTTP Range headers for efficient partial access
-- **Streaming multipart uploads** for large files without buffering entirely in memory
-- **Copy operations** using S3's server-side copy (no data transfer through client)
+- **Range reads** via HTTP Range headers for efficient partial access
+- **Server-side copy** for copy/move operations (no data transfer through client)
 
 ## Installation
 
@@ -22,40 +21,35 @@ npm install @statewalker/webrun-files-s3 @statewalker/webrun-files @aws-sdk/clie
 ### Basic Usage
 
 ```typescript
-import { S3Client } from "@aws-sdk/client-s3";
-import { FilesApi } from "@statewalker/webrun-files";
-import { S3FilesApi } from "@statewalker/webrun-files-s3";
+import { S3Client } from '@aws-sdk/client-s3';
+import { S3FilesApi } from '@statewalker/webrun-files-s3';
+import { readText, writeText } from '@statewalker/webrun-files';
 
 // Create S3 client
 const s3Client = new S3Client({
-  region: "us-east-1",
+  region: 'us-east-1',
   credentials: {
-    accessKeyId: "YOUR_ACCESS_KEY",
-    secretAccessKey: "YOUR_SECRET_KEY",
+    accessKeyId: 'YOUR_ACCESS_KEY',
+    secretAccessKey: 'YOUR_SECRET_KEY',
   },
 });
 
 // Create S3-backed files API
-const s3FilesApi = new S3FilesApi({
+const files = new S3FilesApi({
   client: s3Client,
-  bucket: "my-bucket",
-  prefix: "my-app/data", // optional key prefix
+  bucket: 'my-bucket',
+  prefix: 'my-app/data', // optional key prefix
 });
 
-// Wrap with FilesApi for convenience methods
-const api = new FilesApi(s3FilesApi);
-
 // Write a file
-await api.write("/docs/hello.txt", [
-  new TextEncoder().encode("Hello, S3!")
-]);
+await writeText(files, '/docs/hello.txt', 'Hello, S3!');
 
 // Read a file
-const content = await api.readFile("/docs/hello.txt");
-console.log(new TextDecoder().decode(content)); // "Hello, S3!"
+const content = await readText(files, '/docs/hello.txt');
+console.log(content); // "Hello, S3!"
 
 // List directory contents
-for await (const entry of api.list("/docs")) {
+for await (const entry of files.list('/docs')) {
   console.log(entry.name, entry.kind, entry.size);
 }
 ```
@@ -63,134 +57,67 @@ for await (const entry of api.list("/docs")) {
 ### With S3-Compatible Storage (MinIO)
 
 ```typescript
-import { S3Client } from "@aws-sdk/client-s3";
-import { S3FilesApi } from "@statewalker/webrun-files-s3";
-import { FilesApi } from "@statewalker/webrun-files";
+import { S3Client } from '@aws-sdk/client-s3';
+import { S3FilesApi } from '@statewalker/webrun-files-s3';
 
 const s3Client = new S3Client({
-  endpoint: "http://localhost:9000",
-  region: "us-east-1",
+  endpoint: 'http://localhost:9000',
+  region: 'us-east-1',
   credentials: {
-    accessKeyId: "minioadmin",
-    secretAccessKey: "minioadmin",
+    accessKeyId: 'minioadmin',
+    secretAccessKey: 'minioadmin',
   },
   forcePathStyle: true, // Required for MinIO
 });
 
-const s3FilesApi = new S3FilesApi({
+const files = new S3FilesApi({
   client: s3Client,
-  bucket: "my-bucket",
+  bucket: 'my-bucket',
 });
-
-const api = new FilesApi(s3FilesApi);
 ```
 
 ### With AWS IAM Roles (EC2, Lambda, ECS)
 
 ```typescript
-import { S3Client } from "@aws-sdk/client-s3";
-import { S3FilesApi } from "@statewalker/webrun-files-s3";
+import { S3Client } from '@aws-sdk/client-s3';
+import { S3FilesApi } from '@statewalker/webrun-files-s3';
 
 // Credentials are automatically loaded from environment/IAM role
-const s3Client = new S3Client({ region: "us-east-1" });
+const s3Client = new S3Client({ region: 'us-east-1' });
 
-const s3FilesApi = new S3FilesApi({
+const files = new S3FilesApi({
   client: s3Client,
-  bucket: "my-bucket",
+  bucket: 'my-bucket',
 });
-```
-
-### Random Access with FileHandle
-
-```typescript
-const api = new FilesApi(s3FilesApi);
-
-// Open a file for random access
-const handle = await api.open("/large-file.bin");
-
-console.log("File size:", handle.size);
-
-// Read a specific range (uses HTTP Range header)
-for await (const chunk of handle.createReadStream({ start: 1000, end: 2000 })) {
-  console.log("Chunk:", chunk.length);
-}
-
-// Append data by writing at current size
-await handle.writeStream([new TextEncoder().encode(" - appended")], { start: handle.size });
-
-await handle.close();
-```
-
-## Configuration
-
-### S3FilesApiOptions
-
-```typescript
-interface S3FilesApiOptions {
-  /**
-   * Pre-configured S3Client instance.
-   * Allows full control over credentials, region, endpoint.
-   */
-  client: S3Client;
-
-  /**
-   * S3 bucket name.
-   */
-  bucket: string;
-
-  /**
-   * Optional key prefix (acts as root directory).
-   * All paths will be relative to this prefix.
-   * @example "projects/my-app/data"
-   */
-  prefix?: string;
-
-  /**
-   * Minimum part size for multipart uploads.
-   * S3 requires minimum 5MB for all parts except the last.
-   * @default 5 * 1024 * 1024 (5MB)
-   */
-  multipartPartSize?: number;
-}
 ```
 
 ## API Reference
 
 ### S3FilesApi
 
-Main class implementing `IFilesApi` for S3 storage.
-
 ```typescript
-class S3FilesApi implements IFilesApi {
+interface S3FilesApiOptions {
+  /** Pre-configured S3Client instance. */
+  client: S3Client;
+  /** S3 bucket name. */
+  bucket: string;
+  /** Optional key prefix (acts as root directory). */
+  prefix?: string;
+}
+
+class S3FilesApi implements FilesApi {
   constructor(options: S3FilesApiOptions);
 
-  // Core IFilesApi methods
-  list(file: FileRef, options?: ListOptions): AsyncGenerator<FileInfo>;
-  stats(file: FileRef): Promise<FileInfo | undefined>;
-  remove(file: FileRef): Promise<boolean>;
-  open(file: FileRef): Promise<FileHandle>;
-
-  // Optional methods (all implemented)
-  mkdir(file: FileRef): Promise<void>;
-  move(source: FileRef, target: FileRef): Promise<boolean>;
-  copy(source: FileRef, target: FileRef, options?: CopyOptions): Promise<boolean>;
-}
-```
-
-### S3FileHandle
-
-File handle class for random access operations on S3 objects.
-
-```typescript
-class S3FileHandle implements FileHandle {
-  readonly size: number;
-
-  close(): Promise<void>;
-  createReadStream(options?: ReadStreamOptions): AsyncGenerator<Uint8Array>;
-  writeStream(data: BinaryStream, options?: WriteStreamOptions): Promise<number>;
-
-  // Random access read using HTTP Range header
-  read(buffer: Uint8Array, offset: number, length: number, position: number): Promise<number>;
+  // All FilesApi methods
+  read(path: string, options?: ReadOptions): AsyncIterable<Uint8Array>;
+  write(path: string, content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>): Promise<void>;
+  mkdir(path: string): Promise<void>;
+  list(path: string, options?: ListOptions): AsyncIterable<FileInfo>;
+  stats(path: string): Promise<FileStats | undefined>;
+  exists(path: string): Promise<boolean>;
+  remove(path: string): Promise<boolean>;
+  move(source: string, target: string): Promise<boolean>;
+  copy(source: string, target: string): Promise<boolean>;
 }
 ```
 
@@ -216,7 +143,7 @@ S3 doesn't have real directories, but this implementation simulates them using:
 ```typescript
 // List /docs with prefix "my-app"
 // S3 request: ListObjectsV2(Prefix="my-app/docs/", Delimiter="/")
-for await (const entry of api.list("/docs")) {
+for await (const entry of files.list('/docs')) {
   // entry.kind is "file" or "directory"
 }
 ```
@@ -226,31 +153,20 @@ for await (const entry of api.list("/docs")) {
 Reads use `GetObject` with HTTP Range headers for efficient partial access:
 
 ```typescript
-// Read bytes 1000-1999 from a file
-const handle = await api.open("/large-file.bin");
-for await (const chunk of handle.createReadStream({ start: 1000, end: 2000 })) {
+// Read bytes 1000-1499 from a file
+for await (const chunk of files.read('/large-file.bin', { start: 1000, length: 500 })) {
   // Streams directly from S3, no full file download
 }
 ```
 
 ### Writing Files
 
-Since S3 objects are immutable, writes use streaming multipart upload:
+Writes use `PutObject` to upload content:
 
-1. **CreateMultipartUpload** - Start the upload
-2. **UploadPart** - Upload each 5MB+ chunk as it arrives
-3. **CompleteMultipartUpload** - Finalize
-
-For partial writes (preserving content before a position):
-
-1. **UploadPartCopy** - Copy existing data as parts (no download needed)
-2. **UploadPart** - Upload new data
-3. **CompleteMultipartUpload** - Finalize
-
-This approach:
-- Buffers only one 5MB part at a time
-- Uses server-side copy to preserve existing content
-- Supports files of any size
+```typescript
+await writeText(files, '/data/file.txt', 'content');
+// S3 request: PutObject(Bucket, Key, Body)
+```
 
 ### Copy and Move
 
@@ -263,7 +179,7 @@ This approach:
 S3 directories are implicit (they exist if files exist within them). The `mkdir()` method creates an empty directory marker object:
 
 ```typescript
-await api.mkdir("/empty-dir");
+await files.mkdir('/empty-dir');
 // Creates object: "prefix/empty-dir/" with 0 bytes
 ```
 
@@ -280,28 +196,20 @@ This implementation works with any S3-compatible storage:
 | **Cloudflare R2** | Use account-specific endpoint |
 | **Wasabi** | Use region-specific endpoint |
 
-## Performance Considerations
-
-- **Multipart threshold**: Files larger than 5MB use multipart upload
-- **Part size**: Default 5MB per part (configurable via `multipartPartSize`)
-- **Range reads**: Always use `createReadStream({ start, end })` for partial reads
-- **Server-side copy**: Copy/move operations don't transfer data through client
-- **Pagination**: Directory listings handle pagination automatically
-
 ## Testing
 
 Tests use [testcontainers](https://github.com/testcontainers/testcontainers-node) with MinIO:
 
 ```typescript
-import { MinioContainer } from "@testcontainers/minio";
-import { S3Client, CreateBucketCommand } from "@aws-sdk/client-s3";
-import { S3FilesApi } from "@statewalker/webrun-files-s3";
+import { MinioContainer } from '@testcontainers/minio';
+import { S3Client, CreateBucketCommand } from '@aws-sdk/client-s3';
+import { S3FilesApi } from '@statewalker/webrun-files-s3';
 
 const minioContainer = await new MinioContainer().start();
 
 const s3Client = new S3Client({
   endpoint: minioContainer.getConnectionUrl(),
-  region: "us-east-1",
+  region: 'us-east-1',
   credentials: {
     accessKeyId: minioContainer.getUsername(),
     secretAccessKey: minioContainer.getPassword(),
@@ -309,11 +217,11 @@ const s3Client = new S3Client({
   forcePathStyle: true,
 });
 
-await s3Client.send(new CreateBucketCommand({ Bucket: "test-bucket" }));
+await s3Client.send(new CreateBucketCommand({ Bucket: 'test-bucket' }));
 
-const s3FilesApi = new S3FilesApi({
+const files = new S3FilesApi({
   client: s3Client,
-  bucket: "test-bucket",
+  bucket: 'test-bucket',
 });
 ```
 

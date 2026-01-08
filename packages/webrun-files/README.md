@@ -1,82 +1,125 @@
 # @statewalker/webrun-files
 
-The core filesystem API for cross-platform file operations. This package provides a clean, minimal interface for reading, writing, and managing files that works consistently whether you're running in Node.js or need an in-memory implementation for browsers and testing.
+Core types and utilities for cross-platform file operations. This package defines the `FilesApi` interface that all storage backends implement, plus utility functions for common file operations.
 
 ## Installation
 
 ```bash
 npm install @statewalker/webrun-files
-# or
-pnpm add @statewalker/webrun-files
+```
+
+For actual filesystem implementations, install one of these packages:
+- `@statewalker/webrun-files-mem` - In-memory storage
+- `@statewalker/webrun-files-node` - Node.js filesystem
+- `@statewalker/webrun-files-browser` - Browser File System Access API
+- `@statewalker/webrun-files-s3` - AWS S3 / S3-compatible storage
+
+## The FilesApi Interface
+
+All implementations provide this interface:
+
+```typescript
+interface FilesApi {
+  // Read file content as async iterable of chunks
+  read(path: string, options?: ReadOptions): AsyncIterable<Uint8Array>;
+
+  // Write content to file (creates parent directories)
+  write(path: string, content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>): Promise<void>;
+
+  // Create directory (and parents)
+  mkdir(path: string): Promise<void>;
+
+  // List directory contents
+  list(path: string, options?: ListOptions): AsyncIterable<FileInfo>;
+
+  // Get file/directory metadata
+  stats(path: string): Promise<FileStats | undefined>;
+
+  // Check if path exists
+  exists(path: string): Promise<boolean>;
+
+  // Remove file or directory (recursively)
+  remove(path: string): Promise<boolean>;
+
+  // Move/rename file or directory
+  move(source: string, target: string): Promise<boolean>;
+
+  // Copy file or directory (recursively)
+  copy(source: string, target: string): Promise<boolean>;
+}
 ```
 
 ## Quick Start
 
-The fastest way to get going is to create a `FilesApi` instance with one of the built-in backends. Here's an example using the in-memory implementation:
-
 ```typescript
-import { FilesApi, MemFilesApi } from '@statewalker/webrun-files';
+import { MemFilesApi } from '@statewalker/webrun-files-mem';
+import { readFile, writeText } from '@statewalker/webrun-files';
 
-const files = new FilesApi(new MemFilesApi());
+const files = new MemFilesApi();
 
 // Write a file
-await files.write('/documents/notes.txt', [
-  new TextEncoder().encode('Remember to water the plants')
-]);
+await writeText(files, '/documents/notes.txt', 'Remember to water the plants');
 
 // Read it back
-const content = await files.readFile('/documents/notes.txt');
+const content = await readFile(files, '/documents/notes.txt');
 console.log(new TextDecoder().decode(content));
 ```
 
-For Node.js applications that need to work with the actual filesystem, switch to `NodeFilesApi`:
+## Utility Functions
+
+### Reading Files
 
 ```typescript
-import { FilesApi, NodeFilesApi } from '@statewalker/webrun-files';
-import * as fs from 'node:fs/promises';
+import { readFile, readText, tryReadFile, tryReadText, readRange, readAt } from '@statewalker/webrun-files';
 
-const files = new FilesApi(new NodeFilesApi({
-  fs,
-  rootDir: '/path/to/root'  // optional: sandbox all operations to this directory
-}));
+// Read entire file as Uint8Array
+const content = await readFile(files, '/data.bin');
+
+// Read as UTF-8 string
+const text = await readText(files, '/config.json');
+
+// Read with undefined return for missing files
+const maybeContent = await tryReadFile(files, '/optional.txt');
+const maybeText = await tryReadText(files, '/optional.txt');
+
+// Read a specific byte range
+const chunk = await readRange(files, '/large.bin', 1000, 500); // 500 bytes starting at position 1000
+
+// Read into a buffer at specific offset (like fs.read)
+const buffer = new Uint8Array(100);
+const bytesRead = await readAt(files, '/data.bin', buffer, 0, 100, 500);
 ```
 
-The `NodeFilesApi` constructor requires an options object with the `fs` module (allowing you to inject the module for testing). The optional `rootDir` makes all file operations relative to this directory, effectively sandboxing the API.
+### Writing Files
+
+```typescript
+import { writeText } from '@statewalker/webrun-files';
+
+// Write string content as UTF-8
+await writeText(files, '/greeting.txt', 'Hello, World!');
+
+// Write binary content directly
+await files.write('/data.bin', [new Uint8Array([1, 2, 3, 4])]);
+
+// Write from multiple chunks
+await files.write('/large.bin', generateChunks());
+```
+
+### Path Utilities
+
+```typescript
+import { normalizePath, joinPath, dirname, basename, extname } from '@statewalker/webrun-files';
+
+normalizePath('//foo/../bar/./baz/');  // '/bar/baz'
+joinPath('/foo', 'bar', 'baz.txt');    // '/foo/bar/baz.txt'
+dirname('/foo/bar/baz.txt');            // '/foo/bar'
+basename('/foo/bar/baz.txt');           // 'baz.txt'
+extname('/foo/bar/baz.txt');            // '.txt'
+```
 
 ## Working with Files
 
-The `FilesApi` class provides everything you need for common file operations. Writing content is straightforward—just pass an array of `Uint8Array` chunks:
-
-```typescript
-const text = new TextEncoder().encode('Hello, World!');
-await files.write('/greeting.txt', [text]);
-```
-
-Reading comes in two flavors. Use `readFile` when you want the entire contents as a single buffer:
-
-```typescript
-const content = await files.readFile('/greeting.txt');
-```
-
-For large files, `read` returns an async generator that yields chunks as they come in, keeping memory usage under control:
-
-```typescript
-for await (const chunk of files.read('/large-file.bin')) {
-  process.stdout.write(chunk);
-}
-```
-
-You can also read specific portions of a file by specifying start and end positions:
-
-```typescript
-for await (const chunk of files.read('/data.bin', { start: 100, end: 200 })) {
-  // Only bytes 100-199
-}
-```
-
-## Managing Files and Directories
-
-Checking whether a file or directory exists is simple:
+### Checking Existence
 
 ```typescript
 if (await files.exists('/config.json')) {
@@ -84,7 +127,7 @@ if (await files.exists('/config.json')) {
 }
 ```
 
-To get detailed information about a file, use `stats`:
+### Getting Metadata
 
 ```typescript
 const info = await files.stats('/photo.jpg');
@@ -95,23 +138,21 @@ if (info) {
 }
 ```
 
-Listing directory contents returns an async generator of file info objects:
+### Listing Directories
 
 ```typescript
+// List direct children
 for await (const entry of files.list('/documents')) {
   console.log(`${entry.name} (${entry.kind})`);
 }
-```
 
-Pass `{ recursive: true }` to traverse subdirectories:
-
-```typescript
+// List recursively
 for await (const entry of files.list('/project', { recursive: true })) {
   console.log(entry.path);
 }
 ```
 
-Creating directories, copying, moving, and deleting all work as you'd expect:
+### File Management
 
 ```typescript
 await files.mkdir('/archive/2024');
@@ -120,91 +161,16 @@ await files.move('/temp/draft.txt', '/documents/final.txt');
 await files.remove('/old-stuff'); // Recursively deletes directories
 ```
 
-## Low-Level File Handle Operations
-
-When you need fine-grained control over file operations, work directly with file handles. Opening a file gives you a handle that supports reading and writing at specific positions:
-
-```typescript
-const handle = await files.open('/data.bin');
-
-// Get the current file size
-console.log(`File is ${handle.size} bytes`);
-
-// Read a specific range as a stream
-for await (const chunk of handle.createReadStream({ start: 0, end: 100 })) {
-  // First 100 bytes
-}
-
-// Random access read at a specific position
-const buffer = new Uint8Array(100);
-const bytesRead = await handle.read(buffer, 0, 100, 500);  // Read 100 bytes starting at position 500
-console.log(`Read ${bytesRead} bytes`);
-
-// Write at a specific position (truncates content after start)
-await handle.writeStream([newData], { start: 50 });
-
-// Append to the end by writing at current size
-await handle.writeStream([moreData], { start: handle.size });
-
-// Always close when done
-await handle.close();
-```
-
-## Building Your Own Backend
-
-The `IFilesApi` interface defines the contract that all backends must implement. At minimum, you need four methods:
-
-```typescript
-interface IFilesApi {
-  list(file: FileRef, options?: ListOptions): AsyncGenerator<FileInfo>;
-  stats(file: FileRef): Promise<FileInfo | undefined>;
-  remove(file: FileRef): Promise<boolean>;
-  open(file: FileRef): Promise<FileHandle>;
-}
-```
-
-The `FilesApi` wrapper class builds convenience methods like `read`, `write`, `copy`, and `move` on top of these primitives. Backends can optionally implement native versions of `move`, `copy`, and `mkdir` for better performance.
-
-Take a look at `MemFilesApi` or `NodeFilesApi` in the source code for reference implementations.
-
 ## Type Reference
-
-The package exports all the TypeScript types you'll need:
 
 ```typescript
 import type {
-  IFilesApi,        // Core interface for backends
-  FilesApi,         // Wrapper class with convenience methods
-  FileInfo,         // Metadata returned by stats() and list()
-  FileHandle,       // Low-level file operations (read, write)
-  FileRef,          // string | { path: string }
-  FileKind,         // "file" | "directory"
-  BinaryStream,     // AsyncIterable<Uint8Array> | Iterable<Uint8Array>
-  ListOptions,      // { recursive?: boolean }
-  CopyOptions,      // { recursive?: boolean }
-  ReadStreamOptions,  // { start?: number, end?: number, signal?: AbortSignal }
-  WriteStreamOptions, // { start?: number, signal?: AbortSignal }
-} from '@statewalker/webrun-files';
-```
-
-## Utility Functions
-
-The package includes helpful utilities for working with paths, streams, and file info:
-
-```typescript
-import {
-  // Path utilities
-  normalizePath,    // Clean up path strings
-  resolveFileRef,   // Convert FileRef to normalized path
-  toPath,           // Extract path string from FileRef
-  joinPath,         // Join path segments
-  dirname,          // Get directory portion of path
-  basename,         // Get filename portion
-  extname,          // Get file extension
-
-  // File info utilities
-  isFile,           // Check if FileInfo is a file
-  isDirectory,      // Check if FileInfo is a directory
+  FilesApi,      // Core interface for backends
+  FileInfo,      // Metadata from list() - includes name, path, kind, size, lastModified
+  FileStats,     // Metadata from stats() - kind, size, lastModified
+  FileKind,      // "file" | "directory"
+  ReadOptions,   // { start?: number, length?: number, signal?: AbortSignal }
+  ListOptions,   // { recursive?: boolean }
 } from '@statewalker/webrun-files';
 ```
 
