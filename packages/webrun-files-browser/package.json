@@ -1,6 +1,6 @@
 {
   "name": "@statewalker/webrun-files-browser",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": false,
   "type": "module",
   "description": "Browser File System Access API implementation for webrun-files",
