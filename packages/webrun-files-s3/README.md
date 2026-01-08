@@ -103,6 +103,8 @@ interface S3FilesApiOptions {
   bucket: string;
   /** Optional key prefix (acts as root directory). */
   prefix?: string;
+  /** Part size for multipart uploads (default: 5MB, S3 minimum). */
+  multipartPartSize?: number;
 }
 
 class S3FilesApi implements FilesApi {
@@ -161,12 +163,22 @@ for await (const chunk of files.read('/large-file.bin', { start: 1000, length: 5
 
 ### Writing Files
 
-Writes use `PutObject` to upload content:
+Files are uploaded using a streaming approach that minimizes memory usage:
+
+- **Small files** (< 5MB): Uses simple `PutObject` for efficiency
+- **Large files** (>= 5MB): Uses streaming multipart upload, buffering only one part at a time
 
 ```typescript
-await writeText(files, '/data/file.txt', 'content');
-// S3 request: PutObject(Bucket, Key, Body)
+// Small file - uses PutObject
+await writeText(files, '/data/file.txt', 'small content');
+
+// Large file - automatically uses multipart upload
+const largeContent = generateLargeContent(); // AsyncIterable<Uint8Array>
+await files.write('/data/large-file.bin', largeContent);
+// Only one 5MB part is buffered at a time
 ```
+
+The `multipartPartSize` option controls part size (default: 5MB, S3 minimum).
 
 ### Copy and Move
 

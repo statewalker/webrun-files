@@ -6,12 +6,16 @@
 
 import type { S3Client } from "@aws-sdk/client-s3";
 import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
   CopyObjectCommand,
+  CreateMultipartUploadCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
   PutObjectCommand,
+  UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import type {
   FileInfo,
@@ -21,6 +25,12 @@ import type {
   ReadOptions,
 } from "@statewalker/webrun-files";
 import { basename, normalizePath } from "@statewalker/webrun-files";
+
+/** Default part size for multipart uploads: 5MB (S3 minimum) */
+const DEFAULT_PART_SIZE = 5 * 1024 * 1024;
+
+/** Threshold for using multipart upload: 5MB */
+const MULTIPART_THRESHOLD = 5 * 1024 * 1024;
 
 export interface S3FilesApiOptions {
   /**
@@ -38,6 +48,13 @@ export interface S3FilesApiOptions {
    * @example "projects/my-app/data"
    */
   prefix?: string;
+
+  /**
+   * Part size for multipart uploads in bytes.
+   * S3 requires minimum 5MB for all parts except the last.
+   * @default 5242880 (5MB)
+   */
+  multipartPartSize?: number;
 }
 
 /**
@@ -50,11 +67,13 @@ export class S3FilesApi implements FilesApi {
   private client: S3Client;
   private bucket: string;
   private prefix: string;
+  private partSize: number;
 
   constructor(options: S3FilesApiOptions) {
     this.client = options.client;
     this.bucket = options.bucket;
     this.prefix = (options.prefix ?? "").replace(/^\/+|\/+$/g, "");
+    this.partSize = options.multipartPartSize ?? DEFAULT_PART_SIZE;
   }
 
   private resolveKey(path: string): string {
@@ -131,29 +150,117 @@ export class S3FilesApi implements FilesApi {
   ): Promise<void> {
     const key = this.resolveKey(path);
 
-    const chunks: Uint8Array[] = [];
-    let totalLength = 0;
+    // Buffer for accumulating small writes
+    let buffer: Uint8Array[] = [];
+    let bufferSize = 0;
+    let uploadId: string | undefined;
+    const parts: { ETag: string; PartNumber: number }[] = [];
+    let partNumber = 1;
 
-    for await (const chunk of content) {
-      chunks.push(chunk);
-      totalLength += chunk.length;
+    const flushPart = async (isLast: boolean) => {
+      if (buffer.length === 0) return;
+
+      const partLength = buffer.reduce((sum, c) => sum + c.length, 0);
+      const partBuffer = new Uint8Array(partLength);
+      let offset = 0;
+      for (const chunk of buffer) {
+        partBuffer.set(chunk, offset);
+        offset += chunk.length;
+      }
+      buffer = [];
+      bufferSize = 0;
+
+      // For small files (under threshold) and this is the only/last part, use simple PutObject
+      if (!uploadId && isLast && partLength < MULTIPART_THRESHOLD) {
+        const command = new PutObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+          Body: partBuffer,
+          ContentLength: partLength,
+        });
+        await this.client.send(command);
+        return;
+      }
+
+      // Start multipart upload if not already started
+      if (!uploadId) {
+        const createCommand = new CreateMultipartUploadCommand({
+          Bucket: this.bucket,
+          Key: key,
+        });
+        const { UploadId } = await this.client.send(createCommand);
+        if (!UploadId) {
+          throw new Error("Failed to create multipart upload");
+        }
+        uploadId = UploadId;
+      }
+
+      // Upload the part
+      const uploadCommand = new UploadPartCommand({
+        Bucket: this.bucket,
+        Key: key,
+        UploadId: uploadId,
+        PartNumber: partNumber,
+        Body: partBuffer,
+      });
+
+      const response = await this.client.send(uploadCommand);
+      if (!response.ETag) {
+        throw new Error(`Failed to upload part ${partNumber}`);
+      }
+
+      parts.push({
+        ETag: response.ETag,
+        PartNumber: partNumber,
+      });
+      partNumber++;
+    };
+
+    try {
+      // Process chunks as they arrive
+      for await (const chunk of content) {
+        buffer.push(chunk);
+        bufferSize += chunk.length;
+
+        // Flush when buffer reaches part size
+        if (bufferSize >= this.partSize) {
+          await flushPart(false);
+        }
+      }
+
+      // Flush remaining data
+      await flushPart(true);
+
+      // Complete multipart upload if one was started
+      if (uploadId) {
+        const completeCommand = new CompleteMultipartUploadCommand({
+          Bucket: this.bucket,
+          Key: key,
+          UploadId: uploadId,
+          MultipartUpload: {
+            Parts: parts.sort((a, b) => a.PartNumber - b.PartNumber),
+          },
+        });
+        await this.client.send(completeCommand);
+      }
+    } catch (error) {
+      // Abort multipart upload on error
+      if (uploadId) {
+        const abortCommand = new AbortMultipartUploadCommand({
+          Bucket: this.bucket,
+          Key: key,
+          UploadId: uploadId,
+        });
+
+        try {
+          await this.client.send(abortCommand);
+        } catch {
+          // Ignore abort errors
+        }
+      }
+
+      throw error;
     }
-
-    const result = new Uint8Array(totalLength);
-    let offset = 0;
-    for (const chunk of chunks) {
-      result.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    const command = new PutObjectCommand({
-      Bucket: this.bucket,
-      Key: key,
-      Body: result,
-      ContentLength: totalLength,
-    });
-
-    await this.client.send(command);
   }
 
   async mkdir(path: string): Promise<void> {
