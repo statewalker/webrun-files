@@ -134,7 +134,8 @@ export class MemFilesApi implements FilesApi {
       const slashIndex = relativePath.indexOf("/");
 
       if (slashIndex === -1) {
-        // Direct child
+        // Direct child - mark as seen to avoid duplicate yields
+        seen.add(entryPath);
         yield {
           name: basename(entryPath),
           path: entryPath,
