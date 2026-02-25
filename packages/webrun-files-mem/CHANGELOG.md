@@ -1,5 +1,13 @@
 # @statewalker/webrun-files-mem
 
+## 0.7.1
+
+### Patch Changes
+
+- Fix duplicate directory entries in non-recursive list()
+
+  Directories with children were yielded twice in `list()` — once as direct child entries and again via the subdirectory tracking logic for nested entries. Added the direct child entries to the `seen` set to prevent duplicates.
+
 ## 0.7.0
 
 ### Minor Changes
