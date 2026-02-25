@@ -301,6 +301,13 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
         expect(names).not.toContain("d.txt");
       });
 
+      it("should not yield duplicate entries for directories with children", async () => {
+        const entries = await collectGenerator(ctx.api.list("/listdir"));
+        const names = entries.map((e) => e.name);
+        const uniqueNames = [...new Set(names)];
+        expect(names).toEqual(uniqueNames);
+      });
+
       it("should include file kind and path", async () => {
         const entries = await collectGenerator(ctx.api.list("/listdir"));
 
