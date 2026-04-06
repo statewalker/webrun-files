@@ -20,7 +20,8 @@ npm install @statewalker/webrun-files
 npm install @statewalker/webrun-files-mem    # In-memory (testing, browser)
 npm install @statewalker/webrun-files-node   # Node.js filesystem
 npm install @statewalker/webrun-files-browser # Browser File System Access API
-npm install @statewalker/webrun-files-s3     # AWS S3 / S3-compatible
+npm install @statewalker/webrun-files-s3        # AWS S3 / S3-compatible
+npm install @statewalker/webrun-files-composite # Mount multiple backends together
 ```
 
 Here's what working with the API looks like:
@@ -87,7 +88,7 @@ interface FilesApi {
 
 ## Packages
 
-This repository is organized as a monorepo containing six packages.
+This repository is organized as a monorepo containing seven packages.
 
 ### @statewalker/webrun-files
 
@@ -156,6 +157,29 @@ const files = new S3FilesApi({
   prefix: 'app-data'  // optional prefix acts as root directory
 });
 ```
+
+### @statewalker/webrun-files-composite
+
+Composes multiple `FilesApi` instances into a unified virtual filesystem with mount points, base-path remapping, and access guards.
+
+```typescript
+import { CompositeFilesApi } from '@statewalker/webrun-files-composite';
+import { NodeFilesApi } from '@statewalker/webrun-files-node';
+import { S3FilesApi } from '@statewalker/webrun-files-s3';
+import { MemFilesApi } from '@statewalker/webrun-files-mem';
+
+const composite = new CompositeFilesApi(new NodeFilesApi({ rootDir: '/data' }), '/projects')
+  .mount('/docs', s3Files, '/documentation')  // S3 subfolder as /docs
+  .mount('/cache', new MemFilesApi())          // in-memory cache
+  .guard(['write', 'remove'], path => !path.startsWith('/readonly/'), 'Read-only area');
+
+// Transparent read/write across all backends
+await writeText(composite, '/readme.txt', 'Hello');       // → NodeFilesApi at /data/projects/readme.txt
+await writeText(composite, '/docs/guide.md', '# Guide');  // → S3FilesApi at /documentation/guide.md
+await writeText(composite, '/cache/tmp.dat', 'temp');      // → MemFilesApi at /tmp.dat
+```
+
+Features: longest-prefix mount routing, cross-mount copy/move, mount-point protection, per-operation access guards, and recursive listing across mount boundaries.
 
 ### @statewalker/webrun-files-tests
 
