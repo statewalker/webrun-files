@@ -36,6 +36,3 @@ coverage/
 # Test data
 test-data/
 tmp/
-
-# Standalone repos
-packages/webrun-files-composite/
