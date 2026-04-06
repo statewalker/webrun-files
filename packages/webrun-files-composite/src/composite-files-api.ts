@@ -5,28 +5,29 @@ import type {
   ListOptions,
   ReadOptions,
 } from "@statewalker/webrun-files";
-import { normalizePath } from "@statewalker/webrun-files";
+import { joinPath, normalizePath } from "@statewalker/webrun-files";
 import type { FileGuard, FileOperation } from "./types.js";
 
 interface MountEntry {
   prefix: string;
   api: FilesApi;
+  basePath: string;
 }
 
 export class CompositeFilesApi implements FilesApi {
   private mounts: MountEntry[];
   private guards: FileGuard[] = [];
 
-  constructor(root: FilesApi) {
-    this.mounts = [{ prefix: "/", api: root }];
+  constructor(root: FilesApi, rootPath?: string) {
+    this.mounts = [{ prefix: "/", api: root, basePath: normalizePath(rootPath ?? "/") }];
   }
 
-  mount(path: string, api: FilesApi): this {
+  mount(path: string, api: FilesApi, fsPath?: string): this {
     const prefix = normalizePath(path);
     if (prefix === "/") {
       throw new Error("Cannot mount at root — root is set via constructor");
     }
-    this.mounts.push({ prefix, api });
+    this.mounts.push({ prefix, api, basePath: normalizePath(fsPath ?? "/") });
     // Sort by prefix length descending so longest match comes first
     this.mounts.sort((a, b) => b.prefix.length - a.prefix.length);
     return this;
@@ -43,15 +44,16 @@ export class CompositeFilesApi implements FilesApi {
     const normalized = normalizePath(path);
     for (const mount of this.mounts) {
       if (mount.prefix === "/") {
-        return { api: mount.api, resolvedPath: normalized };
+        return { api: mount.api, resolvedPath: joinPath(mount.basePath, normalized) };
       }
       if (normalized === mount.prefix || normalized.startsWith(`${mount.prefix}/`)) {
-        const resolvedPath = normalized.slice(mount.prefix.length) || "/";
-        return { api: mount.api, resolvedPath };
+        const localPath = normalized.slice(mount.prefix.length) || "/";
+        return { api: mount.api, resolvedPath: joinPath(mount.basePath, localPath) };
       }
     }
     // Fallback to root (always last after sort)
-    return { api: this.mounts[this.mounts.length - 1].api, resolvedPath: normalizePath(path) };
+    const rootMount = this.mounts[this.mounts.length - 1];
+    return { api: rootMount.api, resolvedPath: joinPath(rootMount.basePath, normalizePath(path)) };
   }
 
   private isMountPoint(path: string): boolean {
@@ -137,8 +139,9 @@ export class CompositeFilesApi implements FilesApi {
         const mountName = mountPrefix.split("/").pop() ?? "";
         // Yield the mount directory entry itself
         yield { name: mountName, path: mountPrefix, kind: "directory" };
-        for await (const entry of mount.api.list("/", { recursive: true })) {
-          yield { ...entry, path: `${mountPrefix}${entry.path === "/" ? "" : entry.path}` };
+        for await (const entry of mount.api.list(mount.basePath, { recursive: true })) {
+          const localPath = this.stripBasePath(entry.path, mount.basePath);
+          yield { ...entry, path: `${mountPrefix}${localPath === "/" ? "" : localPath}` };
         }
       }
     } else {
@@ -221,6 +224,13 @@ export class CompositeFilesApi implements FilesApi {
   }
 
   // --- Helpers ---
+
+  private stripBasePath(path: string, basePath: string): string {
+    if (basePath === "/") return path;
+    if (path === basePath) return "/";
+    if (path.startsWith(`${basePath}/`)) return path.slice(basePath.length);
+    return path;
+  }
 
   private async crossCopy(
     srcApi: FilesApi,
