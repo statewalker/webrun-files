@@ -33,10 +33,7 @@
     "@changesets/cli": "^2.29.8",
     "@types/node": "catalog:",
     "@vitest/coverage-v8": "catalog:",
-    "pnpm": "catalog:",
-    "rolldown": "catalog:",
     "tsx": "catalog:",
-    "turbo": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
