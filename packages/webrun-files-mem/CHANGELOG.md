@@ -1,5 +1,11 @@
 # @statewalker/webrun-files-mem
 
+## 0.7.2
+
+### Patch Changes
+
+- Re-publish with correctly resolved workspace dependencies (0.7.1 was broken)
+
 ## 0.7.1
 
 ### Patch Changes
