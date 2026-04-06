@@ -1,18 +1,20 @@
 # @statewalker/webrun-files-tests
 
-A comprehensive test suite for validating `FilesApi` implementations. Use this package to ensure your custom storage backend correctly follows the interface contract.
+Comprehensive test suites for validating `FilesApi` implementations. Use this package to ensure your custom storage backend correctly follows the interface contract.
 
 ## Installation
 
 ```bash
-npm install --save-dev @statewalker/webrun-files-tests vitest
+pnpm add -D @statewalker/webrun-files-tests vitest
 ```
 
-The package requires Vitest as a peer dependency.
+Requires Vitest as a peer dependency.
 
-## Using the Test Suite
+## Test suites
 
-The main export is `createFilesApiTests`, a function that generates a complete test suite for your implementation:
+### `createFilesApiTests` — core interface tests
+
+Generates 56+ test cases covering every `FilesApi` method:
 
 ```typescript
 import { createFilesApiTests } from '@statewalker/webrun-files-tests';
@@ -20,95 +22,100 @@ import { MyCustomFilesApi } from './my-custom-files-api';
 
 createFilesApiTests('MyCustomFilesApi', async () => {
   const api = new MyCustomFilesApi();
-
   return {
     api,
     cleanup: async () => {
-      // Optional: clean up resources after each test
       await api.clear();
     }
   };
 });
 ```
 
-The factory function runs before each test, giving every test a fresh, isolated API instance.
+The factory runs before each test, giving every test a fresh, isolated API instance.
 
-## What Gets Tested
+**Test categories:**
 
-The test suite covers 50+ test cases across these categories:
+| Category | Tests | What's covered |
+|----------|-------|----------------|
+| write() and read() | 8 | Small text, empty files, multiple chunks, async iterables, overwrite, nested dirs, binary/null bytes, large files, Unicode |
+| read() with options | 6 | Start position, length, ranges, edge cases (length=0, start beyond file) |
+| stats() | 5 | File stats, directory stats, non-existent paths, size after overwrite, root directory |
+| exists() | 4 | Existing files/directories, non-existent paths, post-removal verification |
+| list() | 7 | Direct children, recursive listing, metadata (kind, size, path), empty dirs, non-existent paths, root listing |
+| remove() | 4 | Files, directories (recursive), non-existent paths, sibling preservation |
+| copy() | 4 | Single files, directories (recursive), non-existent source, overwrite |
+| move() | 3 | Files, directories, non-existent source |
+| mkdir() | 3 | Single directory, nested directories, idempotency |
+| Path handling | 6 | Double slashes, missing leading slash, trailing slashes, dot segments, special characters, long paths |
+| Concurrent ops | 3 | Parallel writes, reads, list operations |
+| Error handling | 3 | Reading/removing/stat on non-existent paths |
 
-### Basic File I/O
-- Writing and reading small text files
-- Empty files
-- Binary data with null bytes
-- Large files (1MB+)
-- Unicode content
-- Multiple chunk writes
+### `createBigFilesApiTests` — large file tests
 
-### Read Options
-- Reading from specific positions (`start`)
-- Reading specific lengths (`length`)
-- Range reads (start + length)
-- Edge cases: length=0, start beyond file size
+Tests streaming, chunked writes, and random access for large files:
 
-### Directory Operations
-- Listing direct children
-- Recursive listing
-- Empty directories
-- File metadata (kind, size, lastModified)
+```typescript
+import { createBigFilesApiTests } from '@statewalker/webrun-files-tests';
 
-### File Management
-- Copy single files
-- Copy directories recursively
-- Move files and directories
-- Remove files and directories
+createBigFilesApiTests('MyCustomFilesApi', async () => ({
+  api: new MyCustomFilesApi(),
+}), {
+  sizes: [1_000_000, 10_000_000],  // 1MB and 10MB (default: 1MB, 10MB, 50MB, 100MB)
+  timeout: 120_000,                 // per-test timeout in ms (default: 120000)
+});
+```
 
-### Stats and Existence
-- Getting file stats
-- Getting directory stats
-- Root directory handling
-- Non-existent paths
+**Test categories:**
+- Write and read large files with pattern verification
+- Chunked writes via async generators
+- Random-access range reads (first/last/middle 1KB, 1MB ranges)
+- Overwrite large files with smaller content
+- Copy and move large files
 
-### Edge Cases
-- Special characters in file names
-- Very long paths
-- Double slashes in paths
-- Paths without leading slash
-- Trailing slashes
-- Dot segments (`.`, `..`)
+## Types
 
-### Concurrent Operations
-- Parallel writes to different files
-- Parallel reads
-- Parallel list operations
+```typescript
+interface FilesApiTestContext {
+  api: FilesApi;
+  cleanup?: () => Promise<void>;
+}
 
-### Error Handling
-- Reading non-existent files
-- Removing non-existent files
-- Stats for non-existent paths
+type FilesApiFactory = () => Promise<FilesApiTestContext>;
 
-## Test Utilities
+interface BigFilesTestContext {
+  api: FilesApi;
+  cleanup?: () => Promise<void>;
+}
 
-The package exports helper functions for writing additional tests:
+type BigFilesApiFactory = () => Promise<BigFilesTestContext>;
+
+interface BigFilesTestOptions {
+  sizes?: number[];    // File sizes in bytes (default: [1MB, 10MB, 50MB, 100MB])
+  timeout?: number;    // Per-test timeout in ms (default: 120000)
+}
+```
+
+## Test utilities
+
+Helper functions for writing additional tests:
 
 ```typescript
 import {
-  toBytes,          // Convert string to Uint8Array
-  fromBytes,        // Convert Uint8Array to string
-  collectStream,    // Gather async stream into single Uint8Array
+  encode,           // Convert string to Uint8Array
+  decode,           // Convert Uint8Array to string
+  toBytes,          // Alias for encode
+  fromBytes,        // Alias for decode
+  collectStream,    // Gather async Uint8Array stream into single Uint8Array
+  collectGenerator, // Collect async iterable into array
   randomBytes,      // Generate random binary data
-  patternContent,   // Generate predictable byte patterns
-  allBytesContent,  // Generate Uint8Array with all 256 byte values
+  patternContent,   // Generate predictable byte pattern: (i + seed) % 256
+  allBytesContent,  // Generate Uint8Array with all 256 byte values (0–255)
 } from '@statewalker/webrun-files-tests';
-
-// Example usage
-const text = 'Hello, World!';
-const bytes = toBytes(text);
-const result = await collectStream(files.read('/file.txt'));
-const decoded = fromBytes(result);
 ```
 
-## Example: Testing a Node.js Backend
+## Examples
+
+### Node.js backend
 
 ```typescript
 import { createFilesApiTests } from '@statewalker/webrun-files-tests';
@@ -119,7 +126,6 @@ import { join } from 'node:path';
 
 createFilesApiTests('NodeFilesApi', async () => {
   const tempDir = await mkdtemp(join(tmpdir(), 'files-test-'));
-
   return {
     api: new NodeFilesApi({ rootDir: tempDir }),
     cleanup: async () => {
@@ -129,7 +135,7 @@ createFilesApiTests('NodeFilesApi', async () => {
 });
 ```
 
-## Example: Testing an In-Memory Backend
+### In-memory backend
 
 ```typescript
 import { createFilesApiTests } from '@statewalker/webrun-files-tests';
@@ -137,21 +143,8 @@ import { MemFilesApi } from '@statewalker/webrun-files-mem';
 
 createFilesApiTests('MemFilesApi', async () => ({
   api: new MemFilesApi(),
-  // No cleanup needed - each test gets a fresh instance
 }));
 ```
-
-## Running Tests
-
-Run with your normal test command:
-
-```bash
-pnpm test
-# or
-npx vitest run
-```
-
-If any tests fail, the output shows exactly which operation didn't behave as expected.
 
 ## License
 
