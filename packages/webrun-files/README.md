@@ -13,6 +13,7 @@ For actual filesystem implementations, install one of these packages:
 - `@statewalker/webrun-files-node` - Node.js filesystem
 - `@statewalker/webrun-files-browser` - Browser File System Access API
 - `@statewalker/webrun-files-s3` - AWS S3 / S3-compatible storage
+- `@statewalker/webrun-files-composite` - Mount multiple backends into a unified filesystem
 
 ## The FilesApi Interface
 
@@ -110,7 +111,7 @@ await files.write('/large.bin', generateChunks());
 ```typescript
 import { normalizePath, joinPath, dirname, basename, extname } from '@statewalker/webrun-files';
 
-normalizePath('//foo/../bar/./baz/');  // '/bar/baz'
+normalizePath('//foo/./bar//baz/');     // '/foo/bar/baz'
 joinPath('/foo', 'bar', 'baz.txt');    // '/foo/bar/baz.txt'
 dirname('/foo/bar/baz.txt');            // '/foo/bar'
 basename('/foo/bar/baz.txt');           // 'baz.txt'
