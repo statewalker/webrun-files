@@ -14,6 +14,11 @@ import type {
 } from "@statewalker/webrun-files";
 import { basename, dirname, joinPath, normalizePath } from "@statewalker/webrun-files";
 
+/** Chrome 110+ exposes move() on FileSystemHandle; not yet in TS DOM types. */
+interface MovableHandle extends FileSystemHandle {
+  move(destination: FileSystemDirectoryHandle, name: string): Promise<void>;
+}
+
 export interface BrowserFilesApiOptions {
   /**
    * Root FileSystemDirectoryHandle to use as the filesystem root.
@@ -227,6 +232,32 @@ export class BrowserFilesApi implements FilesApi {
   }
 
   async move(source: string, target: string): Promise<boolean> {
+    const sourcePath = normalizePath(source);
+    const targetPath = normalizePath(target);
+    const targetParentPath = dirname(targetPath);
+    const targetName = basename(targetPath);
+
+    // Try native move() (available in Chrome 110+, Edge 110+)
+    const sourceStats = await this.stats(sourcePath);
+    if (!sourceStats) return false;
+
+    const sourceHandle: FileSystemHandle | null =
+      sourceStats.kind === "file"
+        ? await this.getFileHandle(sourcePath)
+        : await this.getDirectoryHandle(sourcePath);
+    if (!sourceHandle) return false;
+
+    if (typeof (sourceHandle as MovableHandle).move === "function") {
+      try {
+        const targetParent = await this.getDirectoryHandle(targetParentPath, { create: true });
+        if (!targetParent) return false;
+        await (sourceHandle as MovableHandle).move(targetParent, targetName);
+        return true;
+      } catch {
+        // Fall through to copy-then-delete
+      }
+    }
+
     const copied = await this.copy(source, target);
     if (!copied) return false;
     return this.remove(source);
