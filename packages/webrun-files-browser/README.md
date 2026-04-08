@@ -107,7 +107,7 @@ class BrowserFilesApi implements FilesApi {
   stats(path: string): Promise<FileStats | undefined>;
   exists(path: string): Promise<boolean>;
   remove(path: string): Promise<boolean>;
-  move(source: string, target: string): Promise<boolean>;
+  move(source: string, target: string): Promise<boolean>;  // uses native move when available
   copy(source: string, target: string): Promise<boolean>;
 }
 ```
@@ -141,11 +141,15 @@ function verifyPermission(
 ): Promise<boolean>;
 ```
 
+## Native Move Support
+
+The `move()` method attempts to use the browser's native [`FileSystemHandle.move()`](https://developer.mozilla.org/en-US/docs/Web/API/FileSystemHandle/move) when available (Chrome 110+, Edge 110+). This provides an atomic, in-place rename/move without copying file data. On older browsers or polyfills that lack native `move()`, the method falls back to copy-then-delete.
+
 ## Browser Support
 
 The File System Access API is supported in:
 
-- Chrome/Edge 86+
+- Chrome/Edge 86+ (native `move()` from 110+)
 - Opera 72+
 - Chrome for Android 86+
 
