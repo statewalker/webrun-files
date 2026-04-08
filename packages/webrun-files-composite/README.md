@@ -138,8 +138,8 @@ Adds an access guard. Before each matching operation, `check(path)` is called. I
 | `write(path, content)` | Write content to a file |
 | `mkdir(path)` | Create a directory |
 | `list(path, options?)` | List directory entries (supports `{ recursive: true }`) |
-| `stats(path)` | Get file/directory stats, returns `undefined` if not found |
-| `exists(path)` | Check if a path exists |
+| `stats(path)` | Get file/directory stats; mount points return `{ kind: "directory" }` |
+| `exists(path)` | Check if a path exists; returns `true` for mount points |
 | `remove(path)` | Remove a file or directory (throws on mount points) |
 | `move(source, target)` | Move a file or directory (cross-mount supported) |
 | `copy(source, target)` | Copy a file or directory (cross-mount supported) |

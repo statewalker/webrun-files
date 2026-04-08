@@ -90,7 +90,7 @@ interface FilesApi {
 
 This repository is organized as a monorepo containing seven packages.
 
-### @statewalker/webrun-files
+### [@statewalker/webrun-files](./packages/webrun-files)
 
 The core library with the `FilesApi` interface definition, type exports, and utility functions. This package contains no implementations - it defines the contract that all backends follow.
 
@@ -100,7 +100,7 @@ Utilities include:
 - `readRange()`, `readAt()` - Random access reading
 - Path utilities: `basename()`, `dirname()`, `joinPath()`, `normalizePath()`
 
-### @statewalker/webrun-files-mem
+### [@statewalker/webrun-files-mem](./packages/webrun-files-mem)
 
 In-memory implementation. Perfect for testing, browser applications without persistent storage, or any case where you need fast, ephemeral file storage.
 
@@ -115,7 +115,7 @@ const files = new MemFilesApi({
 });
 ```
 
-### @statewalker/webrun-files-node
+### [@statewalker/webrun-files-node](./packages/webrun-files-node)
 
 Node.js implementation using `fs/promises`. Maps virtual paths to a root directory on the local filesystem.
 
@@ -126,7 +126,7 @@ const files = new NodeFilesApi({ rootDir: '/var/app/data' });
 // files.write('/config.json', ...) writes to /var/app/data/config.json
 ```
 
-### @statewalker/webrun-files-browser
+### [@statewalker/webrun-files-browser](./packages/webrun-files-browser)
 
 Browser implementation using the [File System Access API](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API). Enables web applications to read and write files to user-selected directories via `showDirectoryPicker()` or the Origin Private File System (OPFS).
 
@@ -134,7 +134,7 @@ Browser implementation using the [File System Access API](https://developer.mozi
 import { BrowserFilesApi, openBrowserFilesApi, getOPFSFilesApi } from '@statewalker/webrun-files-browser';
 
 // Open a user-selected directory
-const files = await openBrowserFilesApi({ mode: 'readwrite' });
+const files = await openBrowserFilesApi({ readwrite: true });
 
 // Or use OPFS for persistent private storage
 const opfsFiles = await getOPFSFilesApi();
@@ -142,7 +142,7 @@ const opfsFiles = await getOPFSFilesApi();
 
 Works in Chrome, Edge, and other Chromium-based browsers.
 
-### @statewalker/webrun-files-s3
+### [@statewalker/webrun-files-s3](./packages/webrun-files-s3)
 
 S3-backed implementation for cloud storage. Works with Amazon S3 and S3-compatible services (MinIO, DigitalOcean Spaces, Backblaze B2, Cloudflare R2, etc.).
 
@@ -158,7 +158,7 @@ const files = new S3FilesApi({
 });
 ```
 
-### @statewalker/webrun-files-composite
+### [@statewalker/webrun-files-composite](./packages/webrun-files-composite)
 
 Composes multiple `FilesApi` instances into a unified virtual filesystem with mount points, base-path remapping, and access guards.
 
@@ -181,7 +181,7 @@ await writeText(composite, '/cache/tmp.dat', 'temp');      // → MemFilesApi at
 
 Features: longest-prefix mount routing, cross-mount copy/move, mount-point protection, per-operation access guards, and recursive listing across mount boundaries.
 
-### @statewalker/webrun-files-tests
+### [@statewalker/webrun-files-tests](./packages/webrun-files-tests)
 
 Comprehensive test suite for validating `FilesApi` implementations. If you're building your own storage backend, use this to verify correctness.
 
