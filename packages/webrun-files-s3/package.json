@@ -38,16 +38,16 @@
     "@statewalker/webrun-files": "workspace:*"
   },
   "peerDependencies": {
-    "@aws-sdk/client-s3": "^3.0.0"
+    "@aws-sdk/client-s3": "^3.1032.0"
   },
   "devDependencies": {
-    "@aws-sdk/client-s3": "^3.0.0",
+    "@aws-sdk/client-s3": "catalog:",
     "@statewalker/webrun-files-tests": "workspace:*",
-    "@testcontainers/minio": "^10.0.0",
+    "@testcontainers/minio": "catalog:",
     "@types/node": "catalog:",
     "rimraf": "catalog:",
     "rolldown": "catalog:",
-    "testcontainers": "^10.0.0",
+    "testcontainers": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
