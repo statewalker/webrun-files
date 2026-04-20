@@ -40,7 +40,7 @@
   "devDependencies": {
     "@statewalker/webrun-files-tests": "workspace:*",
     "@types/node": "catalog:",
-    "native-file-system-adapter": "^3.0.1",
+    "native-file-system-adapter": "catalog:",
     "rimraf": "catalog:",
     "rolldown": "catalog:",
     "typescript": "catalog:",
