@@ -147,10 +147,16 @@ export function newGlobPathFilter(...pathGlobs: string[]): PathFilter {
  * underlying storage; the wrapped instance still holds the data, it is just
  * not reachable through this decorator.
  *
+ * Pair with one of the built-in {@link PathFilter} factories
+ * ({@link newPathFilter}, {@link newRegexpPathFilter},
+ * {@link newGlobPathFilter}) or pass any predicate of shape
+ * `(path) => boolean | Promise<boolean>`.
+ *
  * @example
  * ```ts
  * import {
  *   FilteredFilesApi,
+ *   newGlobPathFilter,
  *   newPathFilter,
  *   newRegexpPathFilter,
  * } from "@statewalker/webrun-files-composite";
@@ -162,6 +168,12 @@ export function newGlobPathFilter(...pathGlobs: string[]): PathFilter {
  *
  * // Hide by regexp
  * const noLogs = new FilteredFilesApi(sourceFiles, newRegexpPathFilter(/\.log$/));
+ *
+ * // Hide by glob (extended + globstar mode)
+ * const noJunk = new FilteredFilesApi(
+ *   sourceFiles,
+ *   newGlobPathFilter("**​/*.log", "/.git", "/.git/**"),
+ * );
  * ```
  */
 export class FilteredFilesApi implements FilesApi {
