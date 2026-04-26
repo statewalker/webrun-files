@@ -203,61 +203,6 @@ describe("CompositeFilesApi - mount point protection", () => {
   });
 });
 
-describe("CompositeFilesApi - guards", () => {
-  let composite: CompositeFilesApi;
-
-  beforeEach(() => {
-    composite = new CompositeFilesApi(new MemFilesApi());
-    composite.guard(
-      ["write", "remove", "move"],
-      (path) => !path.startsWith("/.settings/"),
-      "Access denied to system folder",
-    );
-  });
-
-  it("guard blocks denied write", async () => {
-    await expect(composite.write("/.settings/secret.json", [toBytes("x")])).rejects.toThrow(
-      "Access denied to system folder: /.settings/secret.json",
-    );
-  });
-
-  it("guard allows non-matching path", async () => {
-    await composite.write("/allowed.txt", [toBytes("ok")]);
-    expect(await readAll(composite.read("/allowed.txt"))).toBe("ok");
-  });
-
-  it("guard blocks remove on guarded path", async () => {
-    // Pre-populate by writing without guard (guard only blocks /.settings/)
-    await composite.write("/other.txt", [toBytes("x")]);
-    await expect(composite.remove("/.settings/file.txt")).rejects.toThrow("Access denied");
-  });
-
-  it("guard blocks move to guarded path", async () => {
-    await composite.write("/source.txt", [toBytes("x")]);
-    await expect(composite.move("/source.txt", "/.settings/dest.txt")).rejects.toThrow(
-      "Access denied",
-    );
-  });
-
-  it("guard allows read on guarded path (not in operations)", async () => {
-    // Write directly to underlying FS, then read through composite
-    // Guard only blocks write/remove/move, not read
-    const root = new MemFilesApi();
-    const c = new CompositeFilesApi(root);
-    c.guard(["write", "remove"], (p) => !p.startsWith("/.settings/"), "Denied");
-    await root.write("/.settings/key.json", [toBytes("secret")]);
-    expect(await readAll(c.read("/.settings/key.json"))).toBe("secret");
-  });
-
-  it("multiple guards: first denial wins", async () => {
-    const c = new CompositeFilesApi(new MemFilesApi());
-    c.guard(["write"], (p) => !p.startsWith("/a/"), "Guard A");
-    c.guard(["write"], (p) => !p.startsWith("/b/"), "Guard B");
-    await expect(c.write("/a/file.txt", [toBytes("x")])).rejects.toThrow("Guard A");
-    await expect(c.write("/b/file.txt", [toBytes("x")])).rejects.toThrow("Guard B");
-  });
-});
-
 describe("CompositeFilesApi - nested mounts", () => {
   it("deeper mount takes precedence", async () => {
     const root = new MemFilesApi();
@@ -583,32 +528,5 @@ describe("CompositeFilesApi - nested mounts with fsPath", () => {
 
     await composite.write("/a/file.txt", [toBytes("shallow-content")]);
     expect(await readAll(shallow.read("/base-a/file.txt"))).toBe("shallow-content");
-  });
-});
-
-describe("CompositeFilesApi - guards with fsPath", () => {
-  it("guards operate on composite paths, not backing paths", async () => {
-    const fs = new MemFilesApi();
-    const composite = new CompositeFilesApi(fs, "/root-data");
-    composite.guard(["write"], (p) => !p.startsWith("/secret/"), "No secrets");
-
-    // Guard blocks /secret/ in composite namespace
-    await expect(composite.write("/secret/key.txt", [toBytes("x")])).rejects.toThrow("No secrets");
-    // Guard allows /other/ even though backing path would be /root-data/other/
-    await composite.write("/other/file.txt", [toBytes("ok")]);
-    expect(await readAll(fs.read("/root-data/other/file.txt"))).toBe("ok");
-  });
-
-  it("guards work with mounted fsPath", async () => {
-    const root = new MemFilesApi();
-    const docs = new MemFilesApi();
-    const composite = new CompositeFilesApi(root).mount("/docs", docs, "/documentation");
-    composite.guard(["write"], (p) => !p.startsWith("/docs/internal/"), "Restricted");
-
-    await expect(composite.write("/docs/internal/secret.md", [toBytes("x")])).rejects.toThrow(
-      "Restricted",
-    );
-    await composite.write("/docs/public.md", [toBytes("ok")]);
-    expect(await readAll(docs.read("/documentation/public.md"))).toBe("ok");
   });
 });

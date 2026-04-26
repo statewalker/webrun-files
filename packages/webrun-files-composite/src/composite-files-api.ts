@@ -6,7 +6,6 @@ import type {
   ReadOptions,
 } from "@statewalker/webrun-files";
 import { joinPath, normalizePath } from "@statewalker/webrun-files";
-import type { FileGuard, FileOperation } from "./types.js";
 
 interface MountEntry {
   prefix: string;
@@ -14,14 +13,63 @@ interface MountEntry {
   basePath: string;
 }
 
+/**
+ * Composite `FilesApi` that routes calls to one of several backends based
+ * on a path prefix. Mounts are matched by **longest prefix wins**, so a
+ * mount at `/a/b` takes precedence over a mount at `/a` for paths under
+ * `/a/b/...`. The mount point itself appears in listings as a synthetic
+ * directory and cannot be removed.
+ *
+ * Each backend can use a sub-directory of its own filesystem as the mount
+ * root via `fsPath` (constructor `rootPath` for the implicit root mount,
+ * `fsPath` argument for additional mounts). Cross-mount `move` is
+ * implemented as copy-then-delete; there is no atomicity guarantee.
+ *
+ * Access control and visibility filtering are intentionally **not** part of
+ * this class — wrap with {@link GuardedFilesApi} or {@link FilteredFilesApi}
+ * (or both) instead.
+ *
+ * @example
+ * ```ts
+ * const fs = new CompositeFilesApi(localFs, "/projects")
+ *   .mount("/docs", s3Fs, "/documentation")
+ *   .mount("/cache", memFs);
+ * await fs.write("/readme.md", data); // → localFs:/projects/readme.md
+ * await fs.write("/docs/api.md", data); // → s3Fs:/documentation/api.md
+ * ```
+ */
 export class CompositeFilesApi implements FilesApi {
   private mounts: MountEntry[];
-  private guards: FileGuard[] = [];
 
+  /**
+   * @param root Default backend used for any path that does not match a
+   *   more specific mount. All paths are routed here unless `mount()`
+   *   intercepts them.
+   * @param rootPath Optional sub-directory of the root backend to use as
+   *   the composite filesystem's `/`. For example, `rootPath = "/projects"`
+   *   makes the composite path `/readme.md` resolve to `/projects/readme.md`
+   *   in the root backend. Defaults to `"/"` (no remapping).
+   */
   constructor(root: FilesApi, rootPath?: string) {
     this.mounts = [{ prefix: "/", api: root, basePath: normalizePath(rootPath ?? "/") }];
   }
 
+  /**
+   * Attaches a backend to handle every composite path under `path`. The
+   * mount prefix is normalized; paths under it are resolved against the
+   * mount's `fsPath` sub-directory (defaulting to `"/"`).
+   *
+   * @param path Composite-namespace prefix (e.g. `"/docs"`). Mounting at
+   *   `"/"` is forbidden — use the constructor `root` argument instead.
+   * @param api The backend `FilesApi` to delegate to for paths under
+   *   `path`. Wrap it in {@link FilteredFilesApi} / {@link GuardedFilesApi}
+   *   first if you want mount-local filtering or guards.
+   * @param fsPath Sub-directory of the mounted backend used as its mount
+   *   root, e.g. `mount("/docs", s3, "/documentation")` makes
+   *   `/docs/api.md` resolve to `/documentation/api.md` on `s3`.
+   * @returns `this`, for chaining.
+   * @throws If `path` normalizes to `"/"`.
+   */
   mount(path: string, api: FilesApi, fsPath?: string): this {
     const prefix = normalizePath(path);
     if (prefix === "/") {
@@ -30,11 +78,6 @@ export class CompositeFilesApi implements FilesApi {
     this.mounts.push({ prefix, api, basePath: normalizePath(fsPath ?? "/") });
     // Sort by prefix length descending so longest match comes first
     this.mounts.sort((a, b) => b.prefix.length - a.prefix.length);
-    return this;
-  }
-
-  guard(operations: FileOperation[], check: (path: string) => boolean, message?: string): this {
-    this.guards.push({ operations, check, message });
     return this;
   }
 
@@ -78,23 +121,9 @@ export class CompositeFilesApi implements FilesApi {
     return result;
   }
 
-  // --- Guard checking ---
-
-  private checkGuard(operation: FileOperation, path: string): void {
-    const normalized = normalizePath(path);
-    for (const guard of this.guards) {
-      if (!guard.operations.includes(operation)) continue;
-      if (!guard.check(normalized)) {
-        const msg = guard.message ?? "Access denied";
-        throw new Error(`${msg}: ${normalized}`);
-      }
-    }
-  }
-
   // --- FilesApi implementation ---
 
   read(path: string, options?: ReadOptions): AsyncIterable<Uint8Array> {
-    this.checkGuard("read", path);
     const { api, resolvedPath } = this.resolve(path);
     return api.read(resolvedPath, options);
   }
@@ -103,19 +132,16 @@ export class CompositeFilesApi implements FilesApi {
     path: string,
     content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
   ): Promise<void> {
-    this.checkGuard("write", path);
     const { api, resolvedPath } = this.resolve(path);
     return api.write(resolvedPath, content);
   }
 
   async mkdir(path: string): Promise<void> {
-    this.checkGuard("mkdir", path);
     const { api, resolvedPath } = this.resolve(path);
     return api.mkdir(resolvedPath);
   }
 
   async *list(path: string, options?: ListOptions): AsyncIterable<FileInfo> {
-    this.checkGuard("list", path);
     const normalized = normalizePath(path);
     const { api, resolvedPath } = this.resolve(path);
 
@@ -184,14 +210,11 @@ export class CompositeFilesApi implements FilesApi {
     if (this.isMountPoint(normalized)) {
       throw new Error(`Cannot remove mount point: ${normalized}`);
     }
-    this.checkGuard("remove", path);
     const { api, resolvedPath } = this.resolve(path);
     return api.remove(resolvedPath);
   }
 
   async move(source: string, target: string): Promise<boolean> {
-    this.checkGuard("move", source);
-    this.checkGuard("move", target);
     const src = this.resolve(source);
     const tgt = this.resolve(target);
 
@@ -209,8 +232,6 @@ export class CompositeFilesApi implements FilesApi {
   }
 
   async copy(source: string, target: string): Promise<boolean> {
-    this.checkGuard("copy", source);
-    this.checkGuard("copy", target);
     const src = this.resolve(source);
     const tgt = this.resolve(target);
 

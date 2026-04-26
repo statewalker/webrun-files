@@ -1,183 +1,231 @@
 # @statewalker/webrun-files-composite
 
-A `FilesApi` adapter that composes multiple `FilesApi` instances into a unified virtual filesystem with **mount points** and **access guards**.
+## What it is
 
-## Features
+A small toolkit of `FilesApi` decorators that lets you build a layered
+virtual filesystem on top of any existing `FilesApi` implementation. It
+ships three building blocks:
 
-- **Mount multiple backends** at different paths under a single `FilesApi` interface
-- **Base path remapping** — use a subdirectory of any backend as its mount root
-- **Access guards** to enforce per-operation, per-path access control
-- **Cross-mount operations** — copy and move files transparently across different backends
-- **Mount-point protection** — mounted directories cannot be removed
-- **Longest-prefix routing** — deeper mounts take precedence (e.g. `/a/b` before `/a`)
-- **Synthetic directory entries** — mount points appear as directories in listings
+- **`CompositeFilesApi`** — mounts multiple `FilesApi` backends at different
+  composite-namespace prefixes (longest-prefix wins), with optional
+  per-mount sub-directory remapping.
+- **`GuardedFilesApi`** — runs every call through an ordered list of
+  per-operation policies that can deny access by throwing.
+- **`FilteredFilesApi`** — hides selected paths so that the wrapped API
+  behaves as if they did not exist.
 
-## Installation
+## Why it exists
+
+Real filesystems are rarely flat. Workbench-style apps need to combine
+storage backends (local FS for projects, in-memory FS for transient data,
+remote FS for shared documents), forbid writes to system folders, and hide
+implementation-detail paths from end users. Implementing all of this inside
+each storage backend leaks concerns and makes backends hard to swap.
+
+This package keeps each backend pure and pushes composition / access /
+visibility into orthogonal decorators that can be stacked in any order. The
+three concerns are deliberately split across separate classes:
+
+- **mounting** is structural and never throws — `CompositeFilesApi`.
+- **access control** must throw to stay safe by default — `GuardedFilesApi`.
+- **visibility** must silently lie to keep the consumer model simple —
+  `FilteredFilesApi`.
+
+## How to use
 
 ```bash
 pnpm add @statewalker/webrun-files-composite
 ```
 
-## Usage
+The decorators all implement `FilesApi`, so they compose freely. A typical
+stack: a composite root that mounts a few backends, wrapped first with a
+filter to hide internals, then with guards to forbid writes to system
+folders.
 
-### Basic composition
+```ts
+import {
+  CompositeFilesApi,
+  FilteredFilesApi,
+  GuardedFilesApi,
+  newPathFilter,
+} from "@statewalker/webrun-files-composite";
 
-```typescript
+const composite = new CompositeFilesApi(localFs, "/projects")
+  .mount("/docs", s3Fs, "/documentation")
+  .mount("/cache", memFs);
+
+const visible = new FilteredFilesApi(composite, newPathFilter("/.git"));
+
+const safe = new GuardedFilesApi(visible, [
+  {
+    operations: ["write", "remove", "move", "mkdir"],
+    check: (p) => !p.startsWith("/.system/"),
+    message: "system folder is read-only",
+  },
+]);
+```
+
+## Examples
+
+### Mount multiple backends
+
+```ts
 import { CompositeFilesApi } from "@statewalker/webrun-files-composite";
-import { MemFilesApi } from "@statewalker/webrun-files-mem";
 
-const composite = new CompositeFilesApi(new MemFilesApi())
-  .mount("/docs", new MemFilesApi())
-  .mount("/cache", new MemFilesApi());
+const fs = new CompositeFilesApi(rootFs)
+  .mount("/docs", docsFs)
+  .mount("/cache", memFs);
 
-const encoder = new TextEncoder();
-await composite.write("/readme.txt", [encoder.encode("Hello")]);
-await composite.write("/docs/guide.md", [encoder.encode("# Guide")]);
+await fs.write("/readme.txt", [encoder.encode("Hello")]);  // → rootFs:/readme.txt
+await fs.write("/docs/guide.md", [encoder.encode("# Guide")]); // → docsFs:/guide.md
+await fs.write("/cache/tmp.dat", [encoder.encode("temp")]); // → memFs:/tmp.dat
 ```
 
-### Base path remapping
+### Remap to a sub-directory of the backend
 
-Each mount can specify which subdirectory of the backing filesystem to use as its root. The constructor also accepts an optional `rootPath`:
+```ts
+const fs = new CompositeFilesApi(rootFs, "/projects")
+  .mount("/docs", s3Fs, "/documentation");
 
-```typescript
-import { NodeFilesApi } from "@statewalker/webrun-files-node";
-import { S3FilesApi } from "@statewalker/webrun-files-s3";
-import { MemFilesApi } from "@statewalker/webrun-files-mem";
-
-const fsMain = new NodeFilesApi({ ... });
-const fsS3 = new S3FilesApi({ ... });
-const fsMem = new MemFilesApi();
-
-// Use "/projects" as the root of the composite file system:
-const composite = new CompositeFilesApi(fsMain, "./projects")
-  .mount("/docs", fsS3, "/documentation") // use the "/documentation" folder on S3
-  .mount("/cache", fsMem);               // use the root of the in-memory FS
-
-// Writes to /readme.txt go to fsMain at /projects/readme.txt
-await composite.write("/readme.txt", [encoder.encode("Hello")]);
-
-// Writes to /docs/guide.md go to fsS3 at /documentation/guide.md
-await composite.write("/docs/guide.md", [encoder.encode("# Guide")]);
-
-// Writes to /cache/tmp.dat go to fsMem at /tmp.dat
-await composite.write("/cache/tmp.dat", [encoder.encode("temp")]);
+await fs.write("/readme.md", data);     // → rootFs:/projects/readme.md
+await fs.write("/docs/api.md", data);   // → s3Fs:/documentation/api.md
 ```
 
-### Access guards
+### Hide paths
 
-```typescript
-composite
-  .guard(
-    ["write", "remove", "move"],
-    (path) => !path.startsWith("/.private/"),
-    "Cannot modify private files"
-  )
-  .guard(
-    ["write"],
-    (path) => !path.includes(".."),
-    "Path traversal not allowed"
-  );
+```ts
+import {
+  FilteredFilesApi,
+  newPathFilter,
+  newRegexpPathFilter,
+} from "@statewalker/webrun-files-composite";
+
+const visible = new FilteredFilesApi(rawFs, newPathFilter("/.git", "/node_modules"));
+
+await visible.exists("/.git");          // false (even if it exists in rawFs)
+await visible.write("/.git/HEAD", x);   // throws "Path is hidden: /.git/HEAD"
+
+// Regexp-based: hide every dotfile and every *.log file
+const noLogs = new FilteredFilesApi(rawFs, newRegexpPathFilter(/\/\.[^/]+$/, /\.log$/));
 ```
 
-Guards are checked before each operation. The first failing guard throws an error with its message.
+`newPathFilter(...prefixes)` hides any path equal to one of the given
+prefixes or living under `${prefix}/`. Matching is boundary-aware: `"/priv"`
+does **not** match `"/private"`. `newRegexpPathFilter(...regexps)` hides any
+path matched by at least one regexp; the path is normalized before testing
+(single leading slash, no trailing slash). For ad-hoc logic, pass any
+`(path) => boolean | Promise<boolean>` predicate directly (returning `true`
+for visible, `false` for hidden).
 
-### Cross-mount operations
+### Guard operations
 
-```typescript
-// Copy from one mount to another
-await composite.copy("/docs/file.txt", "/archive/file.txt");
+```ts
+import { GuardedFilesApi } from "@statewalker/webrun-files-composite";
 
-// Move across mounts (implemented as copy + delete)
-await composite.move("/cache/temp.txt", "/docs/temp.txt");
+const guarded = new GuardedFilesApi(fs, [
+  {
+    operations: ["write", "remove", "move", "mkdir"],
+    check: (p) => !p.startsWith("/.settings/"),
+    message: "settings folder is read-only",
+  },
+  {
+    operations: ["write"],
+    check: (p) => !p.includes(".."),
+    message: "no path traversal",
+  },
+]);
 ```
 
-### Listing
+Guards are evaluated in the order they were passed. The first denying
+guard throws `Error("<message>: <normalized-path>")`. A guard that lists
+`"read"` also fires on the source side of `move`/`copy` and on every
+`exists` call; one that lists `"write"` fires on the target side of
+`move`/`copy`; one that lists `"list"` also fires on `stats`.
 
-Mount points appear as synthetic directory entries:
+### Cross-mount move/copy
 
-```typescript
-const entries = [];
-for await (const entry of composite.list("/")) {
-  entries.push(entry);
-}
-// Includes: { name: "docs", path: "/docs", kind: "directory" }
+`CompositeFilesApi` resolves `move` and `copy` across mounts by performing
+a recursive copy and (for `move`) deleting the source. Use guards/filters
+to gate these flows by composite path:
 
-// Recursive listing spans all mounts
-for await (const entry of composite.list("/", { recursive: true })) {
-  // entries from root, /docs, /cache, and all subdirectories
-}
+```ts
+await fs.move("/cache/draft.md", "/docs/draft.md"); // memFs → s3Fs
 ```
 
-## API
+## Internals
 
-### `CompositeFilesApi`
+### Architecture
 
-Implements the `FilesApi` interface from `@statewalker/webrun-files`.
-
-#### Constructor
-
-```typescript
-new CompositeFilesApi(root: FilesApi, rootPath?: string)
+```
++---------------------+
+|  GuardedFilesApi    |  policy: throw on denied operations
++---------------------+
+|  FilteredFilesApi   |  visibility: pretend hidden paths don't exist
++---------------------+
+|  CompositeFilesApi  |  routing: longest-prefix mount, sub-dir remap
++---------------------+
+|   backend FilesApi  |  storage: mem / node / s3 / browser …
++---------------------+
 ```
 
-Creates a composite filesystem with `root` as the default backend for `/`. If `rootPath` is provided, all root operations are remapped to that subdirectory in the backing filesystem.
+The decorators implement `FilesApi`, so any of them can wrap any other in
+any order. The diagram above is the typical stack but not the only valid
+one (e.g. you can put a `FilteredFilesApi` *behind* a mount to scope its
+filter to that mount only).
 
-#### `mount(path: string, api: FilesApi, fsPath?: string): this`
+### CompositeFilesApi — path resolution
 
-Mounts a `FilesApi` backend at the given path. If `fsPath` is provided, operations on this mount are remapped to that subdirectory in the backing filesystem. Paths are normalized (leading `/`, no trailing `/`). Returns `this` for chaining.
+1. Input paths are normalized (forward slashes, leading `/`, no trailing `/`).
+2. The mount with the **longest matching prefix** wins. The implicit `/`
+   mount set by the constructor is always last.
+3. The matched prefix is stripped and the mount's `fsPath` is prepended.
+4. Mount points themselves appear as synthetic directories in `list()` and
+   `stats()`, and `remove()` on a mount point throws.
 
-#### `guard(operations: FileOperation[], check: (path: string) => boolean, message?: string): this`
+### GuardedFilesApi — effective operation matrix
 
-Adds an access guard. Before each matching operation, `check(path)` is called. If it returns `false`, the operation throws an error with the optional `message`. Returns `this` for chaining.
+| API method   | Operations checked                                  |
+| ------------ | --------------------------------------------------- |
+| `read`       | `read`                                              |
+| `write`      | `write`                                             |
+| `mkdir`      | `mkdir`                                             |
+| `remove`     | `remove`                                            |
+| `list`       | `list` on the path AND on each directory entry      |
+| `stats`      | `list`                                              |
+| `exists`     | `read`                                              |
+| `move(s, t)` | `move`+`read` on `s`; `move`+`write` on `t`         |
+| `copy(s, t)` | `copy`+`read` on `s`; `copy`+`write` on `t`         |
 
-#### FilesApi methods
+This expansion makes `read`/`write`-scoped guards apply naturally to
+`move`/`copy` as well, so callers don't need to repeat the same prefix in
+multiple operation lists.
 
-| Method | Description |
-|--------|-------------|
-| `read(path, options?)` | Read file content as `AsyncIterable<Uint8Array>` |
-| `write(path, content)` | Write content to a file |
-| `mkdir(path)` | Create a directory |
-| `list(path, options?)` | List directory entries (supports `{ recursive: true }`) |
-| `stats(path)` | Get file/directory stats; mount points return `{ kind: "directory" }` |
-| `exists(path)` | Check if a path exists; returns `true` for mount points |
-| `remove(path)` | Remove a file or directory (throws on mount points) |
-| `move(source, target)` | Move a file or directory (cross-mount supported) |
-| `copy(source, target)` | Copy a file or directory (cross-mount supported) |
+### FilteredFilesApi — silent vs loud failures
 
-### Types
+| Hidden path on call | Behaviour                |
+| ------------------- | ------------------------ |
+| `read` / `list`     | empty iterable           |
+| `stats`             | `undefined`              |
+| `exists`            | `false`                  |
+| `remove`            | `false`                  |
+| `move` / `copy`     | `false` (no side effect) |
+| `write` / `mkdir`   | throws `"Path is hidden"` (silent drop would lose data) |
 
-```typescript
-type FileOperation = "read" | "write" | "remove" | "move" | "copy" | "list" | "mkdir";
+### Constraints
 
-interface FileGuard {
-  operations: FileOperation[];
-  check: (path: string) => boolean;
-  message?: string;
-}
-```
+- The root mount (`/`) is fixed at construction; you cannot remount it.
+- Mount points are immutable — `remove()` on a mount point throws.
+- Cross-mount `move` is copy + delete; not atomic.
+- `newPathFilter()` (no args) hides nothing; entries that normalize to
+  `"/"` (empty string, `"/"`) are dropped because they would otherwise hide
+  the whole tree.
+- `newRegexpPathFilter()` (no args) hides nothing. Avoid stateful flags
+  (`/g`, `/y`) — `RegExp.prototype.test` mutates `lastIndex` between calls
+  and will give surprising results.
 
-## Path resolution
+### Dependencies
 
-1. All input paths are normalized (forward slashes, leading `/`, no trailing `/`)
-2. The mount with the **longest matching prefix** handles the operation
-3. The mount prefix is stripped and the `fsPath` (base path) is prepended — e.g. `/docs/guide.md` with mount at `/docs` and `fsPath="/documentation"` resolves to `/documentation/guide.md` on the mounted backend
-4. Guards always operate on **composite paths** (before remapping), not backing filesystem paths
-
-## Design constraints
-
-- The root mount (`/`) is set at construction time and cannot be remounted
-- Mount points are immutable — `remove()` on a mount point throws an error
-- Cross-mount move is implemented as copy + delete (no atomic guarantee)
-- Guards are evaluated in the order they were added; first denial wins
-
-## Related packages
-
-| Package | Role |
-|---------|------|
-| `@statewalker/webrun-files` | Core `FilesApi` interface and path utilities |
-| `@statewalker/webrun-files-mem` | In-memory `FilesApi` backend |
-| `@statewalker/webrun-files-node` | Node.js filesystem backend |
-| `@statewalker/webrun-files-tests` | Shared parametrized test suites |
+- `@statewalker/webrun-files` — core `FilesApi` interface and path utilities.
 
 ## License
 
