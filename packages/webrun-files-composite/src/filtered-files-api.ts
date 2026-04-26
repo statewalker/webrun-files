@@ -6,6 +6,7 @@ import type {
   ReadOptions,
 } from "@statewalker/webrun-files";
 import { normalizePath } from "@statewalker/webrun-files";
+import { globToRegExp } from "./glob-to-regexp.js";
 
 /**
  * Predicate evaluated against a **normalized** path (single leading slash,
@@ -86,6 +87,47 @@ export function newRegexpPathFilter(...pathRegexps: RegExp[]): PathFilter {
     }
     return true;
   };
+}
+
+/**
+ * Builds a {@link PathFilter} that hides any path whose normalized form
+ * matches at least one of the provided glob patterns.
+ *
+ * Each glob is compiled with `extended: true` and `globstar: true`, the
+ * standard "filesystem-style" mode:
+ *
+ * - `*` matches any number of characters within a single path segment
+ *   (does **not** cross `/`).
+ * - `**` between slashes matches zero or more whole path segments.
+ * - `?` matches exactly one character.
+ * - `[abc]` / `[a-z]` matches a single character in the set / range.
+ * - `{a,b,c}` matches one of the alternatives.
+ *
+ * Because matching is done on the **normalized** path (which always starts
+ * with `/`), patterns that should match anywhere in the tree need a
+ * leading `**​/`, e.g. `**​/*.log` to hide every `.log` file at any depth.
+ *
+ * Gotcha: `/foo/**` matches descendants of `/foo` but **not** `/foo`
+ * itself, because the glob requires a `/` after `foo` before `**` can
+ * match. To hide both the directory and its contents, list both prefixes:
+ * `newGlobPathFilter("/foo", "/foo/**")`. {@link newPathFilter} doesn't
+ * have this problem and may be a better fit for prefix-only hiding.
+ *
+ * @param pathGlobs Glob patterns whose match means "hide this path". Pass
+ *   none to hide nothing.
+ *
+ * @example
+ * ```ts
+ * const filter = newGlobPathFilter("**​/*.log", "/.git", "/.git/**");
+ * filter("/src/index.ts"); // true
+ * filter("/build.log");    // false (matches **​/*.log)
+ * filter("/.git");         // false (matches /.git)
+ * filter("/.git/HEAD");    // false (matches /.git/**)
+ * ```
+ */
+export function newGlobPathFilter(...pathGlobs: string[]): PathFilter {
+  const regexps = pathGlobs.map((glob) => globToRegExp(glob, { extended: true, globstar: true }));
+  return newRegexpPathFilter(...regexps);
 }
 
 /**
