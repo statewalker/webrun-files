@@ -96,26 +96,41 @@ await fs.write("/docs/api.md", data);   // → s3Fs:/documentation/api.md
 ```ts
 import {
   FilteredFilesApi,
+  newGlobPathFilter,
   newPathFilter,
   newRegexpPathFilter,
 } from "@statewalker/webrun-files-composite";
 
+// Prefix-based
 const visible = new FilteredFilesApi(rawFs, newPathFilter("/.git", "/node_modules"));
-
 await visible.exists("/.git");          // false (even if it exists in rawFs)
 await visible.write("/.git/HEAD", x);   // throws "Path is hidden: /.git/HEAD"
 
 // Regexp-based: hide every dotfile and every *.log file
 const noLogs = new FilteredFilesApi(rawFs, newRegexpPathFilter(/\/\.[^/]+$/, /\.log$/));
+
+// Glob-based: hide every .log anywhere, plus the entire .git tree
+const noJunk = new FilteredFilesApi(
+  rawFs,
+  newGlobPathFilter("**/*.log", "/.git", "/.git/**"),
+);
 ```
 
-`newPathFilter(...prefixes)` hides any path equal to one of the given
-prefixes or living under `${prefix}/`. Matching is boundary-aware: `"/priv"`
-does **not** match `"/private"`. `newRegexpPathFilter(...regexps)` hides any
-path matched by at least one regexp; the path is normalized before testing
-(single leading slash, no trailing slash). For ad-hoc logic, pass any
-`(path) => boolean | Promise<boolean>` predicate directly (returning `true`
-for visible, `false` for hidden).
+- `newPathFilter(...prefixes)` hides any path equal to one of the given
+  prefixes or living under `${prefix}/`. Matching is boundary-aware:
+  `"/priv"` does **not** match `"/private"`.
+- `newRegexpPathFilter(...regexps)` hides any path matched by at least one
+  regexp; the path is normalized before testing (single leading slash, no
+  trailing slash).
+- `newGlobPathFilter(...globs)` hides any path matched by at least one glob.
+  Globs are compiled in `extended` + `globstar` mode: `*` stays inside one
+  path segment, `**` spans any number of segments, `?` / `[abc]` / `{a,b}`
+  do what bash does. Note that `/foo/**` matches descendants of `/foo` but
+  **not** `/foo` itself — list both `"/foo"` and `"/foo/**"` to cover
+  both, or just use `newPathFilter("/foo")` for a prefix-only filter.
+
+For ad-hoc logic, pass any `(path) => boolean | Promise<boolean>` predicate
+directly (returning `true` for visible, `false` for hidden).
 
 ### Guard operations
 
@@ -222,10 +237,22 @@ multiple operation lists.
 - `newRegexpPathFilter()` (no args) hides nothing. Avoid stateful flags
   (`/g`, `/y`) — `RegExp.prototype.test` mutates `lastIndex` between calls
   and will give surprising results.
+- `newGlobPathFilter()` (no args) hides nothing. Globs are anchored
+  (compiled without the RegExp `g` flag) and run in `globstar` mode, so
+  `*` does not cross `/`; use `**` to span segments. `/foo/**` matches
+  descendants of `/foo` but not `/foo` itself.
 
 ### Dependencies
 
 - `@statewalker/webrun-files` — core `FilesApi` interface and path utilities.
+
+### Credits
+
+- `globToRegExp` (in [`src/glob-to-regexp.ts`](src/glob-to-regexp.ts)) is a
+  TypeScript port of [`glob-to-regexp`](https://github.com/fitzgen/glob-to-regexp)
+  by Nick Fitzgerald (BSD 2-Clause). The port preserves the original
+  semantics; only the surface API has been re-typed for TypeScript. See the
+  upstream repository for the full license text.
 
 ## License
 

@@ -1,7 +1,12 @@
 import { MemFilesApi } from "@statewalker/webrun-files-mem";
 import { createFilesApiTests } from "@statewalker/webrun-files-tests";
 import { beforeEach, describe, expect, it } from "vitest";
-import { FilteredFilesApi, newPathFilter, newRegexpPathFilter } from "../src/index.js";
+import {
+  FilteredFilesApi,
+  newGlobPathFilter,
+  newPathFilter,
+  newRegexpPathFilter,
+} from "../src/index.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -207,6 +212,148 @@ describe("FilteredFilesApi with newRegexpPathFilter - end-to-end", () => {
   it("write to a regexp-matched path is rejected", async () => {
     await expect(api.write("/new.log", [toBytes("x")])).rejects.toThrow(/hidden/);
     expect(await source.exists("/new.log")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------
+// newGlobPathFilter — pure function tests
+// ---------------------------------------------------------------
+
+describe("newGlobPathFilter", () => {
+  it("no globs means nothing is hidden", () => {
+    const filter = newGlobPathFilter();
+    expect(filter("/")).toBe(true);
+    expect(filter("/foo")).toBe(true);
+    expect(filter("/foo/bar")).toBe(true);
+  });
+
+  it("single glob hides matching paths within one segment", () => {
+    // `*` does not cross `/` (globstar mode is enabled)
+    const filter = newGlobPathFilter("/tmp/*");
+    expect(filter("/tmp/x.txt")).toBe(false);
+    expect(filter("/tmp/y.dat")).toBe(false);
+    expect(filter("/tmp/sub/x.txt")).toBe(true);
+    expect(filter("/other/x.txt")).toBe(true);
+  });
+
+  it("`**` spans any number of path segments", () => {
+    const filter = newGlobPathFilter("/.git/**");
+    expect(filter("/.git/HEAD")).toBe(false);
+    expect(filter("/.git/refs/heads/main")).toBe(false);
+    expect(filter("/notgit")).toBe(true);
+    expect(filter("/src/file.ts")).toBe(true);
+  });
+
+  it("leading `**​/` matches anywhere in the tree", () => {
+    const filter = newGlobPathFilter("**/*.log");
+    expect(filter("/build.log")).toBe(false);
+    expect(filter("/sub/build.log")).toBe(false);
+    expect(filter("/a/b/c/build.log")).toBe(false);
+    expect(filter("/build.txt")).toBe(true);
+  });
+
+  it("`/foo/**` matches descendants only, NOT the prefix itself", () => {
+    // `/.git/**` requires a trailing `/` after `.git`, so `/.git` is not
+    // matched. To hide both, list both: `/.git`, `/.git/**`.
+    const filter = newGlobPathFilter("/.git/**");
+    expect(filter("/.git")).toBe(true); // visible
+    expect(filter("/.git/HEAD")).toBe(false); // hidden
+  });
+
+  it("listing both prefix and `prefix/**` hides the directory and its contents", () => {
+    const filter = newGlobPathFilter("/.git", "/.git/**");
+    expect(filter("/.git")).toBe(false);
+    expect(filter("/.git/HEAD")).toBe(false);
+    expect(filter("/.gitignore")).toBe(true);
+  });
+
+  it("supports `?` (single-char) and `[]` (character class)", () => {
+    const filter = newGlobPathFilter("/file-?.txt");
+    expect(filter("/file-a.txt")).toBe(false);
+    expect(filter("/file-b.txt")).toBe(false);
+    expect(filter("/file-ab.txt")).toBe(true);
+
+    const cls = newGlobPathFilter("/log-[0-9].txt");
+    expect(cls("/log-3.txt")).toBe(false);
+    expect(cls("/log-x.txt")).toBe(true);
+  });
+
+  it("supports `{a,b,c}` alternation", () => {
+    const filter = newGlobPathFilter("/.{git,svn,hg}/**");
+    expect(filter("/.git/HEAD")).toBe(false);
+    expect(filter("/.svn/wc.db")).toBe(false);
+    expect(filter("/.hg/store")).toBe(false);
+    expect(filter("/.bzr/HEAD")).toBe(true);
+  });
+
+  it("multiple globs: any match hides the path", () => {
+    const filter = newGlobPathFilter("**/*.log", "/.git/**", "/tmp/**");
+    expect(filter("/src/index.ts")).toBe(true);
+    expect(filter("/build.log")).toBe(false);
+    expect(filter("/sub/build.log")).toBe(false);
+    expect(filter("/.git/HEAD")).toBe(false);
+    expect(filter("/tmp/x")).toBe(false);
+    expect(filter("/tmp/sub/x")).toBe(false);
+  });
+
+  it("normalizes the path under test (handles missing leading slash, trailing slash)", () => {
+    const filter = newGlobPathFilter("/.git/**");
+    expect(filter(".git/HEAD")).toBe(false);
+    expect(filter("/.git/HEAD/")).toBe(false);
+    expect(filter("//.git//HEAD//")).toBe(false);
+  });
+
+  it("a glob that matches no path leaves everything visible", () => {
+    const filter = newGlobPathFilter("/__never_used__/**");
+    expect(filter("/a")).toBe(true);
+    expect(filter("/foo/bar")).toBe(true);
+  });
+});
+
+createFilesApiTests("FilteredFilesApi (no globs)", async () => ({
+  api: new FilteredFilesApi(new MemFilesApi(), newGlobPathFilter()),
+}));
+
+createFilesApiTests("FilteredFilesApi (glob that misses every path)", async () => ({
+  api: new FilteredFilesApi(new MemFilesApi(), newGlobPathFilter("/__never_used__/**")),
+}));
+
+describe("FilteredFilesApi with newGlobPathFilter - end-to-end", () => {
+  let source: MemFilesApi;
+  let api: FilteredFilesApi;
+
+  beforeEach(async () => {
+    source = new MemFilesApi();
+    await source.write("/keep.md", [toBytes("k")]);
+    await source.write("/build.log", [toBytes("l")]);
+    await source.write("/.git/HEAD", [toBytes("g")]);
+    await source.write("/.git/refs/heads/main", [toBytes("m")]);
+    await source.write("/dir/inner.log", [toBytes("i")]);
+    api = new FilteredFilesApi(source, newGlobPathFilter("**/*.log", "/.git", "/.git/**"));
+  });
+
+  it("hides glob-matched files via recursive list", async () => {
+    const paths = (await collectEntries(api.list("/", { recursive: true }))).map((e) => e.path);
+    expect(paths).toContain("/keep.md");
+    expect(paths).toContain("/dir");
+    expect(paths).not.toContain("/build.log");
+    expect(paths).not.toContain("/.git");
+    expect(paths).not.toContain("/.git/HEAD");
+    expect(paths).not.toContain("/.git/refs/heads/main");
+    expect(paths).not.toContain("/dir/inner.log");
+  });
+
+  it("exists is false for glob-matched paths", async () => {
+    expect(await api.exists("/keep.md")).toBe(true);
+    expect(await api.exists("/build.log")).toBe(false);
+    expect(await api.exists("/.git/HEAD")).toBe(false);
+  });
+
+  it("write to a glob-matched path is rejected", async () => {
+    await expect(api.write("/new.log", [toBytes("x")])).rejects.toThrow(/hidden/);
+    await expect(api.write("/.git/CONFIG", [toBytes("x")])).rejects.toThrow(/hidden/);
+    expect(await source.exists("/new.log")).toBe(false);
+    expect(await source.exists("/.git/CONFIG")).toBe(false);
   });
 });
 
