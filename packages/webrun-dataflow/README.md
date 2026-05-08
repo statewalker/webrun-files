@@ -96,6 +96,103 @@ Reachability (who is affected) can be precomputed, but **scheduling order** depe
 
 Zero runtime dependencies. Dev-only: `tsdown`, `vitest`, `typescript`, `rimraf`.
 
+## Transaction store
+
+Alongside the topology, this package also ships a small bookkeeping interface used by an updates manager that drives handler execution over the graph.
+
+### `TransactionStore` interface
+
+```ts
+interface TransactionStore {
+  newTransactionId(): Promise<number>;
+  setCellTransaction(cell: CellId, transactionId: number): Promise<void>;
+  getCellTransaction(cell: CellId): Promise<number>;
+  getCellsTransactions(
+    sinceTransactionId?: number,
+  ): AsyncGenerator<[cell: CellId, transactionId: number]>;
+  removeCellTransactions(cell: CellId): Promise<void>;
+}
+```
+
+- `newTransactionId` returns strictly increasing numbers across the lifetime of the store.
+- `setCellTransaction` is called only after a handler returns `true` — failed/partial runs leave the cell's recorded transaction unchanged.
+- `getCellTransaction` returns `0` for cells that have never been recorded.
+- `getCellsTransactions(since)` yields cells with `recordedTx > since`; with no argument it yields all recorded cells.
+- `removeCellTransactions` forgets a cell entirely (e.g., after a config change).
+
+### `InMemoryTransactionStore`
+
+Reference implementation backed by a single counter and a `Map<CellId, number>`. State lives in this process; nothing persists across restarts. Suitable for tests and single-process use.
+
+```ts
+import { InMemoryTransactionStore } from "@statewalker/shared-dataflow";
+
+const store = new InMemoryTransactionStore();
+const tx = await store.newTransactionId(); // 1, 2, 3, ...
+await store.setCellTransaction("extract", tx);
+await store.getCellTransaction("extract"); // → tx
+```
+
+Persistent backends (SQL, KV) ship as separate packages and implement the same interface.
+
+## Updates manager
+
+`UpdatesManager` is the runtime that drives handler execution over the graph using a `TransactionStore`.
+
+```ts
+import {
+  DataflowGraph,
+  InMemoryTransactionStore,
+  UpdatesManager,
+} from "@statewalker/shared-dataflow";
+
+const graph = new DataflowGraph([
+  { id: "detect",  inputs: ["fs-tick"],         outputs: ["files-changed"] },
+  { id: "extract", inputs: ["files-changed"],   outputs: ["extracted"] },
+  { id: "chunk",   inputs: ["extracted"],       outputs: ["chunks"] },
+]);
+const store = new InMemoryTransactionStore();
+
+const manager = new UpdatesManager({
+  graph,
+  store,
+  handlers: {
+    detect:  async ({ updateId, transactionId }) => { /* ... */ return true; },
+    extract: async ({ updateId, transactionId }) => { /* ... */ return true; },
+    chunk:   async ({ updateId, transactionId }) => { /* ... */ return true; },
+  },
+  onError: (cellId, error) => console.error(`[${cellId}]`, error),
+});
+
+// External trigger (e.g. fs-watcher fires)
+await manager.run(["fs-tick"]);
+
+// Periodic sweep — runs all probers (cells with inputs: []) plus their cascade
+await manager.run();
+```
+
+Per call to `run()`:
+
+1. A new `transactionId` is allocated via `store.newTransactionId()`. **All cells in this activation share it.**
+2. The cell list is computed:
+   - With seeds: `graph.getExecutionOrder(seeds)`.
+   - Without seeds: probers (cells with `inputs: []`) + their downstream cascade.
+3. Each cell's handler is invoked with `{ updateId: store.getCellTransaction(cellId), transactionId }`.
+4. On `true` → `store.setCellTransaction(cellId, transactionId)`. On `false` or thrown → store untouched; thrown errors are forwarded to `onError`.
+
+Activations are serialized: a second `run()` while one is in flight throws.
+
+The handler contract:
+
+```ts
+type CellHandler = (params: {
+  updateId: number;       // = lastSuccessTx for this cell, or 0
+  transactionId: number;  // = activation's tx
+}) => Promise<boolean>;
+```
+
+Handlers are expected to be **idempotent** — they may be re-invoked with the same `updateId` after a previous failure. Anti-join your input query against your output store using `transactionId` as a stable tag, so previously-published rows are skipped on retry.
+
 ## License
 
 MIT.

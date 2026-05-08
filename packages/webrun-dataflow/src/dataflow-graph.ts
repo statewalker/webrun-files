@@ -32,6 +32,10 @@ export class DataflowGraph {
     }
   }
 
+  getAllCells(): CellId[] {
+    return [...this.cells.keys()];
+  }
+
   getCellInputs(cellId: CellId): Signal[] {
     return [...(this.cells.get(cellId)?.inputs ?? [])];
   }
