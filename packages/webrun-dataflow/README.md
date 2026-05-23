@@ -2,6 +2,26 @@
 
 Signal-driven dataflow graph: forward impact propagation + filtered Kahn topological sort. Zero runtime dependencies.
 
+## The problem it solves
+
+Many real systems share the same shape: **something upstream changes, and a cascade of downstream work has to catch up** — in the right order, without redoing work that's already done, without losing progress if something fails, and without melting the machine when a thousand things change at once.
+
+Hand-rolling that for every pipeline ends up reinventing the same wheel: queues, watermarks, retry logic, ordering hacks, "is this already up to date?" checks, ad-hoc resumption flags. `shared-dataflow` is that wheel, factored out and made declarative.
+
+Concretely, it gives you:
+
+- **Incremental work by URI.** Each handler sees only what changed since *its* last successful run — not the whole world. Sweep a million-file repo and a no-op activation costs almost nothing.
+- **Batching without saturation.** Handlers can choose to process a slice of the pending entries, return `false` ("more to do"), and be re-invoked on the next sweep. Backpressure is just "do less per call."
+- **Resumable on failure.** A handler that throws or returns `false` leaves its bookmark untouched. Next activation replays exactly the same `updateId`, so progress picks up where it stopped — no compensating actions, no "did I already do this?" guesswork.
+- **Guaranteed convergence.** As long as inputs eventually stop changing, the cascade reaches a fixed point where every cell's bookmark equals the latest upstream stamp. Re-runs over a quiet system are structural no-ops.
+- **Order without coordination.** The topological sort guarantees a consumer only fires after every upstream producer that *also* has work to do has finished. No timestamps, no priorities, no race windows.
+- **Deletes are just another signal.** Tombstone signals flow through the same cascade — no parallel "deletion pipeline" to maintain.
+- **Asynchronous, decoupled stages.** The store mediates between handlers; nobody passes data hand-to-hand. Add a new consumer of an existing signal and the graph picks it up; remove one and nothing else cares.
+
+In one line: **describe the graph once, write idempotent handlers, and let the runtime turn "something changed" into the minimum correct cascade — every time, even after crashes.**
+
+See [docs/use-cases.md](docs/use-cases.md) for example domains beyond content pipelines — ETL, CI/CD, cache invalidation, IoT, ML, and more.
+
 ## What it is
 
 A small TypeScript library that models a graph of *cells* connected by *signals*:
