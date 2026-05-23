@@ -276,31 +276,31 @@ function buildPipeline() {
   const txStore = new InMemoryTransactionStore();
 
   const graph = new DataflowGraph([
-    { id: "scanner", inputs: ["scan"], outputs: ["files"] },
-    { id: "extract", inputs: ["files"], outputs: ["content"] },
-    { id: "chunk", inputs: ["content"], outputs: ["chunks"] },
-    { id: "embed", inputs: ["chunks"], outputs: ["embeddings"] },
-    { id: "index", inputs: ["content", "chunks", "embeddings"], outputs: [] },
-    { id: "content-remover", inputs: ["files:removed"], outputs: ["content:removed"] },
-    { id: "chunks-remover", inputs: ["content:removed"], outputs: ["chunks:removed"] },
+    { id: "FilesScanner", inputs: ["scan"], outputs: ["files"] },
+    { id: "Extractor", inputs: ["files"], outputs: ["content"] },
+    { id: "Chunker", inputs: ["content"], outputs: ["chunks"] },
+    { id: "Embedder", inputs: ["chunks"], outputs: ["embeddings"] },
+    { id: "Indexer", inputs: ["content", "chunks", "embeddings"], outputs: [] },
+    { id: "ContentRemover", inputs: ["files:removed"], outputs: ["content:removed"] },
+    { id: "ChunksRemover", inputs: ["content:removed"], outputs: ["chunks:removed"] },
     {
-      id: "embeddings-remover",
+      id: "EmbeddingsRemover",
       inputs: ["chunks:removed"],
       outputs: ["embeddings:removed"],
     },
-    { id: "index-remover", inputs: ["embeddings:removed"], outputs: [] },
+    { id: "IndexRemover", inputs: ["embeddings:removed"], outputs: [] },
   ]);
 
   const handlers: Record<string, CellHandler> = {
-    scanner: newFilesScanner({ files, updatesStore }),
-    extract: newExtractor({ files, content, updatesStore }),
-    chunk: newChunker({ content, chunks, updatesStore }),
-    embed: newEmbedder({ chunks, embeddings, updatesStore }),
-    index: newIndexer({ content, chunks, embeddings, index, updatesStore }),
-    "content-remover": newContentRemover({ content, updatesStore }),
-    "chunks-remover": newChunksRemover({ chunks, updatesStore }),
-    "embeddings-remover": newEmbeddingsRemover({ embeddings, updatesStore }),
-    "index-remover": newIndexRemover({ index, updatesStore }),
+    FilesScanner: newFilesScanner({ files, updatesStore }),
+    Extractor: newExtractor({ files, content, updatesStore }),
+    Chunker: newChunker({ content, chunks, updatesStore }),
+    Embedder: newEmbedder({ chunks, embeddings, updatesStore }),
+    Indexer: newIndexer({ content, chunks, embeddings, index, updatesStore }),
+    ContentRemover: newContentRemover({ content, updatesStore }),
+    ChunksRemover: newChunksRemover({ chunks, updatesStore }),
+    EmbeddingsRemover: newEmbeddingsRemover({ embeddings, updatesStore }),
+    IndexRemover: newIndexRemover({ index, updatesStore }),
   };
 
   const manager = new UpdatesManager({ graph, store: txStore, handlers });
@@ -335,7 +335,7 @@ describe("UpdatesStore integration — pipeline anchor test", () => {
 
     // Trigger the scanner. Scanner emits `files` entries for the changed
     // files; the cascade flows downstream from there.
-    await p.manager.run(["scan"]);
+    await p.manager.exec({ signals: ["scan"] });
 
     // Every downstream domain store holds the derived data.
     expect(p.content.get("f1")).toBe("HELLO WORLD");
@@ -368,7 +368,7 @@ describe("UpdatesStore integration — pipeline anchor test", () => {
     expect(embeddingsRows.map((e) => e.uri).sort()).toEqual(["f1#0", "f1#1", "f2#0", "f2#1"]);
 
     // Every cell's TransactionStore entry advanced.
-    for (const cellId of ["scanner", "extract", "chunk", "embed", "index"]) {
+    for (const cellId of ["FilesScanner", "Extractor", "Chunker", "Embedder", "Indexer"]) {
       expect(await p.txStore.getCellTransaction(cellId)).toBeGreaterThan(0);
     }
   });
@@ -378,13 +378,13 @@ describe("UpdatesStore integration — pipeline anchor test", () => {
 
     // First scan — establishes the initial state.
     p.files.set("f1", { body: "hello world", updatedAt: 1 });
-    await p.manager.run(["scan"]);
+    await p.manager.exec({ signals: ["scan"] });
     expect(p.content.get("f1")).toBe("HELLO WORLD");
     expect(p.chunks.get("f1#0")).toBe("HELLO ");
     expect(p.chunks.get("f1#1")).toBe("WORLD");
     const indexedV1 = p.index.get("f1#0");
     expect(indexedV1?.content).toBe("HELLO ");
-    const txAfterFirstRun = await p.txStore.getCellTransaction("index");
+    const txAfterFirstRun = await p.txStore.getCellTransaction("Indexer");
     expect(txAfterFirstRun).toBeGreaterThan(0);
 
     // The file changes on disk: new body, bumped `updatedAt`.
@@ -393,7 +393,7 @@ describe("UpdatesStore integration — pipeline anchor test", () => {
     // Re-trigger the scanner. The scanner notices `updatedAt` advanced and
     // re-emits a `files` entry; every downstream cell sees the new stamp
     // above its last `updateId` and re-processes the URI.
-    await p.manager.run(["scan"]);
+    await p.manager.exec({ signals: ["scan"] });
 
     // The full cascade has refreshed every domain row that depends on f1.
     expect(p.content.get("f1")).toBe("GOOD NIGHT");
@@ -403,7 +403,7 @@ describe("UpdatesStore integration — pipeline anchor test", () => {
     expect(p.index.get("f1#1")?.content).toBe("NIGHT");
 
     // Every cell's recorded tx has advanced past the first run.
-    for (const cellId of ["scanner", "extract", "chunk", "embed", "index"]) {
+    for (const cellId of ["FilesScanner", "Extractor", "Chunker", "Embedder", "Indexer"]) {
       expect(await p.txStore.getCellTransaction(cellId)).toBeGreaterThan(txAfterFirstRun);
     }
   });
@@ -414,7 +414,7 @@ describe("UpdatesStore integration — pipeline anchor test", () => {
     // Establish post-update state via the scanner.
     p.files.set("f1", { body: "hello world", updatedAt: 1 });
     p.files.set("f2", { body: "another file", updatedAt: 1 });
-    await p.manager.run(["scan"]);
+    await p.manager.exec({ signals: ["scan"] });
 
     // The file disappeared from disk. The test seeds the tombstone directly
     // because the scanner here only emits "files"; a real implementation
@@ -427,7 +427,7 @@ describe("UpdatesStore integration — pipeline anchor test", () => {
       stamp: removalTx,
     });
 
-    await p.manager.run(["files:removed"]);
+    await p.manager.exec({ signals: ["files:removed"] });
 
     // Domain stores no longer hold any f1-derived data.
     expect(p.content.has("f1")).toBe(false);
@@ -468,7 +468,7 @@ describe("UpdatesStore integration — pipeline anchor test", () => {
     const p = buildPipeline();
 
     p.files.set("f1", { body: "hello world", updatedAt: 1 });
-    await p.manager.run(["scan"]);
+    await p.manager.exec({ signals: ["scan"] });
 
     // Snapshot domain state after first run.
     const contentBefore = new Map(p.content);
@@ -478,7 +478,7 @@ describe("UpdatesStore integration — pipeline anchor test", () => {
     const updatesBefore = p.updatesStore.snapshot();
 
     // Re-run the scanner with no file changes — `updatedAt` is unchanged.
-    await p.manager.run(["scan"]);
+    await p.manager.exec({ signals: ["scan"] });
 
     // Domain stores are unchanged.
     expect(p.content).toEqual(contentBefore);

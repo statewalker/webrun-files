@@ -253,9 +253,9 @@ function newFilesScanner(deps: { files: Map<string, { body: string; updatedAt: n
 }
 ```
 
-**Initial pass.** `manager.run(["scan"])` allocates a fresh `transactionId`, walks the graph in topological order, and lets each cell read its inputs through `UpdatesStore`. The scanner publishes new `files` entries; `extract` reads them, writes to its content store and publishes `content` entries; `chunk` reads `content`, publishes `chunks`; `embed` reads `chunks`, publishes `embeddings`; `index` reads all three and updates its index. By the end of the run every cell's recorded transaction has advanced.
+**Initial pass.** `manager.exec({ signals: ["scan"] })` allocates a fresh `transactionId`, walks the graph in topological order, and lets each cell read its inputs through `UpdatesStore`. The scanner publishes new `files` entries; `extract` reads them, writes to its content store and publishes `content` entries; `chunk` reads `content`, publishes `chunks`; `embed` reads `chunks`, publishes `embeddings`; `index` reads all three and updates its index. By the end of the run every cell's recorded transaction has advanced.
 
-**Re-indexing.** When a file changes on disk, the caller mutates the source (`files.set("f1", { body: "...", updatedAt: 2 })`) and runs `manager.run(["scan"])` again. The scanner notices the bumped `updatedAt` and re-emits `{ signal: "files", uri: "f1", stamp: tx2 }`. Because `UpdatesStore` upserts by `(signal, uri)`, the row's stamp moves from `tx1` to `tx2`. Every downstream cell's next `readEntries({ signal, since: updateId })` query (where `updateId` is the cell's last recorded tx, less than `tx2`) yields the URI again, and the cell re-processes it. Re-indexing falls out of the contract — there is no special "re-index" code path.
+**Re-indexing.** When a file changes on disk, the caller mutates the source (`files.set("f1", { body: "...", updatedAt: 2 })`) and runs `manager.exec({ signals: ["scan"] })` again. The scanner notices the bumped `updatedAt` and re-emits `{ signal: "files", uri: "f1", stamp: tx2 }`. Because `UpdatesStore` upserts by `(signal, uri)`, the row's stamp moves from `tx1` to `tx2`. Every downstream cell's next `readEntries({ signal, since: updateId })` query (where `updateId` is the cell's last recorded tx, less than `tx2`) yields the URI again, and the cell re-processes it. Re-indexing falls out of the contract — there is no special "re-index" code path.
 
 **No-op re-runs.** If nothing changed (no file's `updatedAt` advanced), the scanner emits nothing, every downstream cell reads zero entries, and the cascade is a no-op. Idempotence is structural.
 
@@ -275,7 +275,10 @@ Three things the store deliberately does NOT enforce:
 
 ## Updates manager
 
-`UpdatesManager` is the runtime that drives handler execution over the graph using a `TransactionStore`.
+`UpdatesManager` is the runtime that drives handler execution over the graph using a `TransactionStore`. It exposes two methods:
+
+- **`run(seeds?)`** — an async generator that yields `StageInfo` events. The caller can drive the activation one stage at a time, pausing between cells.
+- **`exec(seeds?)`** — convenience: iterates `run` to completion and resolves. Use when you don't need per-stage observation.
 
 ```ts
 import {
@@ -302,25 +305,91 @@ const manager = new UpdatesManager({
   onError: (cellId, error) => console.error(`[${cellId}]`, error),
 });
 
-// External trigger (e.g. fs-watcher fires)
-await manager.run(["fs-tick"]);
+// External trigger (e.g. fs-watcher fires) — convenience form, drain to completion.
+await manager.exec({ signals: ["fs-tick"] });
 
-// Periodic sweep — runs all probers (cells with inputs: []) plus their cascade
-await manager.run();
+// Periodic sweep — runs all probers (cells with inputs: []) plus their cascade.
+await manager.exec();
 ```
 
-Per call to `run()`:
+### Seeds — signals, cells, or none
+
+The argument to `run` / `exec` is a discriminated union:
+
+- `{ signals: Iterable<Signal> }` — start from changed signals. The cells consuming them and their downstream cascade run, in topological order.
+- `{ cells: Iterable<CellId> }` — start from explicit cell ids. Those cells plus their downstream cascade run. Used to resume an interrupted activation (see "Restart" below).
+- Omitted — run probers (cells with `inputs: []`) and everything they cascade into.
+
+The two seed forms are mutually exclusive; mixing them is a type error.
+
+### Per-activation lifecycle
+
+Per call to `run()` / `exec()`:
 
 1. A new `transactionId` is allocated via `store.newTransactionId()`. **All cells in this activation share it.**
-2. The cell list is computed:
-   - With seeds: `graph.getExecutionOrder(seeds)`.
-   - Without seeds: probers (cells with `inputs: []`) + their downstream cascade.
+2. The cell list is computed from the seeds (or probers when omitted).
 3. Each cell's handler is invoked with `{ updateId: store.getCellTransaction(cellId), transactionId }`.
 4. On `true` → `store.setCellTransaction(cellId, transactionId)`. On `false` or thrown → store untouched; thrown errors are forwarded to `onError`.
 
-Activations are serialized: a second `run()` while one is in flight throws.
+Activations are serialized. The in-flight guard is set when iteration begins (first `next()`) and cleared when the generator finishes or is closed. A second `run` whose iteration begins while another is still in progress throws.
 
-The handler contract:
+### Stage events — observing the activation
+
+`run` yields `StageInfo` events as the activation progresses:
+
+```ts
+type StageInfo =
+  | { type: "begin"; transactionId: number }
+  | { type: "end";   transactionId: number }
+  | {
+      type: "call";
+      transactionId: number;
+      cellId: CellId;
+      updateId: number;   // the cell's prior successful tx, passed to its handler
+      result: boolean;    // true = handler finished, false = handler returned false or threw
+    };
+```
+
+Exactly one `begin`, one `call` per executed cell in topological order, one `end`. All three carry the same `transactionId`.
+
+Stepping the generator yourself lets you (a) checkpoint progress to disk between cells, (b) pause until external state catches up, or (c) abort early:
+
+```ts
+const it = manager.run({ signals: ["fs-tick"] });
+for await (const stage of it) {
+  if (stage.type === "call" && stage.cellId === "extract" && !stage.result) {
+    // Extract failed — checkpoint and bail out; the generator's `finally`
+    // releases the in-flight guard so the next `run` / `exec` can start.
+    await it.return(undefined);
+    break;
+  }
+}
+```
+
+### Restart — finalize interrupted cells before the next sweep
+
+When a handler returns `false`, its cell's `TransactionStore` entry does not advance — the cell will re-process the same upstream entries on the next activation. But the next activation usually starts from a *new* upstream change (e.g., the periodic scan). If you want to **finish the previous round** before introducing new work, collect the failed cell ids and pass them back as `{ cells }`:
+
+```ts
+const incompleteCells: CellId[] = [];
+for await (const stage of manager.run({ signals: ["scan"] })) {
+  if (stage.type === "call" && !stage.result) incompleteCells.push(stage.cellId);
+}
+
+if (incompleteCells.length > 0) {
+  // Finalize last round's interrupted cells + their downstream cascade.
+  // Each cell's handler reads with `since: updateId` (still its last
+  // successful tx, before this round) and picks up exactly where it left off.
+  await manager.exec({ cells: incompleteCells });
+}
+
+// Now safe to start the next scan — earlier upstream changes have settled.
+await manager.exec({ signals: ["scan"] });
+```
+
+This pattern is useful when handlers process upstream entries in batches (returning `false` to signal "more to do"): the operator can drain the pipeline before scanning again, avoiding pile-up.
+
+### Handler contract
 
 ```ts
 type CellHandler = (params: {

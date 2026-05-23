@@ -62,6 +62,27 @@ export class DataflowGraph {
     return this.topoSort(impacted);
   }
 
+  /**
+   * Same as `getExecutionOrder`, but seeded with explicit cell ids instead of
+   * signals. The seeded cells are included in the impacted set, then forward
+   * propagation walks `cell.outputs → consumers` from them as usual, and the
+   * combined set is topologically sorted.
+   *
+   * Use when restarting a previously-interrupted activation: pass the cells
+   * whose handlers returned `false` last time, and the manager will run those
+   * cells plus any downstream consumers their outputs reach.
+   *
+   * Cell ids not present in this graph are silently dropped.
+   */
+  getExecutionOrderFromCells(startCells: Iterable<CellId>): CellId[] {
+    const seeds = new Set<CellId>();
+    for (const cellId of startCells) {
+      if (this.cells.has(cellId)) seeds.add(cellId);
+    }
+    const impacted = this.propagateDownstream(seeds);
+    return this.topoSort(impacted);
+  }
+
   // -- Step 1: cells that directly consume a changed signal ----------------
 
   private findSeedCells(signals: Iterable<Signal>): Set<CellId> {
