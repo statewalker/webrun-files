@@ -135,6 +135,144 @@ await store.getCellTransaction("extract"); // → tx
 
 Persistent backends (SQL, KV) ship as separate packages and implement the same interface.
 
+## Updates store
+
+The third leaf of the package. `UpdatesStore` records, per signal channel, the URIs whose most recent change occurred at stamp `s`. Together with `DataflowGraph` (topology) and `TransactionStore` (per-cell last-success tx), it gives handlers the per-entry delta they need to answer two questions: "what URIs changed on signal X since my last successful run?" and "what URIs am I marking changed on signal Y right now?"
+
+### `UpdatesStore` interface
+
+```ts
+interface UpdateEntry {
+  signal: Signal;
+  uri: string;
+  stamp: number;
+}
+
+interface UpdatesStore {
+  readEntries(opts: {
+    signal: Signal;
+    since: number;
+    uriPrefix?: string;
+  }): AsyncIterable<UpdateEntry>;
+
+  saveEntry(entry: UpdateEntry): Promise<void>;
+  saveEntries(entries: ReadonlyArray<UpdateEntry>): Promise<void>;
+
+  removeEntry(key: { signal: Signal; uri: string }): Promise<void>;
+  removeEntries(keys: ReadonlyArray<{ signal: Signal; uri: string }>): Promise<void>;
+}
+```
+
+Semantics:
+
+- **Upsert by `(signal, uri)`.** Each save overwrites the previous stamp for that pair. No history is retained — the store keeps the latest stamp per pair.
+- **Pure pointer entries.** `{ signal, uri, stamp }`, no payload. The data the URI addresses lives in the caller's domain store.
+- **Explicit stamps.** The store records whatever stamp the caller supplies — including a smaller one. It does not enforce monotonicity. In normal operation, callers pass the activation's `transactionId`, which is monotonic via `TransactionStore.newTransactionId()`.
+- **`since` exclusive, stamp-ascending order.** `readEntries({ signal, since })` yields entries with `stamp > since`, in stamp-ascending order. Use `since = 0` to read everything.
+- **Optional URI-prefix filter.** `readEntries({ signal, since, uriPrefix })` restricts to entries whose `uri.startsWith(uriPrefix)`. Useful for queries like "all modified files under folder X" or "all chunks of file Y" (when chunk URIs are addressed as `<fileUri>#<chunkId>`).
+- **Idempotent deletion.** `removeEntry({ signal, uri })` erases the row if present; a no-op otherwise.
+
+### `InMemoryUpdatesStore`
+
+Reference implementation backed by `Map<Signal, Map<Uri, Stamp>>`. State lives in this process; nothing persists across restarts. The class accepts an optional `SerializedUpdatesStore` initial state in its constructor and exposes `snapshot()` and `toJSON()` for the dump direction:
+
+```ts
+import { InMemoryUpdatesStore } from "@statewalker/shared-dataflow";
+
+const store = new InMemoryUpdatesStore();
+await store.saveEntry({ signal: "files", uri: "f1", stamp: 1 });
+
+// Round-trip via JSON:
+const blob = JSON.stringify(store);
+const restored = new InMemoryUpdatesStore(JSON.parse(blob));
+```
+
+The `SerializedUpdatesStore` shape is a JSON-safe nested object — `{ [signal]: { [uri]: stamp } }`. Both directions are defensively copied: the store never holds a live reference to caller-provided objects, and the snapshot returned to a caller can be mutated freely without affecting the store.
+
+Persistent backends ship as separate packages and implement the `UpdatesStore` interface; `snapshot()` / `toJSON()` are in-memory-impl extras, not part of the core contract.
+
+### Wiring with handlers — factory pattern
+
+`UpdatesManager` stays unchanged. Build handlers via ordinary factory functions that close over the store and return a plain `CellHandler`:
+
+```ts
+import type { CellHandler, UpdatesStore } from "@statewalker/shared-dataflow";
+
+function newExtractor(deps: {
+  files: FilesApi;
+  updatesStore: UpdatesStore;
+}): CellHandler {
+  return async ({ updateId, transactionId }) => {
+    for await (const { uri } of deps.updatesStore.readEntries({
+      signal: "files",
+      since: updateId,
+    })) {
+      const body = await deps.files.read(uri);
+      await saveContentToDomainStore(uri, extract(body));
+      await deps.updatesStore.saveEntry({
+        signal: "content",
+        uri,
+        stamp: transactionId,
+      });
+    }
+    return true;
+  };
+}
+```
+
+Returning `true` only when every upstream change has been processed makes the handler trivially resumable: on `false` or a thrown exception, the cell's recorded transaction does not advance, so the same `updateId` is supplied on the next activation and the same upstream entries appear again.
+
+### End-to-end scenario — scanner + cascade + re-indexing
+
+A typical pipeline starts with a *scanner* cell. The scanner observes some external source (a files map, a directory, an inbox), detects what changed since its last visit, and publishes the changes onto a domain signal. Downstream cells transform, derive, embed, index — each one reading from one signal and writing to another, all coordinated through the same `UpdatesStore`.
+
+```ts
+const graph = new DataflowGraph([
+  { id: "scanner", inputs: ["scan"],                              outputs: ["files"] },
+  { id: "extract", inputs: ["files"],                             outputs: ["content"] },
+  { id: "chunk",   inputs: ["content"],                           outputs: ["chunks"] },
+  { id: "embed",   inputs: ["chunks"],                            outputs: ["embeddings"] },
+  { id: "index",   inputs: ["content", "chunks", "embeddings"],   outputs: [] },
+]);
+```
+
+The scanner is responsible for tracking per-source change markers itself — for example, comparing each file's `updatedAt` against the last value it observed for that URI — and emitting `{ signal: "files", uri, stamp: transactionId }` only for files that actually changed:
+
+```ts
+function newFilesScanner(deps: { files: Map<string, { body: string; updatedAt: number }>; updatesStore: UpdatesStore }): CellHandler {
+  const lastSeen = new Map<string, number>();
+  return async ({ transactionId }) => {
+    for (const [uri, file] of deps.files) {
+      if (file.updatedAt > (lastSeen.get(uri) ?? 0)) {
+        await deps.updatesStore.saveEntry({ signal: "files", uri, stamp: transactionId });
+        lastSeen.set(uri, file.updatedAt);
+      }
+    }
+    return true;
+  };
+}
+```
+
+**Initial pass.** `manager.run(["scan"])` allocates a fresh `transactionId`, walks the graph in topological order, and lets each cell read its inputs through `UpdatesStore`. The scanner publishes new `files` entries; `extract` reads them, writes to its content store and publishes `content` entries; `chunk` reads `content`, publishes `chunks`; `embed` reads `chunks`, publishes `embeddings`; `index` reads all three and updates its index. By the end of the run every cell's recorded transaction has advanced.
+
+**Re-indexing.** When a file changes on disk, the caller mutates the source (`files.set("f1", { body: "...", updatedAt: 2 })`) and runs `manager.run(["scan"])` again. The scanner notices the bumped `updatedAt` and re-emits `{ signal: "files", uri: "f1", stamp: tx2 }`. Because `UpdatesStore` upserts by `(signal, uri)`, the row's stamp moves from `tx1` to `tx2`. Every downstream cell's next `readEntries({ signal, since: updateId })` query (where `updateId` is the cell's last recorded tx, less than `tx2`) yields the URI again, and the cell re-processes it. Re-indexing falls out of the contract — there is no special "re-index" code path.
+
+**No-op re-runs.** If nothing changed (no file's `updatedAt` advanced), the scanner emits nothing, every downstream cell reads zero entries, and the cascade is a no-op. Idempotence is structural.
+
+### Deletion — tombstone signals + `removeEntry`
+
+Deletion is propagated as its own signal (a convention, not a contract). When a file disappears, the upstream emits `{ signal: "files:removed", uri }`; downstream cells declare `"files:removed"` (or whatever naming you prefer — `"-files"`, `"files-deleted"`) as an input and react accordingly. The graph's topological order fans the deletion through the cascade just like a creation.
+
+When a tombstone-consuming handler has finished propagating the deletion to its own downstream stores, it cleans up the upstream pair via `removeEntry` — both the original `"files"` row and the consumed `"files:removed"` row for that URI — so the next sweep does not re-process the same deletion. The store enforces nothing about signal naming.
+
+### Caller responsibilities
+
+Three things the store deliberately does NOT enforce:
+
+- **Stamp discipline.** Every `saveEntry` uses a stamp the caller chose. The store does not derive, validate, or compare stamps. Pass `transactionId` honestly.
+- **Signal naming.** The store accepts any string as a signal. It does not know what signals exist in any `DataflowGraph`. A handler that writes to a signal its cell did not declare as an `output` is a graph-topology bug — invisible to the store.
+- **Tombstone naming convention.** The `:removed` (or whatever) convention is yours to set, recorded in your graph topology.
+
 ## Updates manager
 
 `UpdatesManager` is the runtime that drives handler execution over the graph using a `TransactionStore`.
@@ -191,7 +329,7 @@ type CellHandler = (params: {
 }) => Promise<boolean>;
 ```
 
-Handlers are expected to be **idempotent** — they may be re-invoked with the same `updateId` after a previous failure. Anti-join your input query against your output store using `transactionId` as a stable tag, so previously-published rows are skipped on retry.
+Handlers are expected to be **idempotent** — they may be re-invoked with the same `updateId` after a previous failure. The simplest way to coordinate per-entry changes between handlers is the [`UpdatesStore`](#updates-store) above: read upstream entries with `since: updateId`, write downstream entries with `stamp: transactionId`. The store's stamp semantics ensure replays skip work that already published.
 
 ## License
 

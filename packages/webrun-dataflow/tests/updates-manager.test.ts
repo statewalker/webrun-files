@@ -328,6 +328,66 @@ describe("UpdatesManager — topological execution", () => {
     expect(await store.getCellTransaction("A")).toBe(3);
   });
 
+  it("does not mistake Object.prototype methods for handlers when cell ids collide with them", async () => {
+    // Cell ids matching Object.prototype property names (`constructor`,
+    // `toString`, ...) must NOT pick up the prototype method as a handler.
+    // Without an own-property handler registered, the cell must be skipped.
+    const graph = new DataflowGraph([
+      { id: "constructor", inputs: ["S"], outputs: ["x"] },
+      { id: "toString", inputs: ["x"], outputs: ["y"] },
+      { id: "hasOwnProperty", inputs: ["y"], outputs: [] },
+    ]);
+    const store = new InMemoryTransactionStore();
+    const errors: Array<{ cellId: string; error: unknown }> = [];
+
+    const manager = new UpdatesManager({
+      graph,
+      store,
+      handlers: {}, // no handlers at all — every cell must be silently skipped
+      onError: (cellId, error) => errors.push({ cellId, error }),
+    });
+
+    await manager.run(["S"]);
+
+    expect(await store.getCellTransaction("constructor")).toBe(0);
+    expect(await store.getCellTransaction("toString")).toBe(0);
+    expect(await store.getCellTransaction("hasOwnProperty")).toBe(0);
+    expect(errors).toEqual([]);
+  });
+
+  it("survives a throwing onError callback and continues running remaining cells", async () => {
+    // onError is documented as a passive notifier ("exception is otherwise
+    // swallowed") — a buggy logger that itself throws must not abort the run
+    // and strand mid-activation state.
+    const graph = new DataflowGraph([
+      { id: "A", inputs: ["S"], outputs: ["x"] },
+      { id: "B", inputs: ["x"], outputs: [] },
+    ]);
+    const store = new InMemoryTransactionStore();
+    let bRan = false;
+
+    const manager = new UpdatesManager({
+      graph,
+      store,
+      handlers: {
+        A: async () => {
+          throw new Error("A failed");
+        },
+        B: async () => {
+          bRan = true;
+          return true;
+        },
+      },
+      onError: () => {
+        throw new Error("logger is broken");
+      },
+    });
+
+    await expect(manager.run(["S"])).resolves.toBeUndefined();
+    expect(bRan).toBe(true);
+    expect(await store.getCellTransaction("B")).toBe(1);
+  });
+
   it("allocates one transactionId per activation; all cells share it", async () => {
     const graph = new DataflowGraph([
       { id: "A", inputs: ["S"], outputs: ["x"] },

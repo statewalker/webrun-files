@@ -206,6 +206,29 @@ describe("DataflowGraph — cycle detection", () => {
     expect(() => g.getExecutionOrder(["S"])).toThrow(/Cycle detected/);
   });
 
+  it("reports only the cells actually in the cycle, not downstream consumers of it", () => {
+    // CYC_A and CYC_B form a cycle via signals x/y.
+    // DOWN reads x but never feeds back into the cycle — it is downstream
+    // of the cycle, not a member of it. The error must NOT list DOWN.
+    const g = new DataflowGraph([
+      { id: "CYC_A", inputs: ["y"], outputs: ["x"] },
+      { id: "CYC_B", inputs: ["x"], outputs: ["y"] },
+      { id: "DOWN", inputs: ["x"], outputs: [] },
+    ]);
+    let thrown: unknown;
+    try {
+      g.getExecutionOrder(["x"]);
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
+    expect(message).toMatch(/Cycle detected/);
+    expect(message).toContain("CYC_A");
+    expect(message).toContain("CYC_B");
+    expect(message).not.toContain("DOWN");
+  });
+
   it("does NOT throw if a cycle exists outside the impacted subgraph", () => {
     // Cycle is on signals P/Q, but the run only touches A→B.
     const g = new DataflowGraph([

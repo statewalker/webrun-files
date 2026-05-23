@@ -79,9 +79,10 @@ export class DataflowGraph {
   private propagateDownstream(seeds: Set<CellId>): Set<CellId> {
     const impacted = new Set<CellId>(seeds);
     const queue: CellId[] = [...seeds];
+    let head = 0;
 
-    while (queue.length > 0) {
-      const cellId = queue.shift() as CellId;
+    while (head < queue.length) {
+      const cellId = queue[head++] as CellId;
       const cell = this.cells.get(cellId);
       if (!cell) continue;
 
@@ -136,8 +137,9 @@ export class DataflowGraph {
     }
 
     const result: CellId[] = [];
-    while (queue.length > 0) {
-      const current = queue.shift() as CellId;
+    let head = 0;
+    while (head < queue.length) {
+      const current = queue[head++] as CellId;
       result.push(current);
 
       const dependents = reverse.get(current);
@@ -150,9 +152,10 @@ export class DataflowGraph {
     }
 
     if (result.length !== impacted.size) {
-      const seen = new Set(result);
-      const remaining = [...impacted].filter((c) => !seen.has(c));
-      throw new Error(`Cycle detected among cells: ${remaining.join(", ")}`);
+      const processed = new Set(result);
+      const remaining = new Set([...impacted].filter((c) => !processed.has(c)));
+      const cycleMembers = [...remaining].filter((c) => reachesSelf(c, remaining, deps));
+      throw new Error(`Cycle detected among cells: ${cycleMembers.join(", ")}`);
     }
 
     return result;
@@ -166,4 +169,28 @@ function addToSetMap<K, V>(map: Map<K, Set<V>>, key: K, value: V): void {
     map.set(key, set);
   }
   set.add(value);
+}
+
+/**
+ * True iff `start` can reach itself by walking `deps` edges restricted to
+ * `scope`. Used after Kahn's leaves residual nodes — only the ones in an
+ * actual cycle satisfy this, separating cycle members from cells that are
+ * merely downstream of a cycle.
+ */
+function reachesSelf(start: CellId, scope: Set<CellId>, deps: Map<CellId, Set<CellId>>): boolean {
+  const visited = new Set<CellId>();
+  const stack: CellId[] = [];
+  for (const d of deps.get(start) ?? []) {
+    if (scope.has(d)) stack.push(d);
+  }
+  while (stack.length > 0) {
+    const cur = stack.pop() as CellId;
+    if (cur === start) return true;
+    if (visited.has(cur)) continue;
+    visited.add(cur);
+    for (const d of deps.get(cur) ?? []) {
+      if (scope.has(d)) stack.push(d);
+    }
+  }
+  return false;
 }

@@ -49,6 +49,7 @@ export class UpdatesManager {
 
   private async executeCell(cellId: CellId, transactionId: number): Promise<void> {
     const { store, handlers, onError } = this.options;
+    if (!Object.hasOwn(handlers, cellId)) return;
     const handler = handlers[cellId];
     if (!handler) return;
     const updateId = await store.getCellTransaction(cellId);
@@ -56,7 +57,11 @@ export class UpdatesManager {
     try {
       ok = await handler({ updateId, transactionId });
     } catch (error) {
-      onError?.(cellId, error);
+      try {
+        onError?.(cellId, error);
+      } catch {
+        // onError is a passive notifier; a throwing logger must not abort the run.
+      }
     }
     if (ok) await store.setCellTransaction(cellId, transactionId);
   }
