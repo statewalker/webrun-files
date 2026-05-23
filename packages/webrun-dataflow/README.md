@@ -44,15 +44,15 @@ This avoids races without requiring priorities or timestamps; ordering is purely
 import { DataflowGraph } from "@statewalker/shared-dataflow";
 
 const graph = new DataflowGraph([
-  { id: "A", inputs: [],     outputs: ["X", "N"] },
-  { id: "B", inputs: ["N"],  outputs: ["X"] },
-  { id: "C", inputs: ["X"],  outputs: [] },
+  { id: "A", inputs: [],     outputs: ["x", "n"] },
+  { id: "B", inputs: ["n"],  outputs: ["x"] },
+  { id: "C", inputs: ["x"],  outputs: [] },
 ]);
 
-graph.getExecutionOrder(["N"]);
-// → ["B", "C"]   (A produces N but is not impacted by changing N itself)
+graph.getExecutionOrder(["n"]);
+// → ["B", "C"]   (A produces n but is not impacted by changing n itself)
 
-graph.getExecutionOrder(["X"]);
+graph.getExecutionOrder(["x"]);
 // → ["C"]
 ```
 
@@ -67,13 +67,13 @@ graph.getExecutionOrder(["X"]);
 //       \ /
 //        D
 const g = new DataflowGraph([
-  { id: "A", inputs: ["S"], outputs: ["x"] },
+  { id: "A", inputs: ["s"], outputs: ["x"] },
   { id: "B", inputs: ["x"], outputs: ["y"] },
   { id: "C", inputs: ["x"], outputs: ["z"] },
   { id: "D", inputs: ["y", "z"], outputs: [] },
 ]);
 
-g.getExecutionOrder(["S"]);
+g.getExecutionOrder(["s"]);
 // → A first, then B and C in either order, then D
 ```
 
@@ -81,12 +81,12 @@ g.getExecutionOrder(["S"]);
 
 ```ts
 const g = new DataflowGraph([
-  { id: "A", inputs: ["S"], outputs: ["X"] },
-  { id: "B", inputs: ["S"], outputs: ["X"] },
-  { id: "C", inputs: ["X"], outputs: [] },
+  { id: "A", inputs: ["s"], outputs: ["x"] },
+  { id: "B", inputs: ["s"], outputs: ["x"] },
+  { id: "C", inputs: ["x"], outputs: [] },
 ]);
 
-g.getExecutionOrder(["S"]);
+g.getExecutionOrder(["s"]);
 // → C runs after BOTH A and B (their order between themselves is free)
 ```
 
@@ -149,8 +149,8 @@ import { InMemoryTransactionStore } from "@statewalker/shared-dataflow";
 
 const store = new InMemoryTransactionStore();
 const tx = await store.newTransactionId(); // 1, 2, 3, ...
-await store.setCellTransaction("extract", tx);
-await store.getCellTransaction("extract"); // → tx
+await store.setCellTransaction("ExtractContent", tx);
+await store.getCellTransaction("ExtractContent"); // → tx
 ```
 
 Persistent backends (SQL, KV) ship as separate packages and implement the same interface.
@@ -246,17 +246,50 @@ Returning `true` only when every upstream change has been processed makes the ha
 
 A typical pipeline starts with a *scanner* cell. The scanner observes some external source (a files map, a directory, an inbox), detects what changed since its last visit, and publishes the changes onto a domain signal. Downstream cells transform, derive, embed, index — each one reading from one signal and writing to another, all coordinated through the same `UpdatesStore`.
 
+```
+         scan
+          │
+          ▼
+     [ScanFiles]
+          │
+          ▼
+        files ─────────────────────┐
+          │                        │
+          ▼                        │
+   [ExtractContent]                │
+          │                        │
+          ▼                        │
+       content                     │
+          │                        │
+          ▼                        │
+    [SplitContent]                 │
+          │                        │
+          ▼                        │
+        chunks ────────────────────┤
+          │                        │
+          ▼                        │
+    [EmbedChunks]                  │
+          │                        │
+          ▼                        │
+     embeddings ───────────────────┤
+                                   │
+                                   ▼
+                                [Index]
+```
+
+`[PascalCase]` boxes are cells; kebab-case bare names are signals. Note the fan-out — `files` feeds both `ExtractContent` and `Index`, `chunks` feeds both `EmbedChunks` and `Index` — and the fan-in: `Index` only fires after `files`, `chunks`, *and* `embeddings` have all settled for this activation (barrier semantics).
+
 ```ts
 const graph = new DataflowGraph([
-  { id: "scanner", inputs: ["scan"],                              outputs: ["files"] },
-  { id: "extract", inputs: ["files"],                             outputs: ["content"] },
-  { id: "chunk",   inputs: ["content"],                           outputs: ["chunks"] },
-  { id: "embed",   inputs: ["chunks"],                            outputs: ["embeddings"] },
-  { id: "index",   inputs: ["content", "chunks", "embeddings"],   outputs: [] },
+  { id: "ScanFiles",      inputs: ["scan"],                            outputs: ["files"] },
+  { id: "ExtractContent", inputs: ["files"],                           outputs: ["content"] },
+  { id: "SplitContent",   inputs: ["content"],                         outputs: ["chunks"] },
+  { id: "EmbedChunks",    inputs: ["chunks"],                          outputs: ["embeddings"] },
+  { id: "Index",          inputs: ["files", "chunks", "embeddings"],   outputs: [] },
 ]);
 ```
 
-The scanner is responsible for tracking per-source change markers itself — for example, comparing each file's `updatedAt` against the last value it observed for that URI — and emitting `{ signal: "files", uri, stamp: transactionId }` only for files that actually changed:
+`ScanFiles` is responsible for tracking per-source change markers itself — for example, comparing each file's `updatedAt` against the last value it observed for that URI — and emitting `{ signal: "files", uri, stamp: transactionId }` only for files that actually changed:
 
 ```ts
 function newFilesScanner(deps: { files: Map<string, { body: string; updatedAt: number }>; updatesStore: UpdatesStore }): CellHandler {
@@ -273,11 +306,11 @@ function newFilesScanner(deps: { files: Map<string, { body: string; updatedAt: n
 }
 ```
 
-**Initial pass.** `manager.exec({ signals: ["scan"] })` allocates a fresh `transactionId`, walks the graph in topological order, and lets each cell read its inputs through `UpdatesStore`. The scanner publishes new `files` entries; `extract` reads them, writes to its content store and publishes `content` entries; `chunk` reads `content`, publishes `chunks`; `embed` reads `chunks`, publishes `embeddings`; `index` reads all three and updates its index. By the end of the run every cell's recorded transaction has advanced.
+**Initial pass.** `manager.exec({ signals: ["scan"] })` allocates a fresh `transactionId`, walks the graph in topological order, and lets each cell read its inputs through `UpdatesStore`. `ScanFiles` publishes new `files` entries; `ExtractContent` reads them, writes to its content store and publishes `content` entries; `SplitContent` reads `content`, publishes `chunks`; `EmbedChunks` reads `chunks`, publishes `embeddings`; `Index` reads all three and updates its index. By the end of the run every cell's recorded transaction has advanced.
 
-**Re-indexing.** When a file changes on disk, the caller mutates the source (`files.set("f1", { body: "...", updatedAt: 2 })`) and runs `manager.exec({ signals: ["scan"] })` again. The scanner notices the bumped `updatedAt` and re-emits `{ signal: "files", uri: "f1", stamp: tx2 }`. Because `UpdatesStore` upserts by `(signal, uri)`, the row's stamp moves from `tx1` to `tx2`. Every downstream cell's next `readEntries({ signal, since: updateId })` query (where `updateId` is the cell's last recorded tx, less than `tx2`) yields the URI again, and the cell re-processes it. Re-indexing falls out of the contract — there is no special "re-index" code path.
+**Re-indexing.** When a file changes on disk, the caller mutates the source (`files.set("f1", { body: "...", updatedAt: 2 })`) and runs `manager.exec({ signals: ["scan"] })` again. `ScanFiles` notices the bumped `updatedAt` and re-emits `{ signal: "files", uri: "f1", stamp: tx2 }`. Because `UpdatesStore` upserts by `(signal, uri)`, the row's stamp moves from `tx1` to `tx2`. Every downstream cell's next `readEntries({ signal, since: updateId })` query (where `updateId` is the cell's last recorded tx, less than `tx2`) yields the URI again, and the cell re-processes it. Re-indexing falls out of the contract — there is no special "re-index" code path.
 
-**No-op re-runs.** If nothing changed (no file's `updatedAt` advanced), the scanner emits nothing, every downstream cell reads zero entries, and the cascade is a no-op. Idempotence is structural.
+**No-op re-runs.** If nothing changed (no file's `updatedAt` advanced), `ScanFiles` emits nothing, every downstream cell reads zero entries, and the cascade is a no-op. Idempotence is structural.
 
 ### Deletion — tombstone signals + `removeEntry`
 
@@ -308,9 +341,9 @@ import {
 } from "@statewalker/shared-dataflow";
 
 const graph = new DataflowGraph([
-  { id: "detect",  inputs: ["fs-tick"],         outputs: ["files-changed"] },
-  { id: "extract", inputs: ["files-changed"],   outputs: ["extracted"] },
-  { id: "chunk",   inputs: ["extracted"],       outputs: ["chunks"] },
+  { id: "Detect",  inputs: ["fs-tick"],         outputs: ["files-changed"] },
+  { id: "Extract", inputs: ["files-changed"],   outputs: ["extracted"] },
+  { id: "Chunk",   inputs: ["extracted"],       outputs: ["chunks"] },
 ]);
 const store = new InMemoryTransactionStore();
 
@@ -318,9 +351,9 @@ const manager = new UpdatesManager({
   graph,
   store,
   handlers: {
-    detect:  async ({ updateId, transactionId }) => { /* ... */ return true; },
-    extract: async ({ updateId, transactionId }) => { /* ... */ return true; },
-    chunk:   async ({ updateId, transactionId }) => { /* ... */ return true; },
+    Detect:  async ({ updateId, transactionId }) => { /* ... */ return true; },
+    Extract: async ({ updateId, transactionId }) => { /* ... */ return true; },
+    Chunk:   async ({ updateId, transactionId }) => { /* ... */ return true; },
   },
   onError: (cellId, error) => console.error(`[${cellId}]`, error),
 });
@@ -377,7 +410,7 @@ Stepping the generator yourself lets you (a) checkpoint progress to disk between
 ```ts
 const it = manager.run({ signals: ["fs-tick"] });
 for await (const stage of it) {
-  if (stage.type === "call" && stage.cellId === "extract" && !stage.result) {
+  if (stage.type === "call" && stage.cellId === "Extract" && !stage.result) {
     // Extract failed — checkpoint and bail out; the generator's `finally`
     // releases the in-flight guard so the next `run` / `exec` can start.
     await it.return(undefined);

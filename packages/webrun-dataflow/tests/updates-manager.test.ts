@@ -5,7 +5,7 @@ import { UpdatesManager } from "../src/updates-manager.js";
 
 describe("UpdatesManager — tracer", () => {
   it("invokes a cell's handler with updateId=0 and the new transactionId, recording the tx on success", async () => {
-    const graph = new DataflowGraph([{ id: "A", inputs: ["S"], outputs: [] }]);
+    const graph = new DataflowGraph([{ id: "A", inputs: ["s"], outputs: [] }]);
     const store = new InMemoryTransactionStore();
     const seen: Array<{ updateId: number; transactionId: number }> = [];
 
@@ -20,7 +20,7 @@ describe("UpdatesManager — tracer", () => {
       },
     });
 
-    await manager.exec({ signals: ["S"] });
+    await manager.exec({ signals: ["s"] });
 
     expect(seen).toEqual([{ updateId: 0, transactionId: 1 }]);
     expect(await store.getCellTransaction("A")).toBe(1);
@@ -30,7 +30,7 @@ describe("UpdatesManager — tracer", () => {
 describe("UpdatesManager — topological execution", () => {
   it("runs A→B→C in topological order when seeds reach A", async () => {
     const graph = new DataflowGraph([
-      { id: "A", inputs: ["S"], outputs: ["x"] },
+      { id: "A", inputs: ["s"], outputs: ["x"] },
       { id: "B", inputs: ["x"], outputs: ["y"] },
       { id: "C", inputs: ["y"], outputs: [] },
     ]);
@@ -47,7 +47,7 @@ describe("UpdatesManager — topological execution", () => {
       handlers: { A: make("A"), B: make("B"), C: make("C") },
     });
 
-    await manager.exec({ signals: ["S"] });
+    await manager.exec({ signals: ["s"] });
 
     expect(order).toEqual(["A", "B", "C"]);
     expect(await store.getCellTransaction("A")).toBe(1);
@@ -57,7 +57,7 @@ describe("UpdatesManager — topological execution", () => {
 
   it("catches handler exceptions, treats them as false, and forwards to onError", async () => {
     const graph = new DataflowGraph([
-      { id: "A", inputs: ["S"], outputs: ["x"] },
+      { id: "A", inputs: ["s"], outputs: ["x"] },
       { id: "B", inputs: ["x"], outputs: [] },
     ]);
     const store = new InMemoryTransactionStore();
@@ -80,7 +80,7 @@ describe("UpdatesManager — topological execution", () => {
       onError: (cellId, error) => errors.push({ cellId, error }),
     });
 
-    await expect(manager.exec({ signals: ["S"] })).resolves.toBeUndefined(); // does not propagate
+    await expect(manager.exec({ signals: ["s"] })).resolves.toBeUndefined(); // does not propagate
     expect(await store.getCellTransaction("A")).toBe(0); // not recorded
     expect(errors).toEqual([{ cellId: "A", error: boom }]); // onError called once with the throw
     expect(bRan).toBe(true); // downstream still runs
@@ -88,7 +88,7 @@ describe("UpdatesManager — topological execution", () => {
 
   it("does not record tx for a cell whose handler returned false; downstream cells still run", async () => {
     const graph = new DataflowGraph([
-      { id: "A", inputs: ["S"], outputs: ["x"] },
+      { id: "A", inputs: ["s"], outputs: ["x"] },
       { id: "B", inputs: ["x"], outputs: [] },
     ]);
     const store = new InMemoryTransactionStore();
@@ -106,7 +106,7 @@ describe("UpdatesManager — topological execution", () => {
       },
     });
 
-    await manager.exec({ signals: ["S"] });
+    await manager.exec({ signals: ["s"] });
 
     expect(await store.getCellTransaction("A")).toBe(0); // not recorded
     expect(bRan).toBe(true); // downstream still runs
@@ -114,7 +114,7 @@ describe("UpdatesManager — topological execution", () => {
   });
 
   it("passes the prior successful tx as updateId on subsequent activations", async () => {
-    const graph = new DataflowGraph([{ id: "A", inputs: ["S"], outputs: [] }]);
+    const graph = new DataflowGraph([{ id: "A", inputs: ["s"], outputs: [] }]);
     const store = new InMemoryTransactionStore();
     const seenUpdateIds: number[] = [];
 
@@ -129,9 +129,9 @@ describe("UpdatesManager — topological execution", () => {
       },
     });
 
-    await manager.exec({ signals: ["S"] }); // tx=1
-    await manager.exec({ signals: ["S"] }); // tx=2
-    await manager.exec({ signals: ["S"] }); // tx=3
+    await manager.exec({ signals: ["s"] }); // tx=1
+    await manager.exec({ signals: ["s"] }); // tx=2
+    await manager.exec({ signals: ["s"] }); // tx=3
 
     expect(seenUpdateIds).toEqual([0, 1, 2]);
     expect(await store.getCellTransaction("A")).toBe(3);
@@ -140,7 +140,7 @@ describe("UpdatesManager — topological execution", () => {
   it("invokes a cell exactly once even when multiple seeds reach it", async () => {
     // A reads S1 and S2; if both are in seeds, A must still run only once.
     const graph = new DataflowGraph([
-      { id: "A", inputs: ["S1", "S2"], outputs: ["x"] },
+      { id: "A", inputs: ["s1", "s2"], outputs: ["x"] },
       { id: "B", inputs: ["x"], outputs: [] },
     ]);
     const store = new InMemoryTransactionStore();
@@ -162,14 +162,14 @@ describe("UpdatesManager — topological execution", () => {
       },
     });
 
-    await manager.exec({ signals: ["S1", "S2"] });
+    await manager.exec({ signals: ["s1", "s2"] });
 
     expect(aCalls).toBe(1);
     expect(bCalls).toBe(1);
   });
 
   it("rejects a second run() while one is already in flight", async () => {
-    const graph = new DataflowGraph([{ id: "A", inputs: ["S"], outputs: [] }]);
+    const graph = new DataflowGraph([{ id: "A", inputs: ["s"], outputs: [] }]);
     const store = new InMemoryTransactionStore();
     let release!: () => void;
     const gate = new Promise<void>((res) => {
@@ -187,8 +187,8 @@ describe("UpdatesManager — topological execution", () => {
       },
     });
 
-    const first = manager.exec({ signals: ["S"] });
-    await expect(manager.exec({ signals: ["S"] })).rejects.toThrow(
+    const first = manager.exec({ signals: ["s"] });
+    await expect(manager.exec({ signals: ["s"] })).rejects.toThrow(
       /already in progress|already running|in flight/i,
     );
     release();
@@ -197,7 +197,7 @@ describe("UpdatesManager — topological execution", () => {
   });
 
   it("can be re-invoked after the previous activation has finished", async () => {
-    const graph = new DataflowGraph([{ id: "A", inputs: ["S"], outputs: [] }]);
+    const graph = new DataflowGraph([{ id: "A", inputs: ["s"], outputs: [] }]);
     const store = new InMemoryTransactionStore();
     let calls = 0;
 
@@ -212,14 +212,14 @@ describe("UpdatesManager — topological execution", () => {
       },
     });
 
-    await manager.exec({ signals: ["S"] });
-    await manager.exec({ signals: ["S"] });
+    await manager.exec({ signals: ["s"] });
+    await manager.exec({ signals: ["s"] });
     expect(calls).toBe(2);
   });
 
   it("silently skips cells that have no registered handler; downstream cells still run", async () => {
     const graph = new DataflowGraph([
-      { id: "A", inputs: ["S"], outputs: ["x"] },
+      { id: "A", inputs: ["s"], outputs: ["x"] },
       { id: "B", inputs: ["x"], outputs: ["y"] }, // no handler registered
       { id: "C", inputs: ["y"], outputs: [] },
     ]);
@@ -236,7 +236,7 @@ describe("UpdatesManager — topological execution", () => {
       handlers: { A: make("A"), C: make("C") }, // B intentionally absent
     });
 
-    await manager.exec({ signals: ["S"] });
+    await manager.exec({ signals: ["s"] });
 
     expect(order).toEqual(["A", "C"]);
     expect(await store.getCellTransaction("A")).toBe(1);
@@ -246,7 +246,7 @@ describe("UpdatesManager — topological execution", () => {
 
   it("does nothing when called with no seeds and the graph has no probers", async () => {
     const graph = new DataflowGraph([
-      { id: "A", inputs: ["S"], outputs: [] }, // no probers
+      { id: "A", inputs: ["s"], outputs: [] }, // no probers
     ]);
     const store = new InMemoryTransactionStore();
     let called = false;
@@ -302,7 +302,7 @@ describe("UpdatesManager — topological execution", () => {
   });
 
   it("keeps updateId = last *successful* tx across a failed activation", async () => {
-    const graph = new DataflowGraph([{ id: "A", inputs: ["S"], outputs: [] }]);
+    const graph = new DataflowGraph([{ id: "A", inputs: ["s"], outputs: [] }]);
     const store = new InMemoryTransactionStore();
     const seenUpdateIds: number[] = [];
     let attempt = 0;
@@ -320,9 +320,9 @@ describe("UpdatesManager — topological execution", () => {
       },
     });
 
-    await manager.exec({ signals: ["S"] }); // tx=1, success → record 1
-    await manager.exec({ signals: ["S"] }); // tx=2, FAIL → record stays at 1
-    await manager.exec({ signals: ["S"] }); // tx=3, success → record 3
+    await manager.exec({ signals: ["s"] }); // tx=1, success → record 1
+    await manager.exec({ signals: ["s"] }); // tx=2, FAIL → record stays at 1
+    await manager.exec({ signals: ["s"] }); // tx=3, success → record 3
 
     expect(seenUpdateIds).toEqual([0, 1, 1]); // updateId stays at 1 after failed run
     expect(await store.getCellTransaction("A")).toBe(3);
@@ -333,7 +333,7 @@ describe("UpdatesManager — topological execution", () => {
     // `toString`, ...) must NOT pick up the prototype method as a handler.
     // Without an own-property handler registered, the cell must be skipped.
     const graph = new DataflowGraph([
-      { id: "constructor", inputs: ["S"], outputs: ["x"] },
+      { id: "constructor", inputs: ["s"], outputs: ["x"] },
       { id: "toString", inputs: ["x"], outputs: ["y"] },
       { id: "hasOwnProperty", inputs: ["y"], outputs: [] },
     ]);
@@ -347,7 +347,7 @@ describe("UpdatesManager — topological execution", () => {
       onError: (cellId, error) => errors.push({ cellId, error }),
     });
 
-    await manager.exec({ signals: ["S"] });
+    await manager.exec({ signals: ["s"] });
 
     expect(await store.getCellTransaction("constructor")).toBe(0);
     expect(await store.getCellTransaction("toString")).toBe(0);
@@ -360,7 +360,7 @@ describe("UpdatesManager — topological execution", () => {
     // swallowed") — a buggy logger that itself throws must not abort the run
     // and strand mid-activation state.
     const graph = new DataflowGraph([
-      { id: "A", inputs: ["S"], outputs: ["x"] },
+      { id: "A", inputs: ["s"], outputs: ["x"] },
       { id: "B", inputs: ["x"], outputs: [] },
     ]);
     const store = new InMemoryTransactionStore();
@@ -383,14 +383,14 @@ describe("UpdatesManager — topological execution", () => {
       },
     });
 
-    await expect(manager.exec({ signals: ["S"] })).resolves.toBeUndefined();
+    await expect(manager.exec({ signals: ["s"] })).resolves.toBeUndefined();
     expect(bRan).toBe(true);
     expect(await store.getCellTransaction("B")).toBe(1);
   });
 
   it("allocates one transactionId per activation; all cells share it", async () => {
     const graph = new DataflowGraph([
-      { id: "A", inputs: ["S"], outputs: ["x"] },
+      { id: "A", inputs: ["s"], outputs: ["x"] },
       { id: "B", inputs: ["x"], outputs: [] },
     ]);
     const store = new InMemoryTransactionStore();
@@ -411,7 +411,7 @@ describe("UpdatesManager — topological execution", () => {
       },
     });
 
-    await manager.exec({ signals: ["S"] });
+    await manager.exec({ signals: ["s"] });
 
     expect(seenTx.A).toHaveLength(1);
     expect(seenTx.B).toHaveLength(1);
@@ -422,7 +422,7 @@ describe("UpdatesManager — topological execution", () => {
 describe("UpdatesManager — run() as async generator", () => {
   it("yields a begin event, one call event per executed cell in topological order, then an end event", async () => {
     const graph = new DataflowGraph([
-      { id: "A", inputs: ["S"], outputs: ["x"] },
+      { id: "A", inputs: ["s"], outputs: ["x"] },
       { id: "B", inputs: ["x"], outputs: ["y"] },
       { id: "C", inputs: ["y"], outputs: [] },
     ]);
@@ -438,7 +438,7 @@ describe("UpdatesManager — run() as async generator", () => {
     });
 
     const stages = [];
-    for await (const stage of manager.run({ signals: ["S"] })) {
+    for await (const stage of manager.run({ signals: ["s"] })) {
       stages.push(stage);
     }
 
@@ -457,9 +457,9 @@ describe("UpdatesManager — run() as async generator", () => {
 
   it("reports `result: false` on a handler that returned false, and `result: false` on a handler that threw", async () => {
     const graph = new DataflowGraph([
-      { id: "Falsey", inputs: ["S"], outputs: [] },
-      { id: "Thrower", inputs: ["S"], outputs: [] },
-      { id: "Ok", inputs: ["S"], outputs: [] },
+      { id: "Falsey", inputs: ["s"], outputs: [] },
+      { id: "Thrower", inputs: ["s"], outputs: [] },
+      { id: "Ok", inputs: ["s"], outputs: [] },
     ]);
     const store = new InMemoryTransactionStore();
     const manager = new UpdatesManager({
@@ -478,7 +478,7 @@ describe("UpdatesManager — run() as async generator", () => {
     });
 
     const byCell = new Map<string, boolean>();
-    for await (const stage of manager.run({ signals: ["S"] })) {
+    for await (const stage of manager.run({ signals: ["s"] })) {
       if (stage.type === "call") byCell.set(stage.cellId, stage.result);
     }
 
@@ -488,7 +488,7 @@ describe("UpdatesManager — run() as async generator", () => {
   });
 
   it("the call event's `updateId` carries the cell's prior successful tx (and 0 on first activation)", async () => {
-    const graph = new DataflowGraph([{ id: "A", inputs: ["S"], outputs: [] }]);
+    const graph = new DataflowGraph([{ id: "A", inputs: ["s"], outputs: [] }]);
     const store = new InMemoryTransactionStore();
     const manager = new UpdatesManager({
       graph,
@@ -497,12 +497,12 @@ describe("UpdatesManager — run() as async generator", () => {
     });
 
     const firstStages = [];
-    for await (const stage of manager.run({ signals: ["S"] })) firstStages.push(stage);
+    for await (const stage of manager.run({ signals: ["s"] })) firstStages.push(stage);
     const firstCall = firstStages.find((s) => s.type === "call");
     expect(firstCall?.updateId).toBe(0);
 
     const secondStages = [];
-    for await (const stage of manager.run({ signals: ["S"] })) secondStages.push(stage);
+    for await (const stage of manager.run({ signals: ["s"] })) secondStages.push(stage);
     const secondCall = secondStages.find((s) => s.type === "call");
     expect(secondCall?.updateId).toBe(1); // the prior successful tx
   });
@@ -511,7 +511,7 @@ describe("UpdatesManager — run() as async generator", () => {
     // Each cell's handler bumps a side-effect counter. We step the generator
     // manually and verify the side effects happen exactly when we advance.
     const graph = new DataflowGraph([
-      { id: "A", inputs: ["S"], outputs: ["x"] },
+      { id: "A", inputs: ["s"], outputs: ["x"] },
       { id: "B", inputs: ["x"], outputs: ["y"] },
       { id: "C", inputs: ["y"], outputs: [] },
     ]);
@@ -538,7 +538,7 @@ describe("UpdatesManager — run() as async generator", () => {
       },
     });
 
-    const it = manager.run({ signals: ["S"] });
+    const it = manager.run({ signals: ["s"] });
 
     // First yield: begin. No handler has run yet.
     let next = await it.next();
@@ -576,7 +576,7 @@ describe("UpdatesManager — run() as async generator", () => {
 
   it("caller can stop iterating early via generator.return() — finally still releases the in-flight guard", async () => {
     const graph = new DataflowGraph([
-      { id: "A", inputs: ["S"], outputs: ["x"] },
+      { id: "A", inputs: ["s"], outputs: ["x"] },
       { id: "B", inputs: ["x"], outputs: [] },
     ]);
     const store = new InMemoryTransactionStore();
@@ -593,7 +593,7 @@ describe("UpdatesManager — run() as async generator", () => {
       },
     });
 
-    const it = manager.run({ signals: ["S"] });
+    const it = manager.run({ signals: ["s"] });
     await it.next(); // begin
     await it.next(); // A's call
     await it.return(undefined); // abandon iteration
@@ -601,7 +601,7 @@ describe("UpdatesManager — run() as async generator", () => {
     // B never ran — we closed the generator before it was reached.
     expect(bRan).toBe(false);
     // The in-flight guard is released — a fresh exec can start.
-    await expect(manager.exec({ signals: ["S"] })).resolves.toBeUndefined();
+    await expect(manager.exec({ signals: ["s"] })).resolves.toBeUndefined();
     expect(bRan).toBe(true);
   });
 
@@ -610,7 +610,7 @@ describe("UpdatesManager — run() as async generator", () => {
     // activation; on a fresh activation seeded with `{ cells: ["A"] }`, A and
     // its downstream B should run again.
     const graph = new DataflowGraph([
-      { id: "A", inputs: ["S"], outputs: ["x"] },
+      { id: "A", inputs: ["s"], outputs: ["x"] },
       { id: "B", inputs: ["x"], outputs: [] },
       { id: "C", inputs: ["other"], outputs: [] }, // unrelated, must NOT run
     ]);
@@ -639,7 +639,7 @@ describe("UpdatesManager — run() as async generator", () => {
 
     // First activation via signal seed.
     const incompleteCells: string[] = [];
-    for await (const stage of manager.run({ signals: ["S"] })) {
+    for await (const stage of manager.run({ signals: ["s"] })) {
       if (stage.type === "call" && !stage.result) incompleteCells.push(stage.cellId);
     }
     expect(incompleteCells).toEqual(["A"]);
@@ -660,7 +660,7 @@ describe("UpdatesManager — run() as async generator", () => {
   it("cell-seeded run includes the seeded cells in topological order with the rest", async () => {
     // Seed cells from different layers. The result must respect graph order.
     const graph = new DataflowGraph([
-      { id: "A", inputs: ["S"], outputs: ["x"] },
+      { id: "A", inputs: ["s"], outputs: ["x"] },
       { id: "B", inputs: ["x"], outputs: ["y"] },
       { id: "C", inputs: ["y"], outputs: [] },
     ]);
@@ -683,7 +683,7 @@ describe("UpdatesManager — run() as async generator", () => {
   });
 
   it("cell-seeded run silently drops unknown cell ids", async () => {
-    const graph = new DataflowGraph([{ id: "A", inputs: ["S"], outputs: [] }]);
+    const graph = new DataflowGraph([{ id: "A", inputs: ["s"], outputs: [] }]);
     const store = new InMemoryTransactionStore();
     let aRan = false;
     const manager = new UpdatesManager({
