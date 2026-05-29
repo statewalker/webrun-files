@@ -57,6 +57,35 @@ export interface UpdatesStore {
     uriPrefix?: string;
   }): AsyncIterable<UpdateEntry>;
 
+  /**
+   * Per-URI cell-to-cell diff: yields upstream entries the current cell
+   * hasn't caught up to yet. For each URI present in `upstreamSignal`,
+   * comparing its stamp to the same URI's stamp under `currentSignal`:
+   *
+   * - upstream stamp > current stamp (or current absent → treated as 0):
+   *   yielded.
+   * - upstream stamp <= current stamp: NOT yielded — current cell is
+   *   already caught up.
+   *
+   * URIs that exist only under `currentSignal` (upstream has no entry)
+   * are NEVER yielded: the upstream either never saw the URI or has
+   * since cleaned it up via tombstone, so the current cell has nothing
+   * to do.
+   *
+   * Yields in upstream-stamp-ascending order. `uriPrefix` filters the
+   * same way as `readEntries`.
+   *
+   * Caller contract: after handling a yielded entry, save a
+   * `currentSignal` entry with stamp >= the yielded upstream stamp to
+   * advance the per-URI watermark. Otherwise the URI appears again on
+   * the next call.
+   */
+  readUpdatedEntries(opts: {
+    upstreamSignal: Signal;
+    currentSignal: Signal;
+    uriPrefix?: string;
+  }): AsyncIterable<UpdateEntry>;
+
   /** Upsert by `(signal, uri)`. Replaces blindly — last write wins. */
   saveEntry(entry: UpdateEntry): Promise<void>;
   /** Sequential equivalent of `entries.forEach(saveEntry)`. No atomicity promise. */

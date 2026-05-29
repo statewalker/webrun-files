@@ -324,6 +324,142 @@ describe("InMemoryUpdatesStore — JSON round-trip", () => {
   });
 });
 
+describe("InMemoryUpdatesStore — readUpdatedEntries (per-URI cell diff)", () => {
+  it("yields every upstream entry when current has nothing", async () => {
+    const store = new InMemoryUpdatesStore();
+    await store.saveEntries([
+      { signal: "src", uri: "a", stamp: 1 },
+      { signal: "src", uri: "b", stamp: 2 },
+    ]);
+    const got = await collect(
+      store.readUpdatedEntries({ upstreamSignal: "src", currentSignal: "ext" }),
+    );
+    expect(got).toEqual([
+      { signal: "src", uri: "a", stamp: 1 },
+      { signal: "src", uri: "b", stamp: 2 },
+    ]);
+  });
+
+  it("skips URIs where current.stamp >= upstream.stamp", async () => {
+    const store = new InMemoryUpdatesStore();
+    await store.saveEntries([
+      { signal: "src", uri: "a", stamp: 5 },
+      { signal: "src", uri: "b", stamp: 7 },
+      { signal: "ext", uri: "a", stamp: 5 }, // exactly caught up
+      { signal: "ext", uri: "b", stamp: 6 }, // lagging
+    ]);
+    const got = await collect(
+      store.readUpdatedEntries({ upstreamSignal: "src", currentSignal: "ext" }),
+    );
+    expect(got).toEqual([{ signal: "src", uri: "b", stamp: 7 }]);
+  });
+
+  it("yields a URI present in upstream but absent in current (current treated as stamp 0)", async () => {
+    const store = new InMemoryUpdatesStore();
+    await store.saveEntries([
+      { signal: "src", uri: "a", stamp: 5 },
+      { signal: "src", uri: "b", stamp: 7 },
+      { signal: "ext", uri: "a", stamp: 5 },
+    ]);
+    const got = await collect(
+      store.readUpdatedEntries({ upstreamSignal: "src", currentSignal: "ext" }),
+    );
+    expect(got).toEqual([{ signal: "src", uri: "b", stamp: 7 }]);
+  });
+
+  it("never yields a URI present only in current — upstream missing means already up-to-date", async () => {
+    const store = new InMemoryUpdatesStore();
+    await store.saveEntry({ signal: "ext", uri: "a", stamp: 9 });
+    const got = await collect(
+      store.readUpdatedEntries({ upstreamSignal: "src", currentSignal: "ext" }),
+    );
+    expect(got).toEqual([]);
+  });
+
+  it("yields entries in upstream-stamp-ascending order", async () => {
+    const store = new InMemoryUpdatesStore();
+    await store.saveEntries([
+      { signal: "src", uri: "c", stamp: 9 },
+      { signal: "src", uri: "a", stamp: 3 },
+      { signal: "src", uri: "b", stamp: 5 },
+    ]);
+    const got = await collect(
+      store.readUpdatedEntries({ upstreamSignal: "src", currentSignal: "ext" }),
+    );
+    expect(got.map((e) => e.stamp)).toEqual([3, 5, 9]);
+  });
+
+  it("uriPrefix restricts to URIs whose path matches the prefix", async () => {
+    const store = new InMemoryUpdatesStore();
+    await store.saveEntries([
+      { signal: "src", uri: "/a/1", stamp: 1 },
+      { signal: "src", uri: "/a/2", stamp: 2 },
+      { signal: "src", uri: "/b/1", stamp: 3 },
+    ]);
+    const got = await collect(
+      store.readUpdatedEntries({
+        upstreamSignal: "src",
+        currentSignal: "ext",
+        uriPrefix: "/a/",
+      }),
+    );
+    expect(got.map((e) => e.uri).sort()).toEqual(["/a/1", "/a/2"]);
+  });
+
+  it("yields nothing when upstream signal has no entries", async () => {
+    const store = new InMemoryUpdatesStore();
+    await store.saveEntry({ signal: "ext", uri: "a", stamp: 1 });
+    const got = await collect(
+      store.readUpdatedEntries({
+        upstreamSignal: "never-emitted",
+        currentSignal: "ext",
+      }),
+    );
+    expect(got).toEqual([]);
+  });
+
+  it("after caller saves current with the yielded upstream stamp, the URI no longer appears", async () => {
+    const store = new InMemoryUpdatesStore();
+    await store.saveEntry({ signal: "src", uri: "a", stamp: 5 });
+
+    const first = await collect(
+      store.readUpdatedEntries({ upstreamSignal: "src", currentSignal: "ext" }),
+    );
+    expect(first).toEqual([{ signal: "src", uri: "a", stamp: 5 }]);
+
+    await store.saveEntry({ signal: "ext", uri: "a", stamp: 5 });
+
+    const second = await collect(
+      store.readUpdatedEntries({ upstreamSignal: "src", currentSignal: "ext" }),
+    );
+    expect(second).toEqual([]);
+  });
+
+  it("if upstream is restamped above current, the URI reappears in the diff", async () => {
+    const store = new InMemoryUpdatesStore();
+    await store.saveEntry({ signal: "src", uri: "a", stamp: 5 });
+    await store.saveEntry({ signal: "ext", uri: "a", stamp: 5 });
+    expect(
+      await collect(
+        store.readUpdatedEntries({
+          upstreamSignal: "src",
+          currentSignal: "ext",
+        }),
+      ),
+    ).toEqual([]);
+
+    await store.saveEntry({ signal: "src", uri: "a", stamp: 9 });
+    expect(
+      await collect(
+        store.readUpdatedEntries({
+          upstreamSignal: "src",
+          currentSignal: "ext",
+        }),
+      ),
+    ).toEqual([{ signal: "src", uri: "a", stamp: 9 }]);
+  });
+});
+
 describe("InMemoryUpdatesStore — stamp validation", () => {
   it("rejects a NaN stamp instead of storing an unreadable entry", async () => {
     // A NaN stamp would round-trip into the store but be invisible to

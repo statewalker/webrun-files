@@ -75,6 +75,27 @@ export class InMemoryUpdatesStore implements UpdatesStore {
     }
   }
 
+  async *readUpdatedEntries(opts: {
+    upstreamSignal: Signal;
+    currentSignal: Signal;
+    uriPrefix?: string;
+  }): AsyncIterable<UpdateEntry> {
+    const upstream = this.state.get(opts.upstreamSignal);
+    if (!upstream) return;
+    const current = this.state.get(opts.currentSignal);
+    const prefix = opts.uriPrefix ?? "";
+    const matches: Array<[string, number]> = [];
+    for (const [uri, upstreamStamp] of upstream) {
+      if (prefix !== "" && !uri.startsWith(prefix)) continue;
+      const currentStamp = current?.get(uri) ?? 0;
+      if (upstreamStamp > currentStamp) matches.push([uri, upstreamStamp]);
+    }
+    matches.sort((a, b) => a[1] - b[1]);
+    for (const [uri, stamp] of matches) {
+      yield { signal: opts.upstreamSignal, uri, stamp };
+    }
+  }
+
   /**
    * Return a fresh JSON-safe snapshot of the store's state. Mutating the
    * returned object does not affect the store.
