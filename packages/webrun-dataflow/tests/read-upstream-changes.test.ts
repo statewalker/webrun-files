@@ -142,6 +142,53 @@ describe("readUpstreamChanges — graph-driven per-cell upstream diff", () => {
     ]);
   });
 
+  it("merges entries from all upstream signals into a single URI-sorted stream", async () => {
+    const graph = new DataflowGraph([
+      {
+        id: "FanIn",
+        inputs: ["src-a", "src-b", "src-c"],
+        outputs: ["fan-out"],
+      },
+    ]);
+    const store = new InMemoryUpdatesStore();
+    await store.saveEntries([
+      // Deliberately mix URIs across signals and stamps so neither
+      // per-signal stamp order nor signal-declaration order alone
+      // produces the URI-sorted result.
+      { signal: "src-a", uri: "z", stamp: 1 },
+      { signal: "src-a", uri: "m", stamp: 9 },
+      { signal: "src-b", uri: "a", stamp: 2 },
+      { signal: "src-b", uri: "z", stamp: 3 },
+      { signal: "src-c", uri: "m", stamp: 4 },
+    ]);
+    const got = await collect(readUpstreamChanges(store, graph, "FanIn"));
+    expect(got.map((e) => [e.uri, e.signal])).toEqual([
+      ["a", "src-b"],
+      ["m", "src-a"],
+      ["m", "src-c"],
+      ["z", "src-a"],
+      ["z", "src-b"],
+    ]);
+  });
+
+  it("breaks URI ties by signal-declaration order (graph.getCellInputs)", async () => {
+    const graph = new DataflowGraph([
+      {
+        id: "FanIn",
+        // Declared order matters: src-z is listed FIRST, src-a SECOND.
+        inputs: ["src-z", "src-a"],
+        outputs: ["fan-out"],
+      },
+    ]);
+    const store = new InMemoryUpdatesStore();
+    await store.saveEntries([
+      { signal: "src-a", uri: "u", stamp: 1 },
+      { signal: "src-z", uri: "u", stamp: 2 },
+    ]);
+    const got = await collect(readUpstreamChanges(store, graph, "FanIn"));
+    expect(got.map((e) => e.signal)).toEqual(["src-z", "src-a"]);
+  });
+
   it("yields nothing for an unknown cell id", async () => {
     const graph = new DataflowGraph([
       { id: "Extractor", inputs: ["sources"], outputs: ["extracted"] },

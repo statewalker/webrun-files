@@ -9,10 +9,13 @@ import type { UpdateEntry, UpdatesStore } from "./updates-store.js";
  * declared output (convention: cells whose primary output also serves
  * as their per-URI watermark).
  *
- * For each upstream signal, yields `readUpdatedEntries({upstreamSignal,
- * currentSignal: watermark})`. Per upstream signal, entries are
- * stamp-ascending. Across upstream signals, inputs are visited in
- * `getCellInputs()` order — there is NO global stamp interleaving.
+ * Opens one diff stream per upstream signal (via
+ * `readUpdatedEntries`), merges them, and yields the combined result
+ * sorted by URI (lexicographic ascending). When the same URI appears
+ * in multiple upstream signals, the entries are emitted adjacently in
+ * the order the upstream signals were declared in
+ * `graph.getCellInputs(cellId)` — so consumers can collapse
+ * per-URI in one pass.
  *
  * A URI updated by N upstream signals appears N times (once per
  * upstream entry). Use `aggregateByUri` if the consumer wants
@@ -20,6 +23,11 @@ import type { UpdateEntry, UpdatesStore } from "./updates-store.js";
  *
  * Throws if the cell has inputs but no outputs (no watermark to compare
  * against). Cells with no inputs (probers) yield nothing.
+ *
+ * Implementation note: URI-sorted output requires buffering all
+ * matching entries before yielding, since the per-signal streams are
+ * stamp-ordered, not URI-ordered. Memory = O(matching URIs × upstream
+ * signals).
  */
 export async function* readUpstreamChanges(
   store: UpdatesStore,
@@ -37,13 +45,34 @@ export async function* readUpstreamChanges(
     );
   }
   const uriPrefix = opts?.uriPrefix;
+
+  // Drain every upstream's per-URI diff into one buffer so we can sort
+  // the combined stream by URI. (Within a single signal `readUpdatedEntries`
+  // yields by stamp; merging by URI across signals isn't possible without
+  // buffering.)
+  const signalOrder = new Map<string, number>();
+  for (let i = 0; i < inputs.length; i++) {
+    signalOrder.set(inputs[i] as string, i);
+  }
+  const buffered: UpdateEntry[] = [];
   for (const upstream of inputs) {
-    yield* store.readUpdatedEntries({
+    for await (const entry of store.readUpdatedEntries({
       upstreamSignal: upstream,
       currentSignal: watermark,
       uriPrefix,
-    });
+    })) {
+      buffered.push(entry);
+    }
   }
+
+  buffered.sort((a, b) => {
+    if (a.uri !== b.uri) return a.uri < b.uri ? -1 : 1;
+    const sa = signalOrder.get(a.signal) ?? 0;
+    const sb = signalOrder.get(b.signal) ?? 0;
+    return sa - sb;
+  });
+
+  for (const entry of buffered) yield entry;
 }
 
 /**
