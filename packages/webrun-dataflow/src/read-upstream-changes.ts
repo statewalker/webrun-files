@@ -9,25 +9,23 @@ import type { UpdateEntry, UpdatesStore } from "./updates-store.js";
  * declared output (convention: cells whose primary output also serves
  * as their per-URI watermark).
  *
- * Opens one diff stream per upstream signal (via
- * `readUpdatedEntries`), merges them, and yields the combined result
- * sorted by URI (lexicographic ascending). When the same URI appears
- * in multiple upstream signals, the entries are emitted adjacently in
- * the order the upstream signals were declared in
- * `graph.getCellInputs(cellId)` — so consumers can collapse
- * per-URI in one pass.
+ * Opens one URI-ordered diff stream per upstream signal (via
+ * `readUpdatedEntries({orderBy: "uri"})`) and merges them with a
+ * streaming k-way URI merge. Memory is O(M) where M is the number of
+ * upstream signals — independent of the number of matching URIs.
+ *
+ * Output order is URI-ascending. When the same URI appears in multiple
+ * upstream signals, the entries are emitted adjacently in the order
+ * the upstream signals were declared in `graph.getCellInputs(cellId)`,
+ * so consumers can collapse per-URI in one forward pass without
+ * buffering.
  *
  * A URI updated by N upstream signals appears N times (once per
- * upstream entry). Use `aggregateByUri` if the consumer wants
- * one record per URI.
+ * upstream entry). Use `aggregateByUri` if the consumer wants one
+ * record per URI.
  *
  * Throws if the cell has inputs but no outputs (no watermark to compare
  * against). Cells with no inputs (probers) yield nothing.
- *
- * Implementation note: URI-sorted output requires buffering all
- * matching entries before yielding, since the per-signal streams are
- * stamp-ordered, not URI-ordered. Memory = O(matching URIs × upstream
- * signals).
  */
 export async function* readUpstreamChanges(
   store: UpdatesStore,
@@ -46,33 +44,64 @@ export async function* readUpstreamChanges(
   }
   const uriPrefix = opts?.uriPrefix;
 
-  // Drain every upstream's per-URI diff into one buffer so we can sort
-  // the combined stream by URI. (Within a single signal `readUpdatedEntries`
-  // yields by stamp; merging by URI across signals isn't possible without
-  // buffering.)
-  const signalOrder = new Map<string, number>();
-  for (let i = 0; i < inputs.length; i++) {
-    signalOrder.set(inputs[i] as string, i);
-  }
-  const buffered: UpdateEntry[] = [];
-  for (const upstream of inputs) {
-    for await (const entry of store.readUpdatedEntries({
+  // One URI-ordered iterator per upstream signal.
+  const iters: Array<AsyncIterator<UpdateEntry>> = inputs.map((upstream) => {
+    const iterable = store.readUpdatedEntries({
       upstreamSignal: upstream,
       currentSignal: watermark,
       uriPrefix,
-    })) {
-      buffered.push(entry);
-    }
-  }
-
-  buffered.sort((a, b) => {
-    if (a.uri !== b.uri) return a.uri < b.uri ? -1 : 1;
-    const sa = signalOrder.get(a.signal) ?? 0;
-    const sb = signalOrder.get(b.signal) ?? 0;
-    return sa - sb;
+      orderBy: "uri",
+    });
+    return iterable[Symbol.asyncIterator]();
   });
 
-  for (const entry of buffered) yield entry;
+  try {
+    // Prime the head of each stream.
+    const heads: Array<UpdateEntry | null> = await Promise.all(
+      iters.map(async (it) => {
+        const r = await it.next();
+        return r.done ? null : r.value;
+      }),
+    );
+
+    // Streaming k-way merge by URI. For URI ties, keep
+    // signal-declaration order by preferring the smaller index.
+    while (true) {
+      let minIdx = -1;
+      for (let i = 0; i < heads.length; i++) {
+        const h = heads[i];
+        if (h === null || h === undefined) continue;
+        if (minIdx === -1) {
+          minIdx = i;
+          continue;
+        }
+        // biome-ignore lint/style/noNonNullAssertion: minIdx ≥ 0 implies heads[minIdx] is not null
+        const cur = heads[minIdx]!;
+        if (h.uri < cur.uri) minIdx = i;
+      }
+      if (minIdx === -1) return;
+      // biome-ignore lint/style/noNonNullAssertion: minIdx selected from a non-null head
+      const entry = heads[minIdx]!;
+      yield entry;
+      // biome-ignore lint/style/noNonNullAssertion: iters[minIdx] paired with heads[minIdx]
+      const next = await iters[minIdx]!.next();
+      heads[minIdx] = next.done ? null : next.value;
+    }
+  } finally {
+    // Best-effort close of any non-exhausted iterators on early break.
+    await Promise.all(
+      iters.map(async (it) => {
+        if (it.return) {
+          try {
+            await it.return(undefined);
+          } catch {
+            // Swallow: a throwing iterator close must not mask the
+            // primary outcome of the merge.
+          }
+        }
+      }),
+    );
+  }
 }
 
 /**

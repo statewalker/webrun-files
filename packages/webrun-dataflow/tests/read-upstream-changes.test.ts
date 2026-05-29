@@ -271,6 +271,66 @@ describe("readUpstreamChanges — graph-driven per-cell upstream diff", () => {
     expect(await collect(readUpstreamChanges(store, graph, "Extractor"))).toEqual([]);
   });
 
+  it("does not pre-buffer: the consumer can break early without draining all upstream entries", async () => {
+    // Verifies the streaming k-way merge: if the consumer breaks after
+    // the first entry, the underlying per-signal iterators should be
+    // closed without yielding the rest. We assert this by spying on a
+    // store wrapper that counts how many entries were read per
+    // upstream signal.
+    let reads = 0;
+    const inner = new InMemoryUpdatesStore();
+    await inner.saveEntries([
+      // Two upstream signals, 10 entries each.
+      ...Array.from({ length: 10 }, (_, i) => ({
+        signal: "src-a",
+        uri: `a-${String(i).padStart(2, "0")}`,
+        stamp: i + 1,
+      })),
+      ...Array.from({ length: 10 }, (_, i) => ({
+        signal: "src-b",
+        uri: `b-${String(i).padStart(2, "0")}`,
+        stamp: i + 1,
+      })),
+    ]);
+
+    const spyStore = new Proxy(inner, {
+      get(target, prop, receiver) {
+        if (prop === "readUpdatedEntries") {
+          return async function* (
+            this: unknown,
+            ...args: Parameters<typeof inner.readUpdatedEntries>
+          ): AsyncIterable<UpdateEntry> {
+            for await (const e of inner.readUpdatedEntries(...args)) {
+              reads += 1;
+              yield e;
+            }
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    const graph = new DataflowGraph([
+      {
+        id: "FanIn",
+        inputs: ["src-a", "src-b"],
+        outputs: ["fan-out"],
+      },
+    ]);
+
+    let firstUri: string | undefined;
+    for await (const entry of readUpstreamChanges(spyStore, graph, "FanIn")) {
+      firstUri = entry.uri;
+      break;
+    }
+    expect(firstUri).toBe("a-00");
+
+    // Streaming merge primes one head per signal (2 reads) and yields
+    // one entry. Without breaking, all 20 entries would be read; we
+    // expect strictly fewer than 20 reads.
+    expect(reads).toBeLessThan(20);
+  });
+
   it("scales: 100 URIs across 3 upstream signals merge into a single URI-sorted stream", async () => {
     const graph = new DataflowGraph([
       {

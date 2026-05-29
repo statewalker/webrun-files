@@ -568,6 +568,101 @@ describe("InMemoryUpdatesStore — readUpdatedEntries (per-URI cell diff)", () =
   });
 });
 
+describe("InMemoryUpdatesStore — orderBy 'stamp' vs 'uri'", () => {
+  it("readEntries defaults to stamp-ascending order", async () => {
+    const store = new InMemoryUpdatesStore();
+    await store.saveEntries([
+      { signal: "x", uri: "c", stamp: 9 },
+      { signal: "x", uri: "a", stamp: 3 },
+      { signal: "x", uri: "b", stamp: 5 },
+    ]);
+    const got = await collect(store.readEntries({ signal: "x", since: 0 }));
+    expect(got.map((e) => e.uri)).toEqual(["a", "b", "c"]);
+    expect(got.map((e) => e.stamp)).toEqual([3, 5, 9]);
+  });
+
+  it("readEntries with orderBy: 'uri' yields URI-ascending regardless of stamp", async () => {
+    const store = new InMemoryUpdatesStore();
+    await store.saveEntries([
+      { signal: "x", uri: "b", stamp: 9 },
+      { signal: "x", uri: "a", stamp: 100 },
+      { signal: "x", uri: "c", stamp: 1 },
+    ]);
+    const got = await collect(store.readEntries({ signal: "x", since: 0, orderBy: "uri" }));
+    expect(got.map((e) => e.uri)).toEqual(["a", "b", "c"]);
+    // The stamps reflect each URI's stored value (not re-stamped).
+    expect(got.map((e) => e.stamp)).toEqual([100, 9, 1]);
+  });
+
+  it("readEntries orderBy: 'stamp' is the explicit equivalent of the default", async () => {
+    const store = new InMemoryUpdatesStore();
+    await store.saveEntries([
+      { signal: "x", uri: "b", stamp: 9 },
+      { signal: "x", uri: "a", stamp: 100 },
+      { signal: "x", uri: "c", stamp: 1 },
+    ]);
+    const def = await collect(store.readEntries({ signal: "x", since: 0 }));
+    const explicit = await collect(store.readEntries({ signal: "x", since: 0, orderBy: "stamp" }));
+    expect(explicit).toEqual(def);
+  });
+
+  it("readUpdatedEntries defaults to stamp-ascending order", async () => {
+    const store = new InMemoryUpdatesStore();
+    await store.saveEntries([
+      { signal: "src", uri: "z", stamp: 9 },
+      { signal: "src", uri: "a", stamp: 3 },
+      { signal: "src", uri: "m", stamp: 5 },
+    ]);
+    const got = await collect(
+      store.readUpdatedEntries({ upstreamSignal: "src", currentSignal: "ext" }),
+    );
+    expect(got.map((e) => e.uri)).toEqual(["a", "m", "z"]);
+    expect(got.map((e) => e.stamp)).toEqual([3, 5, 9]);
+  });
+
+  it("readUpdatedEntries with orderBy: 'uri' yields URI-ascending", async () => {
+    const store = new InMemoryUpdatesStore();
+    await store.saveEntries([
+      { signal: "src", uri: "z", stamp: 1 },
+      { signal: "src", uri: "a", stamp: 9 },
+      { signal: "src", uri: "m", stamp: 5 },
+    ]);
+    const got = await collect(
+      store.readUpdatedEntries({
+        upstreamSignal: "src",
+        currentSignal: "ext",
+        orderBy: "uri",
+      }),
+    );
+    expect(got.map((e) => e.uri)).toEqual(["a", "m", "z"]);
+  });
+
+  it("orderBy is independent of since/uriPrefix filtering — same entries, different order", async () => {
+    const store = new InMemoryUpdatesStore();
+    await store.saveEntries([
+      { signal: "x", uri: "/keep/3", stamp: 1 },
+      { signal: "x", uri: "/keep/1", stamp: 7 },
+      { signal: "x", uri: "/keep/2", stamp: 3 },
+      { signal: "x", uri: "/drop/9", stamp: 5 },
+    ]);
+    const byStamp = await collect(
+      store.readEntries({ signal: "x", since: 0, uriPrefix: "/keep/" }),
+    );
+    const byUri = await collect(
+      store.readEntries({
+        signal: "x",
+        since: 0,
+        uriPrefix: "/keep/",
+        orderBy: "uri",
+      }),
+    );
+    // Same set, different order.
+    expect(new Set(byStamp.map((e) => e.uri))).toEqual(new Set(byUri.map((e) => e.uri)));
+    expect(byStamp.map((e) => e.uri)).toEqual(["/keep/3", "/keep/2", "/keep/1"]);
+    expect(byUri.map((e) => e.uri)).toEqual(["/keep/1", "/keep/2", "/keep/3"]);
+  });
+});
+
 describe("InMemoryUpdatesStore — stamp validation", () => {
   it("rejects a NaN stamp instead of storing an unreadable entry", async () => {
     // A NaN stamp would round-trip into the store but be invisible to

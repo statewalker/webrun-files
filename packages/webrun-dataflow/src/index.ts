@@ -14,4 +14,9 @@ export type {
   UpdatesManagerOptions,
 } from "./updates-manager.js";
 export { UpdatesManager } from "./updates-manager.js";
-export type { SerializedUpdatesStore, UpdateEntry, UpdatesStore } from "./updates-store.js";
+export type {
+  ReadOrderBy,
+  SerializedUpdatesStore,
+  UpdateEntry,
+  UpdatesStore,
+} from "./updates-store.js";

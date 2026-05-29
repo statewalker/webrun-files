@@ -1,5 +1,20 @@
 import type { Signal } from "./types.js";
-import type { SerializedUpdatesStore, UpdateEntry, UpdatesStore } from "./updates-store.js";
+import type {
+  ReadOrderBy,
+  SerializedUpdatesStore,
+  UpdateEntry,
+  UpdatesStore,
+} from "./updates-store.js";
+
+function compareMatches(orderBy: ReadOrderBy | undefined) {
+  if (orderBy === "uri") {
+    return (a: [string, number], b: [string, number]) => {
+      if (a[0] === b[0]) return 0;
+      return a[0] < b[0] ? -1 : 1;
+    };
+  }
+  return (a: [string, number], b: [string, number]) => a[1] - b[1];
+}
 
 /**
  * In-memory `UpdatesStore` reference implementation. State lives in this
@@ -59,6 +74,7 @@ export class InMemoryUpdatesStore implements UpdatesStore {
     signal: Signal;
     since: number;
     uriPrefix?: string;
+    orderBy?: ReadOrderBy;
   }): AsyncIterable<UpdateEntry> {
     const inner = this.state.get(opts.signal);
     if (!inner) return;
@@ -69,7 +85,7 @@ export class InMemoryUpdatesStore implements UpdatesStore {
         matches.push([uri, stamp]);
       }
     }
-    matches.sort((a, b) => a[1] - b[1]);
+    matches.sort(compareMatches(opts.orderBy));
     for (const [uri, stamp] of matches) {
       yield { signal: opts.signal, uri, stamp };
     }
@@ -79,6 +95,7 @@ export class InMemoryUpdatesStore implements UpdatesStore {
     upstreamSignal: Signal;
     currentSignal: Signal;
     uriPrefix?: string;
+    orderBy?: ReadOrderBy;
   }): AsyncIterable<UpdateEntry> {
     const upstream = this.state.get(opts.upstreamSignal);
     if (!upstream) return;
@@ -90,7 +107,7 @@ export class InMemoryUpdatesStore implements UpdatesStore {
       const currentStamp = current?.get(uri) ?? 0;
       if (upstreamStamp > currentStamp) matches.push([uri, upstreamStamp]);
     }
-    matches.sort((a, b) => a[1] - b[1]);
+    matches.sort(compareMatches(opts.orderBy));
     for (const [uri, stamp] of matches) {
       yield { signal: opts.upstreamSignal, uri, stamp };
     }

@@ -42,19 +42,33 @@ export type SerializedUpdatesStore = {
  * signal naming consistency with any `DataflowGraph` topology, tombstone
  * naming conventions.
  */
+/**
+ * Yield ordering for read methods on `UpdatesStore`. Both options yield
+ * the same set of entries — only the order differs.
+ *
+ * - `"stamp"` (default) — last-transaction-id ascending. Best when the
+ *   consumer wants temporal-order replay.
+ * - `"uri"` — URI ascending. Best when the consumer wants to collapse
+ *   per-URI work in one forward pass, or to merge multiple read streams
+ *   by URI without buffering (see `readUpstreamChanges`).
+ */
+export type ReadOrderBy = "stamp" | "uri";
+
 export interface UpdatesStore {
   /**
    * Read entries on a signal whose stamp > `since`, optionally filtered by
-   * URI prefix. Yields full `UpdateEntry` objects in stamp-ascending order.
+   * URI prefix. Yields full `UpdateEntry` objects.
    *
    * - `since` is exclusive: `stamp > since`. Use `since = 0` to read everything.
    * - `uriPrefix` (optional, defaults to no filter) restricts to entries whose
    *   `uri.startsWith(uriPrefix)`. An empty string is treated as no filter.
+   * - `orderBy` (optional, default `"stamp"`) — see `ReadOrderBy`.
    */
   readEntries(opts: {
     signal: Signal;
     since: number;
     uriPrefix?: string;
+    orderBy?: ReadOrderBy;
   }): AsyncIterable<UpdateEntry>;
 
   /**
@@ -72,8 +86,10 @@ export interface UpdatesStore {
    * since cleaned it up via tombstone, so the current cell has nothing
    * to do.
    *
-   * Yields in upstream-stamp-ascending order. `uriPrefix` filters the
-   * same way as `readEntries`.
+   * Default order is upstream-stamp-ascending. Pass `orderBy: "uri"`
+   * for URI-ascending order — used by `readUpstreamChanges` to merge
+   * several per-signal streams in O(1) buffering. `uriPrefix` filters
+   * the same way as `readEntries`.
    *
    * Caller contract: after handling a yielded entry, save a
    * `currentSignal` entry with stamp >= the yielded upstream stamp to
@@ -84,6 +100,7 @@ export interface UpdatesStore {
     upstreamSignal: Signal;
     currentSignal: Signal;
     uriPrefix?: string;
+    orderBy?: ReadOrderBy;
   }): AsyncIterable<UpdateEntry>;
 
   /** Upsert by `(signal, uri)`. Replaces blindly — last write wins. */
