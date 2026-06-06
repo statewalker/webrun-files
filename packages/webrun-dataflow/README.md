@@ -157,7 +157,12 @@ Persistent backends (SQL, KV) ship as separate packages and implement the same i
 
 ## Updates store
 
-The third leaf of the package. `UpdatesStore` records, per signal channel, the URIs whose most recent change occurred at stamp `s`. Together with `DataflowGraph` (topology) and `TransactionStore` (per-cell last-success tx), it gives handlers the per-entry delta they need to answer two questions: "what URIs changed on signal X since my last successful run?" and "what URIs am I marking changed on signal Y right now?"
+The third leaf of the package. `UpdatesStore` holds **two relations**, both keyed by signal channel:
+
+- `updates(signal, uri) → stamp` — "the URI changed on this signal at stamp `s`". Written by `setUpdate`, read by `readEntries` and `readUpdates`.
+- `handled(signal, cell, uri) → stamp` — "this cell has caught up to that change as of stamp `s`". Written by `handleUpdate`, consulted (never yielded) by `readUpdates`, reset by `clearHandled`.
+
+Together with `DataflowGraph` (topology) and `TransactionStore` (per-cell last-success tx), it answers the questions handlers need: *"what changed on signal X that I haven't handled yet?"* and *"what am I marking changed on signal Y right now?"* — with each consumer tracking its progress **independently**, so two cells can consume the same `(signal, uri)` change without interfering.
 
 ### `UpdatesStore` interface
 
@@ -168,83 +173,169 @@ interface UpdateEntry {
   stamp: number;
 }
 
+interface HandledEntry {
+  signal: Signal;
+  uri: string;
+  cell: string;
+  stamp: number;
+}
+
+type ReadOrderBy = "stamp" | "uri"; // default "stamp"
+
 interface UpdatesStore {
+  // --- reads ---
   readEntries(opts: {
     signal: Signal;
-    since: number;
+    since: number;          // exclusive: yields stamp > since
     uriPrefix?: string;
+    orderBy?: ReadOrderBy;
   }): AsyncIterable<UpdateEntry>;
 
-  saveEntry(entry: UpdateEntry): Promise<void>;
-  saveEntries(entries: ReadonlyArray<UpdateEntry>): Promise<void>;
+  readUpdates(opts: {
+    signal: Signal;
+    cell: string;           // per-cell watermark; absent handled stamp == 0
+    uriPrefix?: string;
+    orderBy?: ReadOrderBy;
+  }): AsyncIterable<UpdateEntry>;
 
-  removeEntry(key: { signal: Signal; uri: string }): Promise<void>;
-  removeEntries(keys: ReadonlyArray<{ signal: Signal; uri: string }>): Promise<void>;
+  // --- updates relation ---
+  setUpdate(entry: UpdateEntry): Promise<void>;
+  setUpdates(entries: ReadonlyArray<UpdateEntry>): Promise<void>;
+
+  // --- handled relation ---
+  handleUpdate(entry: HandledEntry): Promise<void>;
+  handleUpdates(entries: ReadonlyArray<HandledEntry>): Promise<void>;
+  clearHandled(key: { signal: Signal; cell: string }): Promise<number>;
+
+  // --- removal (cascades into handled) ---
+  removeUpdate(key: { signal: Signal; uri: string }): Promise<void>;
+  removeUpdates(keys: ReadonlyArray<{ signal: Signal; uri: string }>): Promise<void>;
 }
 ```
 
-Semantics:
+Exact semantics:
 
-- **Upsert by `(signal, uri)`.** Each save overwrites the previous stamp for that pair. No history is retained — the store keeps the latest stamp per pair.
-- **Pure pointer entries.** `{ signal, uri, stamp }`, no payload. The data the URI addresses lives in the caller's domain store.
-- **Explicit stamps.** The store records whatever stamp the caller supplies — including a smaller one. It does not enforce monotonicity. In normal operation, callers pass the activation's `transactionId`, which is monotonic via `TransactionStore.newTransactionId()`.
-- **`since` exclusive, stamp-ascending order.** `readEntries({ signal, since })` yields entries with `stamp > since`, in stamp-ascending order. Use `since = 0` to read everything.
-- **Optional URI-prefix filter.** `readEntries({ signal, since, uriPrefix })` restricts to entries whose `uri.startsWith(uriPrefix)`. Useful for queries like "all modified files under folder X" or "all chunks of file Y" (when chunk URIs are addressed as `<fileUri>#<chunkId>`).
-- **Idempotent deletion.** `removeEntry({ signal, uri })` erases the row if present; a no-op otherwise.
+- **`setUpdate` — upsert by `(signal, uri)`, blind replace.** Each call overwrites the previous stamp for that pair; no history is retained. The store does **not** enforce monotonicity — a smaller stamp replaces a larger one. A non-finite stamp (`NaN`, `Infinity`) is rejected (throws). Entries are pure pointers `{ signal, uri, stamp }`; the data the URI addresses lives in the caller's domain store.
+- **`handleUpdate` — upsert by `(signal, cell, uri)`, blind replace.** Records that `cell` has handled `(signal, uri)` at `stamp` (intended to be the upstream stamp the cell just observed). Same finite-stamp guard. **Never touches `updates` rows** and never affects another cell's handled rows.
+- **`readEntries({ signal, since })` — raw, watermark-free read.** Yields every `updates` row on `signal` with `stamp > since` (strict). `since = 0` reads everything. No `cell` dimension.
+- **`readUpdates({ signal, cell })` — per-cell diff.** For each `uri` present in `updates[signal]`, yields the entry iff its update stamp is strictly greater than that cell's handled stamp for the same uri (absent handled stamp treated as `0`). A uri present only as handled state (no `updates` row) is never yielded.
+- **`clearHandled({ signal, cell })` — watermark reset.** Removes every handled row recorded by `cell` against `signal` (so all of that signal's updates re-appear in the cell's next `readUpdates`). Returns the number of rows removed. Touches no `updates` row and no other cell's handled rows — so resetting one consumer leaves siblings sharing the same input untouched.
+- **`removeUpdate({ signal, uri })` — cascading delete.** Removes the `updates` row **and** every cell's handled row for that same `(signal, uri)`. Idempotent (no-op if absent). The cascade prevents a re-created uri from being masked by a stale handled stamp.
+- **Ordering (`orderBy`).** Both reads default to `"stamp"` (update-stamp ascending). `"uri"` yields URI-ascending — the order `readCellUpdates` relies on to merge several per-signal streams with O(1) buffering. Same set either way; only the order differs.
+- **URI-prefix filter.** `uriPrefix` (on both reads) restricts to entries whose `uri.startsWith(uriPrefix)`; an empty/absent prefix means no filter. Useful for "all files under folder X" or "all chunks of file Y" (when chunk URIs are `<fileUri>#<chunkId>`).
+- **Batch ops.** `setUpdates` / `handleUpdates` / `removeUpdates` are exactly N sequential single calls in iteration order — no atomicity promise.
 
-### `InMemoryUpdatesStore`
+### Two consumption models
 
-Reference implementation backed by `Map<Signal, Map<Uri, Stamp>>`. State lives in this process; nothing persists across restarts. The class accepts an optional `SerializedUpdatesStore` initial state in its constructor and exposes `snapshot()` and `toJSON()` for the dump direction:
+A cell needs a *watermark* — "how far have I caught up?" — to read only what's new. The store supports two, and you pick per cell:
+
+**1. Coarse, per-cell transaction watermark** (`readEntries` + `since: updateId`). The watermark is the cell's last successful `transactionId` (from `TransactionStore`, supplied to the handler as `updateId`). Simple and adequate when a cell consumes a single signal and "everything stamped after my last successful run" is the right delta.
 
 ```ts
-import { InMemoryUpdatesStore } from "@statewalker/shared-dataflow";
-
-const store = new InMemoryUpdatesStore();
-await store.saveEntry({ signal: "files", uri: "f1", stamp: 1 });
-
-// Round-trip via JSON:
-const blob = JSON.stringify(store);
-const restored = new InMemoryUpdatesStore(JSON.parse(blob));
+function newExtractor(deps: { files: FilesApi; updatesStore: UpdatesStore }): CellHandler {
+  return async ({ updateId, transactionId }) => {
+    for await (const { uri } of deps.updatesStore.readEntries({ signal: "files", since: updateId })) {
+      await saveContentToDomainStore(uri, extract(await deps.files.read(uri)));
+      await deps.updatesStore.setUpdate({ signal: "content", uri, stamp: transactionId });
+    }
+    return true; // only on full completion → TransactionStore advances → resumable
+  };
+}
 ```
 
-The `SerializedUpdatesStore` shape is a JSON-safe nested object — `{ [signal]: { [uri]: stamp } }`. Both directions are defensively copied: the store never holds a live reference to caller-provided objects, and the snapshot returned to a caller can be mutated freely without affecting the store.
-
-Persistent backends ship as separate packages and implement the `UpdatesStore` interface; `snapshot()` / `toJSON()` are in-memory-impl extras, not part of the core contract.
-
-### Wiring with handlers — factory pattern
-
-`UpdatesManager` stays unchanged. Build handlers via ordinary factory functions that close over the store and return a plain `CellHandler`:
+**2. Fine, per-cell handled watermark** (`readUpdates` / `readCellUpdates` + `handleUpdate`). The watermark is per `(signal, cell, uri)`. Use this when **multiple cells consume the same signal and must handle each change independently**, or for **sink/fan-out cells** that have no single output signal to act as their watermark. Each cell advances its own watermark by calling `handleUpdate` on the input it just processed:
 
 ```ts
-import type { CellHandler, UpdatesStore } from "@statewalker/shared-dataflow";
+import { readCellUpdates } from "@statewalker/shared-dataflow";
 
-function newExtractor(deps: {
-  files: FilesApi;
-  updatesStore: UpdatesStore;
-}): CellHandler {
-  return async ({ updateId, transactionId }) => {
-    for await (const { uri } of deps.updatesStore.readEntries({
-      signal: "files",
-      since: updateId,
-    })) {
-      const body = await deps.files.read(uri);
-      await saveContentToDomainStore(uri, extract(body));
-      await deps.updatesStore.saveEntry({
-        signal: "content",
-        uri,
-        stamp: transactionId,
+// Two cells both consume "file-source"; each tracks the same file independently.
+function newPreviewer(deps: { graph: DataflowGraph; updatesStore: UpdatesStore }): CellHandler {
+  const CELL = "Previewer";
+  return async () => {
+    for await (const entry of readCellUpdates(deps.updatesStore, deps.graph, CELL)) {
+      const changed = await renderPreview(entry.uri); // false if output unchanged
+      // Advance the watermark on EVERY observed uri — work, skip, or throw —
+      // so a stuck item can't loop forever and the cascade converges.
+      await deps.updatesStore.handleUpdate({
+        signal: entry.signal, uri: entry.uri, cell: CELL, stamp: entry.stamp,
       });
+      // Announce downstream ONLY when output actually changed, propagating the
+      // observed stamp. Skips do NOT re-stamp the output → no spurious cascade.
+      if (changed) {
+        await deps.updatesStore.setUpdate({ signal: "preview", uri: entry.uri, stamp: entry.stamp });
+      }
     }
     return true;
   };
 }
 ```
 
-Returning `true` only when every upstream change has been processed makes the handler trivially resumable: on `false` or a thrown exception, the cell's recorded transaction does not advance, so the same `updateId` is supplied on the next activation and the same upstream entries appear again.
+> **Watermark vs. output, decoupled.** In the fine model, "I consumed my input" (`handleUpdate`, always) is a separate fact from "I produced an output" (`setUpdate`, only on real change). Conflating them — advancing the downstream signal on every observed uri, including no-op skips — makes unchanged content ripple needlessly through the rest of the graph. Keep them apart.
+
+### `readCellUpdates` + `aggregateByUri` — graph-aware per-cell diff
+
+`readCellUpdates(store, graph, cellId, { uriPrefix? })` is the fine-model reader. It discovers the cell's input signals via `graph.getCellInputs(cellId)` and, for each, opens `readUpdates({ signal, cell: cellId, orderBy: "uri" })`, then merges them with a streaming k-way URI merge.
+
+- The watermark dimension is the **`cellId` itself** — not any output signal — so **sink cells (inputs, no outputs) work** and **probers (no inputs) yield nothing**.
+- Output is **URI-ascending**. A uri fresh on N of the cell's input signals appears N times; same-uri entries are emitted adjacently in `graph.getCellInputs` declaration order, so a consumer can collapse per-uri in one forward pass.
+- Memory is O(number of input signals), independent of how many URIs match — and the merge is lazy, so a consumer that `break`s early stops the underlying reads.
+
+```ts
+import { readCellUpdates, aggregateByUri } from "@statewalker/shared-dataflow";
+
+// One record per uri, with every contributing upstream entry:
+const byUri = await aggregateByUri(readCellUpdates(store, graph, "Index"));
+for (const [uri, entries] of byUri) {
+  // entries = the fresh updates across this cell's inputs for `uri`
+}
+```
+
+After handling a yielded entry, call `handleUpdate` with `stamp >= entry.stamp` to advance the watermark; otherwise the uri reappears next call. To force a full re-run of one cell (and, via re-stamped outputs, its downstream), call `clearHandled` on each of its input signals.
+
+### `InMemoryUpdatesStore`
+
+Reference implementation backed by two maps — `Map<Signal, Map<Uri, Stamp>>` (updates) and `Map<Signal, Map<Cell, Map<Uri, Stamp>>>` (handled). State lives in this process; nothing persists across restarts. The constructor accepts an optional serialized state, and `snapshot()` / `toJSON()` dump it:
+
+```ts
+import { InMemoryUpdatesStore } from "@statewalker/shared-dataflow";
+
+const store = new InMemoryUpdatesStore();
+await store.setUpdate({ signal: "files", uri: "f1", stamp: 1 });
+await store.handleUpdate({ signal: "files", uri: "f1", cell: "Extractor", stamp: 1 });
+
+// Round-trip via JSON (both relations survive):
+const restored = new InMemoryUpdatesStore(JSON.parse(JSON.stringify(store)));
+```
+
+The serialized shape is a JSON-safe object with both relations:
+
+```ts
+type SerializedUpdatesStore = {
+  updates: { [signal: string]: { [uri: string]: number } };
+  handled: { [signal: string]: { [cell: string]: { [uri: string]: number } } };
+};
+```
+
+Both directions are defensively copied: the store never holds a live reference to caller-provided objects, and a returned snapshot can be mutated freely. For backward compatibility the constructor also accepts a **legacy flat** `{ [signal]: { [uri]: stamp } }` object (no `updates`/`handled` keys), loading it as the `updates` relation with empty handled state.
+
+This serialized shape is private to `InMemoryUpdatesStore` (and file-backed wrappers that reuse it) — it is **not** part of the `UpdatesStore` interface.
+
+### Storage-agnostic — maps onto a database
+
+The `UpdatesStore` interface references no key encoding, separator, or serialization, so it translates directly onto two relational tables:
+
+```sql
+CREATE TABLE updates (signal TEXT, uri TEXT, stamp BIGINT, PRIMARY KEY (signal, uri));
+CREATE TABLE handled (signal TEXT, cell TEXT, uri TEXT, stamp BIGINT,
+  PRIMARY KEY (signal, cell, uri),
+  FOREIGN KEY (signal, uri) REFERENCES updates(signal, uri) ON DELETE CASCADE);
+```
+
+`readUpdates` is an indexed left-join (`updates LEFT JOIN handled … WHERE u.stamp > COALESCE(h.stamp, 0)`); `removeUpdate`'s cascade is the foreign key's `ON DELETE CASCADE` (free, not the in-memory O(cells) loop); `clearHandled` is `DELETE FROM handled WHERE signal=? AND cell=?`. Nothing in the interface requires loading a full snapshot, so a DB backend needs no `snapshot()`/`toJSON()`.
 
 ### End-to-end scenario — scanner + cascade + re-indexing
 
-A typical pipeline starts with a *scanner* cell. The scanner observes some external source (a files map, a directory, an inbox), detects what changed since its last visit, and publishes the changes onto a domain signal. Downstream cells transform, derive, embed, index — each one reading from one signal and writing to another, all coordinated through the same `UpdatesStore`.
+A worked example of the **coarse model** (per-cell transaction watermark). A typical pipeline starts with a *scanner* cell. The scanner observes some external source (a files map, a directory, an inbox), detects what changed since its last visit, and publishes the changes onto a domain signal. Downstream cells transform, derive, embed, index — each one reading from one signal and writing to another, all coordinated through the same `UpdatesStore`.
 
 ```
          scan
@@ -297,7 +388,7 @@ function newFilesScanner(deps: { files: Map<string, { body: string; updatedAt: n
   return async ({ transactionId }) => {
     for (const [uri, file] of deps.files) {
       if (file.updatedAt > (lastSeen.get(uri) ?? 0)) {
-        await deps.updatesStore.saveEntry({ signal: "files", uri, stamp: transactionId });
+        await deps.updatesStore.setUpdate({ signal: "files", uri, stamp: transactionId });
         lastSeen.set(uri, file.updatedAt);
       }
     }
@@ -312,18 +403,20 @@ function newFilesScanner(deps: { files: Map<string, { body: string; updatedAt: n
 
 **No-op re-runs.** If nothing changed (no file's `updatedAt` advanced), `ScanFiles` emits nothing, every downstream cell reads zero entries, and the cascade is a no-op. Idempotence is structural.
 
-### Deletion — tombstone signals + `removeEntry`
+> The same pipeline written in the **fine model** would swap `readEntries({ signal, since: updateId })` for `readCellUpdates(store, graph, cellId)` and the trailing `setUpdate(output)` for `handleUpdate(input)` + a conditional `setUpdate(output)` — needed once two cells consume the same signal independently (e.g. an `Index` and a `Previewer` both reading `files`).
+
+### Deletion — tombstone signals + `removeUpdate`
 
 Deletion is propagated as its own signal (a convention, not a contract). When a file disappears, the upstream emits `{ signal: "files:removed", uri }`; downstream cells declare `"files:removed"` (or whatever naming you prefer — `"-files"`, `"files-deleted"`) as an input and react accordingly. The graph's topological order fans the deletion through the cascade just like a creation.
 
-When a tombstone-consuming handler has finished propagating the deletion to its own downstream stores, it cleans up the upstream pair via `removeEntry` — both the original `"files"` row and the consumed `"files:removed"` row for that URI — so the next sweep does not re-process the same deletion. The store enforces nothing about signal naming.
+When a tombstone-consuming handler has finished propagating the deletion to its own downstream stores, it cleans up the upstream pair via `removeUpdate` — both the original `"files"` row and the consumed `"files:removed"` row for that URI — so the next sweep does not re-process the same deletion. Because `removeUpdate` cascades into the handled relation, **every cell's watermark for that URI is cleared too**, so a later re-created URI is seen fresh by every consumer. The store enforces nothing about signal naming.
 
 ### Caller responsibilities
 
-Three things the store deliberately does NOT enforce:
+Things the store deliberately does NOT enforce:
 
-- **Stamp discipline.** Every `saveEntry` uses a stamp the caller chose. The store does not derive, validate, or compare stamps. Pass `transactionId` honestly.
-- **Signal naming.** The store accepts any string as a signal. It does not know what signals exist in any `DataflowGraph`. A handler that writes to a signal its cell did not declare as an `output` is a graph-topology bug — invisible to the store.
+- **Stamp discipline.** Stamps are caller-supplied; the store never derives, validates (beyond finiteness), or compares them across calls. In the coarse model pass the activation's `transactionId`; in the fine model pass the observed upstream `entry.stamp`.
+- **Signal & cell naming.** Any string is a valid `signal` or `cell` (spaces and delimiters included) — the store reserves no characters. It does not know which signals a `DataflowGraph` declares; a handler that writes to a signal its cell did not declare as an `output` is a topology bug invisible to the store.
 - **Tombstone naming convention.** The `:removed` (or whatever) convention is yours to set, recorded in your graph topology.
 
 ## Updates manager
@@ -451,7 +544,7 @@ type CellHandler = (params: {
 }) => Promise<boolean>;
 ```
 
-Handlers are expected to be **idempotent** — they may be re-invoked with the same `updateId` after a previous failure. The simplest way to coordinate per-entry changes between handlers is the [`UpdatesStore`](#updates-store) above: read upstream entries with `since: updateId`, write downstream entries with `stamp: transactionId`. The store's stamp semantics ensure replays skip work that already published.
+Handlers are expected to be **idempotent** — they may be re-invoked with the same `updateId` after a previous failure. Coordinate per-entry changes between handlers through the [`UpdatesStore`](#updates-store) above, in either the coarse model (read with `since: updateId`, write with `stamp: transactionId`) or the fine model (read with `readCellUpdates` / `readUpdates`, advance with `handleUpdate`, write outputs only on real change). Both make replays skip work that already published.
 
 ## License
 

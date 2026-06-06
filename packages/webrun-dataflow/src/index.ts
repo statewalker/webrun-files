@@ -3,8 +3,8 @@ export { InMemoryTransactionStore } from "./in-memory-transaction-store.js";
 export { InMemoryUpdatesStore } from "./in-memory-updates-store.js";
 export {
   aggregateByUri,
-  readUpstreamChanges,
-} from "./read-upstream-changes.js";
+  readCellUpdates,
+} from "./read-cell-updates.js";
 export type { TransactionStore } from "./transaction-store.js";
 export type { CellDefinition, CellId, Signal } from "./types.js";
 export type {
@@ -15,6 +15,7 @@ export type {
 } from "./updates-manager.js";
 export { UpdatesManager } from "./updates-manager.js";
 export type {
+  HandledEntry,
   ReadOrderBy,
   SerializedUpdatesStore,
   UpdateEntry,

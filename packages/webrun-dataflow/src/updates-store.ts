@@ -12,36 +12,37 @@ export interface UpdateEntry {
 }
 
 /**
- * JSON-safe serialization shape for an `UpdatesStore`. Outer key = signal,
- * inner = uri → latest stamp. Accepted by `InMemoryUpdatesStore`'s constructor
- * and returned by `snapshot()` / `toJSON()`.
+ * A single per-cell handled record: "cell `cell` has caught up to the update
+ * `(signal, uri)` as of stamp `stamp`". The `stamp` is intended to be the
+ * upstream update stamp the cell observed when it handled the change.
  */
-export type SerializedUpdatesStore = {
-  [signal: string]: { [uri: string]: number };
-};
+export interface HandledEntry {
+  signal: Signal;
+  uri: string;
+  cell: string;
+  stamp: number;
+}
 
 /**
- * Per-`(signal, uri)` updates log used by handlers driving multi-stage
- * dataflow pipelines. Sits alongside `TransactionStore` and `DataflowGraph`
- * as a leaf of `@statewalker/shared-dataflow`.
+ * JSON-safe serialization shape for an `UpdatesStore`. Two relations:
  *
- * Semantics:
+ * - `updates` — outer key = signal, inner = uri → latest stamp.
+ * - `handled` — outer key = signal, middle = cell, inner = uri → handled stamp.
  *
- * - Upsert by `(signal, uri)`: each save overwrites the previous stamp for
- *   that pair. No history is retained.
- * - Stamps are caller-supplied. The store does NOT derive, validate, or
- *   compare stamps — saves blindly replace, including with smaller stamps.
- * - `readEntries` is exclusive on `since` (`stamp > since`), yields entries
- *   in stamp-ascending order, and optionally filters by `uriPrefix`.
- * - Deletion is two-stage: the caller propagates a tombstone signal through
- *   the dataflow graph (a convention, not enforced by the store), and the
- *   tombstone-consuming handler calls `removeEntry` to erase both the
- *   original row and the tombstone row.
+ * Accepted by `InMemoryUpdatesStore`'s constructor and returned by
+ * `snapshot()` / `toJSON()`. This shape is **private** to `InMemoryUpdatesStore`
+ * — it is NOT part of the `UpdatesStore` interface; a file-backed or database
+ * store may persist however it likes.
  *
- * Caller responsibilities not enforced by the store: stamp discipline,
- * signal naming consistency with any `DataflowGraph` topology, tombstone
- * naming conventions.
+ * For backward compatibility the constructor also accepts a legacy flat
+ * `{ [signal]: { [uri]: number } }` object (no `updates`/`handled` keys),
+ * treating the whole object as the `updates` relation with empty handled state.
  */
+export type SerializedUpdatesStore = {
+  updates: { [signal: string]: { [uri: string]: number } };
+  handled: { [signal: string]: { [cell: string]: { [uri: string]: number } } };
+};
+
 /**
  * Yield ordering for read methods on `UpdatesStore`. Both options yield
  * the same set of entries — only the order differs.
@@ -50,13 +51,35 @@ export type SerializedUpdatesStore = {
  *   consumer wants temporal-order replay.
  * - `"uri"` — URI ascending. Best when the consumer wants to collapse
  *   per-URI work in one forward pass, or to merge multiple read streams
- *   by URI without buffering (see `readUpstreamChanges`).
+ *   by URI without buffering (see `readCellUpdates`).
  */
 export type ReadOrderBy = "stamp" | "uri";
 
+/**
+ * Per-`(signal, uri)` updates log plus a per-cell handled dimension, used by
+ * handlers driving multi-stage dataflow pipelines. Sits alongside
+ * `TransactionStore` and `DataflowGraph` as a leaf of `@statewalker/shared-dataflow`.
+ *
+ * Two logical relations:
+ *
+ * - `updates(signal, uri) -> stamp` — written by `setUpdate`, read by
+ *   `readEntries` / `readUpdates`. Upsert by `(signal, uri)`; last write wins;
+ *   stamps are caller-supplied and never validated beyond finiteness.
+ * - `handled(signal, cell, uri) -> stamp` — written by `handleUpdate`, consulted
+ *   (never yielded) by `readUpdates`. Records how far a cell has caught up to a
+ *   signal's updates, independently per cell.
+ *
+ * The interface is storage-agnostic: it references no key encoding, separator,
+ * or serialization, so it maps 1:1 onto a relational store (two tables;
+ * `readUpdates` = indexed left-join; `removeUpdate` = `ON DELETE CASCADE`).
+ *
+ * Caller responsibilities not enforced by the store: stamp discipline, signal
+ * naming consistency with any `DataflowGraph` topology, tombstone naming
+ * conventions.
+ */
 export interface UpdatesStore {
   /**
-   * Read entries on a signal whose stamp > `since`, optionally filtered by
+   * Read updates on a signal whose stamp > `since`, optionally filtered by
    * URI prefix. Yields full `UpdateEntry` objects.
    *
    * - `since` is exclusive: `stamp > since`. Use `since = 0` to read everything.
@@ -72,48 +95,63 @@ export interface UpdatesStore {
   }): AsyncIterable<UpdateEntry>;
 
   /**
-   * Per-URI cell-to-cell diff: yields upstream entries the current cell
-   * hasn't caught up to yet. For each URI present in `upstreamSignal`,
-   * comparing its stamp to the same URI's stamp under `currentSignal`:
+   * Per-cell diff: yields the updates on `signal` that `cell` hasn't caught
+   * up to yet. For each URI present on `signal`, comparing its update stamp
+   * to that cell's handled stamp for the same URI:
    *
-   * - upstream stamp > current stamp (or current absent → treated as 0):
+   * - update stamp > cell's handled stamp (or handled absent → treated as 0):
    *   yielded.
-   * - upstream stamp <= current stamp: NOT yielded — current cell is
-   *   already caught up.
+   * - update stamp <= cell's handled stamp: NOT yielded — the cell is already
+   *   caught up.
    *
-   * URIs that exist only under `currentSignal` (upstream has no entry)
-   * are NEVER yielded: the upstream either never saw the URI or has
-   * since cleaned it up via tombstone, so the current cell has nothing
-   * to do.
+   * URIs that exist only as handled state (no update row) are NEVER yielded.
    *
-   * Default order is upstream-stamp-ascending. Pass `orderBy: "uri"`
-   * for URI-ascending order — used by `readUpstreamChanges` to merge
-   * several per-signal streams in O(1) buffering. `uriPrefix` filters
-   * the same way as `readEntries`.
+   * Default order is update-stamp-ascending. Pass `orderBy: "uri"` for
+   * URI-ascending order — used by `readCellUpdates` to merge several per-signal
+   * streams in O(1) buffering. `uriPrefix` filters the same way as `readEntries`.
    *
-   * Caller contract: after handling a yielded entry, save a
-   * `currentSignal` entry with stamp >= the yielded upstream stamp to
-   * advance the per-URI watermark. Otherwise the URI appears again on
-   * the next call.
+   * Caller contract: after handling a yielded entry, call `handleUpdate` with
+   * stamp >= the yielded update stamp to advance the per-URI watermark for this
+   * cell. Otherwise the URI appears again on the next call.
    */
-  readUpdatedEntries(opts: {
-    upstreamSignal: Signal;
-    currentSignal: Signal;
+  readUpdates(opts: {
+    signal: Signal;
+    cell: string;
     uriPrefix?: string;
     orderBy?: ReadOrderBy;
   }): AsyncIterable<UpdateEntry>;
 
-  /** Upsert by `(signal, uri)`. Replaces blindly — last write wins. */
-  saveEntry(entry: UpdateEntry): Promise<void>;
-  /** Sequential equivalent of `entries.forEach(saveEntry)`. No atomicity promise. */
-  saveEntries(entries: ReadonlyArray<UpdateEntry>): Promise<void>;
+  /** Upsert an update by `(signal, uri)`. Replaces blindly — last write wins. */
+  setUpdate(entry: UpdateEntry): Promise<void>;
+  /** Sequential equivalent of `entries.forEach(setUpdate)`. No atomicity promise. */
+  setUpdates(entries: ReadonlyArray<UpdateEntry>): Promise<void>;
 
   /**
-   * Remove the entry identified by `(signal, uri)`. Used by tombstone-
-   * consuming handlers to clean up after a deletion has propagated.
-   * No-op if the entry does not exist.
+   * Record that `cell` has handled the update `(signal, uri)` at `stamp`
+   * (intended to be the upstream stamp the cell observed). Upsert by
+   * `(signal, cell, uri)`; replaces blindly. Never touches `updates` rows.
    */
-  removeEntry(key: { signal: Signal; uri: string }): Promise<void>;
-  /** Sequential equivalent of `keys.forEach(removeEntry)`. No atomicity promise. */
-  removeEntries(keys: ReadonlyArray<{ signal: Signal; uri: string }>): Promise<void>;
+  handleUpdate(entry: HandledEntry): Promise<void>;
+  /** Sequential equivalent of `entries.forEach(handleUpdate)`. No atomicity promise. */
+  handleUpdates(entries: ReadonlyArray<HandledEntry>): Promise<void>;
+
+  /**
+   * Remove every handled row recorded by `cell` against `signal`, resetting
+   * that cell's per-URI watermark for the signal so all of the signal's
+   * updates re-appear in the cell's next `readUpdates`. Never touches
+   * `updates` rows or any other cell's handled rows. Returns the number of
+   * handled rows removed. Used by restart/reset flows.
+   */
+  clearHandled(key: { signal: Signal; cell: string }): Promise<number>;
+
+  /**
+   * Remove the update identified by `(signal, uri)`, AND cascade-remove every
+   * cell's handled row for that same `(signal, uri)`. Used by tombstone-
+   * consuming handlers to clean up after a deletion has propagated; the cascade
+   * prevents a re-created URI from being masked by a stale handled stamp.
+   * No-op if the update does not exist.
+   */
+  removeUpdate(key: { signal: Signal; uri: string }): Promise<void>;
+  /** Sequential equivalent of `keys.forEach(removeUpdate)`. No atomicity promise. */
+  removeUpdates(keys: ReadonlyArray<{ signal: Signal; uri: string }>): Promise<void>;
 }
