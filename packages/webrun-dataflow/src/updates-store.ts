@@ -16,11 +16,8 @@ export interface UpdateEntry {
  * `(signal, uri)` as of stamp `stamp`". The `stamp` is intended to be the
  * upstream update stamp the cell observed when it handled the change.
  */
-export interface HandledEntry {
-  signal: Signal;
-  uri: string;
+export interface HandledEntry extends UpdateEntry {
   cell: string;
-  stamp: number;
 }
 
 /**
@@ -153,5 +150,7 @@ export interface UpdatesStore {
    */
   removeUpdate(key: { signal: Signal; uri: string }): Promise<void>;
   /** Sequential equivalent of `keys.forEach(removeUpdate)`. No atomicity promise. */
-  removeUpdates(keys: ReadonlyArray<{ signal: Signal; uri: string }>): Promise<void>;
+  removeUpdates(
+    keys: ReadonlyArray<{ signal: Signal; uri: string }>,
+  ): Promise<void>;
 }
