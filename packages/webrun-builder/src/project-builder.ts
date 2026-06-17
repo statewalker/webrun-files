@@ -64,12 +64,27 @@ export class ProjectBuilder {
   private stores?: Stores;
   private yieldCounter = 0;
   private yieldCfg: YieldConfig = DEFAULT_YIELD_CONFIG;
+  private sourceIgnore?: () => Promise<(uri: string) => boolean>;
 
   constructor(readonly project: Project) {}
 
   /** Override the cooperative-yield throttle. */
   configureYield(partial: Partial<YieldConfig>): this {
     this.yieldCfg = { ...this.yieldCfg, ...partial };
+    return this;
+  }
+
+  /**
+   * Inject an additional source-exclusion predicate, composed (logical OR) with the
+   * project's `.projectignore` during scanning. The provider is re-invoked at the
+   * start of every scan, so the underlying rules can be re-read each run; a uri the
+   * predicate excludes is treated exactly like a `.projectignore` match (kept out of
+   * the source set, and pruned via `sources-removed` if it was previously indexed).
+   * A project's "nature" uses this to contribute its own ignore policy (e.g. the
+   * wiki's nested `.indexignore`) without the generic engine knowing about it.
+   */
+  configureSourceIgnore(provider: () => Promise<(uri: string) => boolean>): this {
+    this.sourceIgnore = provider;
     return this;
   }
 
@@ -414,9 +429,12 @@ export class ProjectBuilder {
     // `.projectignore` (gitignore-style) at the project root: excluded paths are
     // skipped here, so they never enter `seen` and any previously-indexed ones are
     // emitted as `sources-removed` below — adding a rule prunes their artifacts.
-    const isIgnored = makeProjectIgnore(
+    const projectIgnore = makeProjectIgnore(
       await tryReadText(this.filesApi, joinPath(this.project.path, ".projectignore")),
     );
+    // Compose `.projectignore` with the nature-supplied ignore (re-read each scan).
+    const natureIgnore = this.sourceIgnore ? await this.sourceIgnore() : undefined;
+    const isIgnored = (uri: string) => projectIgnore(uri) || (natureIgnore?.(uri) ?? false);
     const seen = new Set<string>();
     for await (const info of this.filesApi.list(this.project.path, {
       recursive: true,
