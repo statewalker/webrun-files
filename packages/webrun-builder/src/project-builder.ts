@@ -427,7 +427,7 @@ export class ProjectBuilder {
     yield { type: "begin", transactionId };
     let emitted = false;
     try {
-      emitted = await this.scan(stores, transactionId);
+      emitted = await this.scan(stores, transactionId, log);
     } catch (error) {
       log.error("scan failed", { error });
       errors.push(error);
@@ -490,7 +490,7 @@ export class ProjectBuilder {
    * before the next is picked up. The full tree is always walked so removals are
    * detected regardless of the batch limit.
    */
-  private async scan(stores: Stores, transactionId: number): Promise<boolean> {
+  private async scan(stores: Stores, transactionId: number, log: Logger): Promise<boolean> {
     const { updates, scannerState } = stores;
     let emitted = false;
     const base = this.project.path.replace(/^\/+|\/+$/g, "");
@@ -524,11 +524,13 @@ export class ProjectBuilder {
     // the batch boundary is deterministic; un-emitted ones are re-detected next scan.
     const limit = this.yieldConfig.scanBatchSize;
     changed.sort((a, b) => a.uri.localeCompare(b.uri));
-    for (const { uri, mtime } of limit > 0 ? changed.slice(0, limit) : changed) {
+    const batch = limit > 0 ? changed.slice(0, limit) : changed;
+    for (const { uri, mtime } of batch) {
       await updates.setUpdate({ signal: SOURCES_SIGNAL, uri, stamp: transactionId });
       scannerState.set(uri, mtime);
       emitted = true;
     }
+    let removed = 0;
     for (const uri of [...scannerState.keys()]) {
       if (seen.has(uri)) continue;
       await updates.setUpdate({
@@ -537,8 +539,16 @@ export class ProjectBuilder {
         stamp: transactionId,
       });
       scannerState.delete(uri);
+      removed++;
       emitted = true;
     }
+    log.debug("scanned sources", {
+      seen: seen.size,
+      changed: batch.length,
+      deferred: changed.length - batch.length,
+      removed,
+      tx: transactionId,
+    });
     return emitted;
   }
 
