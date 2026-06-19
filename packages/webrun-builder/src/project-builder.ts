@@ -39,15 +39,28 @@ export interface YieldConfig {
   pauseMs: number;
   /** Return `false` (request interrupt + re-run) once every this many calls. */
   interruptEvery: number;
-  /** Safety cap on `run()` scheduling iterations. */
-  maxPasses: number;
+  /**
+   * Abort `run()` after this many *consecutive* no-progress passes. A healthy build
+   * always makes progress (a stage drains, handles ≥1 update, or a scan surfaces
+   * work), so the counter only climbs when a builder is genuinely stuck (never
+   * draining) or repeatedly throws before handling anything — kept small to fail fast.
+   */
+  maxStalledPasses: number;
+  /**
+   * Max changed sources the scanner emits per scan pass (`0` = unlimited). A
+   * positive value makes each batch its own transaction, so it traverses the whole
+   * pipeline — and the terminal stages dump their top-level artifacts — before the
+   * next batch is scanned. Trades more scan passes for incremental availability.
+   */
+  scanBatchSize: number;
 }
 
 const DEFAULT_YIELD_CONFIG: YieldConfig = {
   pauseEvery: 10,
   pauseMs: 10,
   interruptEvery: 10,
-  maxPasses: 1000,
+  maxStalledPasses: 8,
+  scanBatchSize: 0,
 };
 
 /**
@@ -241,22 +254,63 @@ export class ProjectBuilder {
     log.info("build run started", { stages: active });
 
     try {
-      const maxPasses = this.yieldConfig.maxPasses;
-      for (let pass = 0; pass < maxPasses; pass++) {
+      // Safety backstop: abort if scheduling makes no progress for this many
+      // consecutive passes. A pass is progress when a stage drains, handles at least
+      // one update, or a scan surfaces work — so this scales to any corpus size
+      // (including the batched scanner's many small transactions) while still
+      // catching a genuinely stuck builder (never draining, or throwing before it
+      // handles anything). A non-convergent build would otherwise loop forever.
+      const maxStalledPasses = this.yieldConfig.maxStalledPasses;
+      let stalled = 0;
+      let converged = false;
+      for (;;) {
         const frontier = await this.frontier(stores, graph);
         // Most-downstream stage behind the frontier whose producers are all at the
         // frontier — safe to bring up to date (its input is fully produced).
         const target = await this.nextStage(stores, graph, active, frontier);
         if (target) {
-          yield* this.advanceStage(stores, graph, runBuilder, target, frontier, errors, log);
+          const progressed = yield* this.advanceStage(
+            stores,
+            graph,
+            runBuilder,
+            target,
+            frontier,
+            errors,
+            log,
+          );
+          stalled = progressed ? 0 : stalled + 1;
+          if (stalled >= maxStalledPasses) {
+            // No progress for `maxStalledPasses` passes: the most-downstream stages
+            // (e.g. index reorganize / search) may never have run, leaving their
+            // top-level artifacts unwritten. Surface it loudly, not as a clean build.
+            log.error("build run stalled — no scheduling progress", {
+              maxStalledPasses,
+              stage: target,
+            });
+            errors.push(
+              new Error(
+                `ProjectBuilder.run: no scheduling progress for ${maxStalledPasses} ` +
+                  `consecutive passes (stuck at "${target}"); a builder is not draining ` +
+                  "its input or repeatedly throws",
+              ),
+            );
+            break;
+          }
           continue;
         }
         // Every stage is at the frontier. In explicit-builders mode we are done;
         // otherwise scan — advancing the frontier iff the scan surfaced new work.
-        if (only) break;
-        if (!(yield* this.scanStage(stores, errors, log))) break;
+        if (only) {
+          converged = true;
+          break;
+        }
+        if (!(yield* this.scanStage(stores, errors, log))) {
+          converged = true;
+          break;
+        }
+        stalled = 0; // a scan that surfaced work is progress
       }
-      log.info("build run converged");
+      if (converged) log.info("build run converged");
     } finally {
       await this.flush(stores);
     }
@@ -272,10 +326,11 @@ export class ProjectBuilder {
     return [...probers, ...graph.getExecutionOrder(proberOutputs)];
   }
 
-  /** Whether `cell` has at least one unhandled update on any of its input signals. */
-  private async hasPending(stores: Stores, graph: DataflowGraph, cell: string): Promise<boolean> {
-    for await (const _ of readCellUpdates(stores.updates, graph, cell)) return true;
-    return false;
+  /** Count of unhandled updates across `cell`'s input signals. */
+  private async pendingCount(stores: Stores, graph: DataflowGraph, cell: string): Promise<number> {
+    let n = 0;
+    for await (const _ of readCellUpdates(stores.updates, graph, cell)) n++;
+    return n;
   }
 
   /** The latest transaction across all cells — the frontier convergence target. */
@@ -324,6 +379,8 @@ export class ProjectBuilder {
    * work pending and keeps its old transaction, to be re-selected next pass; once
    * it has drained its input it is recorded at the frontier — even if it handled
    * nothing — keeping transaction ids monotonic. State is flushed on each advance.
+   * Returns whether the stage made progress (drained, or handled ≥1 update) — the
+   * scheduler's stall backstop relies on this to tell a working build from a stuck one.
    */
   private async *advanceStage(
     stores: Stores,
@@ -333,9 +390,10 @@ export class ProjectBuilder {
     frontier: number,
     errors: unknown[],
     log: Logger,
-  ): AsyncGenerator<BuildProgress> {
+  ): AsyncGenerator<BuildProgress, boolean> {
     yield { type: "begin", transactionId: frontier };
     log.debug("advancing stage", { stage: cellId, frontier });
+    const before = await this.pendingCount(stores, graph, cellId);
     let finished = false;
     try {
       finished = await runBuilder(cellId);
@@ -343,13 +401,17 @@ export class ProjectBuilder {
       log.error("stage failed", { stage: cellId, error });
       errors.push(error);
     }
-    const drained = !(await this.hasPending(stores, graph, cellId));
+    const after = await this.pendingCount(stores, graph, cellId);
+    const drained = after === 0;
     if (drained) await stores.transactions.setCellTransaction(cellId, frontier);
     await this.flush(stores);
     const result = finished || drained;
     log.info("stage", { stage: cellId, result: result ? "ok" : "interrupted", tx: frontier });
     yield { type: "call", transactionId: frontier, builderId: cellId, result };
     yield { type: "end", transactionId: frontier };
+    // No producer runs during this stage, so `after <= before`; a strict decrease
+    // means it handled at least one update this pass (partial progress).
+    return drained || after < before;
   }
 
   /**
@@ -421,6 +483,12 @@ export class ProjectBuilder {
   /**
    * Generic mtime change-detection: emit `sources` / `sources-removed`. Returns
    * whether it emitted any update (i.e. whether the source set changed).
+   *
+   * When `scanBatchSize > 0` only that many changed sources are emitted per scan
+   * (in uri order); the rest keep their stale mtime in `scannerState` and are
+   * re-detected on the next scan, so each batch flows through the full pipeline
+   * before the next is picked up. The full tree is always walked so removals are
+   * detected regardless of the batch limit.
    */
   private async scan(stores: Stores, transactionId: number): Promise<boolean> {
     const { updates, scannerState } = stores;
@@ -436,6 +504,7 @@ export class ProjectBuilder {
     const natureIgnore = this.sourceIgnore ? await this.sourceIgnore() : undefined;
     const isIgnored = (uri: string) => projectIgnore(uri) || (natureIgnore?.(uri) ?? false);
     const seen = new Set<string>();
+    const changed: { uri: string; mtime: number }[] = [];
     for await (const info of this.filesApi.list(this.project.path, {
       recursive: true,
     })) {
@@ -449,11 +518,14 @@ export class ProjectBuilder {
       const mtime = (info as { lastModified?: number }).lastModified ?? 0;
       const prev = scannerState.get(uri);
       if (prev !== undefined && prev === mtime) continue;
-      await updates.setUpdate({
-        signal: SOURCES_SIGNAL,
-        uri,
-        stamp: transactionId,
-      });
+      changed.push({ uri, mtime });
+    }
+    // Emit at most `scanBatchSize` changed sources (0 = unlimited), in uri order so
+    // the batch boundary is deterministic; un-emitted ones are re-detected next scan.
+    const limit = this.yieldConfig.scanBatchSize;
+    changed.sort((a, b) => a.uri.localeCompare(b.uri));
+    for (const { uri, mtime } of limit > 0 ? changed.slice(0, limit) : changed) {
+      await updates.setUpdate({ signal: SOURCES_SIGNAL, uri, stamp: transactionId });
       scannerState.set(uri, mtime);
       emitted = true;
     }
