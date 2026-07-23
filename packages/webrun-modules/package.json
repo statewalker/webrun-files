@@ -1,0 +1,61 @@
+{
+  "name": "@statewalker/webrun-modules",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Isomorphic module/dependency server: resolve + download + transform npm and authored TS/JS into browser-runnable ESM served from a local FilesApi cache, with no runtime CDN dependency",
+  "homepage": "https://github.com/statewalker/webrun-wire",
+  "author": {
+    "name": "Mikhail Kotelnikov",
+    "email": "mikhail.kotelnikov@gmail.com"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:statewalker/webrun-wire.git"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "rimraf dist && rolldown -c && tsc --emitDeclarationOnly --declaration",
+    "test": "vitest run",
+    "lint": "biome check src tests",
+    "prepublishOnly": "pnpm run build"
+  },
+  "dependencies": {
+    "@statewalker/webrun-files": "catalog:",
+    "es-module-lexer": "catalog:",
+    "sucrase": "catalog:",
+    "@jspm/generator": "catalog:",
+    "cjs-module-lexer": "^1.4.1",
+    "resolve.exports": "^2.0.3",
+    "npm-package-arg": "^12.0.0",
+    "semver": "^7.6.3",
+    "@jspm/core": "^2.1.0",
+    "fflate": "^0.8.2"
+  },
+  "devDependencies": {
+    "@statewalker/webrun-files-mem": "catalog:",
+    "@types/node": "catalog:",
+    "@types/semver": "^7.5.8",
+    "rimraf": "catalog:",
+    "rolldown": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  }
+}
