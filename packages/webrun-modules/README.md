@@ -85,6 +85,33 @@ cycle against the live npm registry — lazy download-on-request, `resolve`,
 pnpm --filter @statewalker/webrun-modules exec tsx examples/full-cycle.ts
 ```
 
+### An unpkg-like HTTP service
+
+Because `server.fetch` is a standard Web handler, exposing an unpkg-style endpoint
+is a thin wrapper — mount it on any host and add the one convenience of
+redirecting a bare/ranged spec to its pinned, versioned URL.
+[`examples/http-server.ts`](./examples/http-server.ts) is a complete, dependency-
+free Node server that does exactly this:
+
+```sh
+pnpm --filter @statewalker/webrun-modules exec tsx examples/http-server.ts
+# then:
+curl -L localhost:8787/lodash-es@4/merge   # 302 → /lodash-es@4.18.1/merge.js → importable ESM
+curl -L localhost:8787/debug               # 302 → /debug@4.4.3/src/browser.js
+```
+
+For a given package it returns an importable JS module with every dependency
+already resolved to a same-origin URL — e.g. requesting `lodash-es@4/merge` serves
+`merge.js` whose `import "./_baseMerge.js"` / `import "./_createAssigner.js"` all
+point back at the same server. Use it straight from a browser:
+
+```html
+<script type="module">
+  import merge from "http://localhost:8787/lodash-es@4/merge";
+  console.log(merge({ a: 1 }, { b: 2 }));
+</script>
+```
+
 ## Options
 
 | Option      | Default                  | Purpose |
