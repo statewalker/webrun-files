@@ -104,6 +104,12 @@ export interface ModuleServer {
   resolve(ref: ModuleRef, importer?: string): Promise<ResolvedModule>;
   /** Walk the entry's whole graph, warm the cache, write `lock`. */
   prime(entry: ModuleRef): Promise<ResolvedModule>;
+  /** Prime an entry and return every reachable module URL (the exact set of
+   *  scripts required to run it, `basePath`-prefixed, sorted). */
+  listResources(entry: ModuleRef): Promise<string[]>;
+  /** List every file of a package (raw, package-relative paths), loading it if
+   *  needed — the full package contents, not just the reachable subset. */
+  listPackageFiles(ref: ModuleRef): Promise<string[]>;
   /** Standard Web handler; serves the cache and matches under `basePath`. */
   fetch(request: Request): Promise<Response>;
   /** The resolved graph — also the persisted lockfile. */

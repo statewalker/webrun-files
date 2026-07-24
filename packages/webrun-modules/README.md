@@ -64,6 +64,37 @@ await server.prime({ pkg: "react-dom", version: "^18" });
 // entry + every transitive dep are now cached and importable with the network off.
 ```
 
+## Listing what an entry needs, or what a package contains
+
+Two questions, two methods:
+
+```ts
+// (1) Every module URL required to RUN an entry — the reachable graph (primes it).
+const urls = await server.listResources({ pkg: "react" });
+// → [ "/react@19.2.8/index.js",
+//     "/react@19.2.8/cjs/react.production.js",
+//     "/react@19.2.8/cjs/react.development.js" ]   ← the exact set of scripts to serve
+
+// (2) Every FILE in a package — the full tarball contents (loads it if needed).
+const files = await server.listPackageFiles({ pkg: "react" });
+// → [ "LICENSE", "index.js", "jsx-runtime.js", "cjs/react.development.js", … ]  (27 files)
+```
+
+`listResources` is the minimal set (what the entry actually imports);
+`listPackageFiles` is everything the package ships (including alternative entry
+points like `react/jsx-runtime` the main entry never imports). To capture an app's
+full needs, call `listResources` for each entry point you import and take the union.
+
+To **download** everything for later offline/static serving, point the cache at a
+real directory and prime — the transformed files land under `{rootDir}/t/{target}/`:
+
+```ts
+const server = newModuleServer({ cache: new NodeFilesApi({ rootDir: "./react-bundle" }) });
+await server.prime({ pkg: "react" });
+await server.prime({ pkg: "react", subpath: "jsx-runtime" }); // if you use JSX
+// ./react-bundle/t/browser/react@19.2.8/… now holds the importable scripts.
+```
+
 ## Serving your own source too
 
 Point the server at a project `FilesApi` and it resolves local scripts the same
@@ -98,6 +129,9 @@ pnpm --filter @statewalker/webrun-modules exec tsx examples/http-server.ts
 # then:
 curl -L localhost:8787/lodash-es@4/merge   # 302 → /lodash-es@4.18.1/merge.js → importable ESM
 curl -L localhost:8787/debug               # 302 → /debug@4.4.3/src/browser.js
+curl 'localhost:8787/react?meta'           # JSON: react's full file list
+curl 'localhost:8787/react?graph'          # JSON: every module URL needed to run react
+curl 'localhost:8787/react@19.2.8/package.json'   # non-JS files served raw (application/json)
 ```
 
 For a given package it returns an importable JS module with every dependency
@@ -130,6 +164,8 @@ point back at the same server. Use it straight from a browser:
 interface ModuleServer {
   resolve(ref: ModuleRef, importer?: string): Promise<ResolvedModule>; // single ref → URL
   prime(entry: ModuleRef): Promise<ResolvedModule>;                    // warm the whole graph
+  listResources(entry: ModuleRef): Promise<string[]>;                  // every URL the entry needs
+  listPackageFiles(ref: ModuleRef): Promise<string[]>;                 // a package's full file list
   fetch(request: Request): Promise<Response>;                          // standard Web handler
   readonly lock: Lockfile;                                             // resolution map
 }
@@ -224,8 +260,11 @@ transform would infer.
 
 `server.fetch(request)` is a plain `(Request) => Promise<Response>`:
 
-- modules are served as `text/javascript`;
-- append `?raw` to get the untransformed bytes of any file in a package;
+- JS/TS module files are transformed and served as `text/javascript`;
+- non-module files (`package.json`, `README.md`, `.css`, …) are served **raw**,
+  untransformed, with a content-type guessed from the extension
+  (`application/json`, `text/markdown`, …);
+- append `?raw` to get the raw bytes of *any* file as `application/octet-stream`;
 - an unresolvable path returns a `404` `Response` (never throws).
 
 Mount it under any `basePath` (returned URLs carry the prefix; the cached bytes

@@ -19,6 +19,27 @@ import { parseSpecifier, relativeUrl } from "./specifiers.js";
 
 const RAW_EXT = ["", ".js", ".mjs", ".cjs", ".json", "/index.js", "/index.mjs"];
 
+/** JS/TS module files — the only ones the transform touches. */
+const MODULE_EXT = /\.(?:m|c)?[jt]sx?$/;
+const isModuleFile = (path: string) => MODULE_EXT.test(path);
+
+const CONTENT_TYPES: Record<string, string> = {
+  json: "application/json",
+  css: "text/css",
+  md: "text/markdown",
+  html: "text/html",
+  svg: "image/svg+xml",
+  wasm: "application/wasm",
+  map: "application/json",
+  txt: "text/plain",
+};
+
+/** Guess a content-type from a file path (non-module resources). */
+function contentType(path: string): string {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  return CONTENT_TYPES[ext] ?? "application/octet-stream";
+}
+
 /** Create a module/dependency server over an injected `FilesApi` cache. */
 export function newModuleServer(options: ModuleServerOptions): ModuleServer {
   const cache = options.cache;
@@ -194,6 +215,27 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
     return out;
   }
 
+  /** Serve a file's raw bytes (non-module resources, or `?raw`). */
+  async function serveRaw(id: string, asOctet: boolean): Promise<Response> {
+    let bytes: Uint8Array;
+    if (id.startsWith("~/")) {
+      const path = `/${id.slice(2)}`;
+      if (!project || !(await project.exists(path))) return new Response(null, { status: 404 });
+      bytes = await collect(project.read(path));
+    } else {
+      const m = id.match(/^((?:@[^/]+\/)?[^/]+@[^/]+)\/(.+)$/);
+      if (!m) return new Response(null, { status: 404 });
+      await ensureRawByKey(m[1]);
+      const file = await resolveRawFile(m[1], m[2]);
+      if (!(await cache.exists(`/raw/${m[1]}/${file}`))) return new Response(null, { status: 404 });
+      bytes = await collect(cache.read(`/raw/${m[1]}/${file}`));
+    }
+    return new Response(bytes as BodyInit, {
+      status: 200,
+      headers: { "content-type": asOctet ? "application/octet-stream" : contentType(id) },
+    });
+  }
+
   async function resolveEntryId(ref: ModuleRef): Promise<string> {
     if ("url" in ref) {
       if (/^https?:/.test(ref.url)) throw new ModuleResolveError(ref, "absolute URL is not local");
@@ -201,6 +243,33 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
       return p.startsWith("~/") ? p : `~/${p.replace(/^\//, "")}`;
     }
     return (await ensurePackage(ref)).id;
+  }
+
+  /** Walk + transform + cache the whole graph from an entry; persist the lockfile.
+   *  Returns the entry id and every reachable module id. */
+  async function walkGraph(entry: ModuleRef): Promise<{ rootId: string; ids: string[] }> {
+    const rootId = await resolveEntryId(entry);
+    const seen = new Set<string>();
+    const queue = [rootId];
+    while (queue.length) {
+      const id = queue.shift();
+      if (id === undefined || seen.has(id)) continue;
+      seen.add(id);
+      if (!isModuleFile(id)) {
+        // non-JS resource (json/css/…): ensure it's cached, don't scan/transform.
+        const m = id.match(/^((?:@[^/]+\/)?[^/]+@[^/]+)\//);
+        if (m) await ensureRawByKey(m[1]);
+        continue;
+      }
+      const { source, format } = await loadRaw(id);
+      for (const spec of await scanSpecifiers(source, format)) {
+        const { id: childId } = await resolveSpec(spec, id);
+        if (childId && !seen.has(childId)) queue.push(childId);
+      }
+      await transformAndCache(id);
+    }
+    await writeText(cache, "/lock.json", JSON.stringify(lock));
+    return { rootId, ids: [...seen] };
   }
 
   return {
@@ -216,43 +285,37 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
 
     async prime(entry: ModuleRef): Promise<ResolvedModule> {
       await init();
-      const rootId = await resolveEntryId(entry);
-      const seen = new Set<string>();
-      const queue = [rootId];
-      while (queue.length) {
-        const id = queue.shift();
-        if (id === undefined || seen.has(id)) continue;
-        seen.add(id);
-        const { source, format } = await loadRaw(id);
-        for (const spec of await scanSpecifiers(source, format)) {
-          const { id: childId } = await resolveSpec(spec, id);
-          if (childId && !seen.has(childId)) queue.push(childId);
-        }
-        await transformAndCache(id);
-      }
-      await writeText(cache, "/lock.json", JSON.stringify(lock));
+      const { rootId } = await walkGraph(entry);
       return { url: urlFor(rootId), target };
+    },
+
+    async listResources(entry: ModuleRef): Promise<string[]> {
+      await init();
+      const { ids } = await walkGraph(entry);
+      return ids.map(urlFor).sort();
+    },
+
+    async listPackageFiles(ref: ModuleRef): Promise<string[]> {
+      await init();
+      if ("url" in ref) throw new ModuleResolveError(ref, "not a package reference");
+      const { name, version } = await ensurePackage({ pkg: ref.pkg, version: ref.version });
+      const key = `${name}@${version}`;
+      const files: string[] = [];
+      for await (const info of cache.list(`/raw/${key}`, { recursive: true })) {
+        if (info.kind === "file") files.push(info.path.replace(`/raw/${key}/`, ""));
+      }
+      return files.sort();
     },
 
     async fetch(request: Request): Promise<Response> {
       await init();
       const url = new URL(request.url);
-      const raw = url.searchParams.has("raw");
       const id = idFromPath(url.pathname);
       try {
-        if (raw) {
-          const m = id.match(/^((?:@[^/]+\/)?[^/]+@[^/]+)\/(.+)$/);
-          if (!m) return new Response(null, { status: 404 });
-          await ensureRawByKey(m[1]);
-          const file = await resolveRawFile(m[1], m[2]);
-          if (!(await cache.exists(`/raw/${m[1]}/${file}`)))
-            return new Response(null, { status: 404 });
-          const bytes = await collect(cache.read(`/raw/${m[1]}/${file}`));
-          return new Response(bytes as BodyInit, {
-            status: 200,
-            headers: { "content-type": "application/octet-stream" },
-          });
-        }
+        // `?raw` → octet-stream; non-module files (json/md/css/…) → raw + guessed type.
+        if (url.searchParams.has("raw")) return await serveRaw(id, true);
+        if (!isModuleFile(id)) return await serveRaw(id, false);
+        // module files → transform to ESM.
         const body = (await cache.exists(`${tRoot}/${id}`))
           ? await readText(cache, `${tRoot}/${id}`)
           : await transformAndCache(id);

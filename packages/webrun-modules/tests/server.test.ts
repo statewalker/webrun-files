@@ -42,6 +42,15 @@ const PKGS: Record<string, Pkg> = {
     manifest: {},
     files: { "nodelibs/browser/path.js": `export const sep = "/";` },
   },
+  docs: {
+    version: "1.0.0",
+    manifest: { type: "module", main: "./index.js" },
+    files: {
+      "index.js": `export const x = 1;`,
+      "README.md": `# Docs\n\nA package.`,
+      "data.json": `{"k":1}`,
+    },
+  },
   usenode: {
     version: "1.0.0",
     manifest: { type: "module", main: "./index.js" },
@@ -129,5 +138,43 @@ describe("newModuleServer", () => {
     const s = mk();
     await s.prime({ pkg: "greet" });
     expect(s.lock).toEqual({ greet: "1.0.0", shout: "2.3.1" });
+  });
+
+  it("listResources returns the reachable module URLs from an entry", async () => {
+    const s = mk();
+    const urls = await s.listResources({ pkg: "greet" });
+    expect(urls).toEqual(["/greet@1.0.0/index.js", "/shout@2.3.1/index.js"]);
+  });
+
+  it("listResources carries the basePath prefix", async () => {
+    const s = mk({ basePath: "/deps/v1/" });
+    const urls = await s.listResources({ pkg: "greet" });
+    expect(urls).toContain("/deps/v1/shout@2.3.1/index.js");
+  });
+
+  it("listPackageFiles lists a package's full file set (not just reachable)", async () => {
+    const s = mk();
+    const files = await s.listPackageFiles({ pkg: "greet" });
+    expect(files).toEqual(["index.js", "package.json"]);
+  });
+
+  it("serves non-module files raw with a guessed content-type (not transformed)", async () => {
+    const s = mk();
+    await s.resolve({ pkg: "docs" }); // warm the raw cache
+    const md = await s.fetch(req("/docs@1.0.0/README.md"));
+    expect(md.status).toBe(200);
+    expect(md.headers.get("content-type")).toBe("text/markdown");
+    expect(await md.text()).toBe("# Docs\n\nA package.");
+
+    const json = await s.fetch(req("/docs@1.0.0/package.json"));
+    expect(json.headers.get("content-type")).toBe("application/json");
+    expect(JSON.parse(await json.text()).name).toBe("docs");
+
+    const data = await s.fetch(req("/docs@1.0.0/data.json"));
+    expect(data.headers.get("content-type")).toBe("application/json");
+
+    // the JS module is still transformed:
+    const js = await s.fetch(req("/docs@1.0.0/index.js"));
+    expect(js.headers.get("content-type")).toBe("text/javascript");
   });
 });

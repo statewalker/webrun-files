@@ -15,6 +15,9 @@
  *   GET /{name}[@{range}][/{subpath}]        → 302 redirect to the pinned URL
  *   GET /{name}@{version}/{file}             → the transformed, importable ESM
  *   GET /{name}@{version}/{file}?raw         → the original untransformed bytes
+ *   GET /{name}[@{range}]?meta               → JSON list of the package's files
+ *   GET /{name}[@{range}][/sub]?graph        → JSON list of every module URL the
+ *                                              entry requires (the reachable set)
  */
 
 import { mkdtemp } from "node:fs/promises";
@@ -51,14 +54,28 @@ function parseSpec(spec: string): { pkg: string; version?: string; subpath?: str
   return { pkg, version, subpath };
 }
 
+const json = (data: unknown) =>
+  new Response(JSON.stringify(data, null, 2), { headers: { "content-type": "application/json" } });
+
 async function handle(request: Request): Promise<Response> {
-  const { pathname } = new URL(request.url);
+  const url = new URL(request.url);
+  const { pathname } = url;
   if (pathname === "/" || pathname === "") {
     return new Response("webrun-modules unpkg-like server — try /debug or /lodash-es@4/merge\n", {
       headers: { "content-type": "text/plain" },
     });
   }
   const spec = parseSpec(decodeURIComponent(pathname.slice(1)));
+
+  // ?meta  → the package's full file list (like unpkg's ?meta)
+  // ?graph → every module URL required to run this entry (the reachable set)
+  try {
+    if (url.searchParams.has("meta")) return json(await server.listPackageFiles(spec));
+    if (url.searchParams.has("graph")) return json(await server.listResources(spec));
+  } catch {
+    return new Response("not found\n", { status: 404, headers: { "content-type": "text/plain" } });
+  }
+
   // Already pinned (exact version + a file) → serve the transformed module directly.
   if (spec.version && semver.valid(spec.version) && spec.subpath) return server.fetch(request);
   // Otherwise resolve the spec to its pinned entry and redirect (unpkg-style).
