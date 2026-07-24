@@ -106,15 +106,24 @@ const server = newModuleServer({ cache, project: myProjectFiles });
 const app = await server.resolve({ url: "/src/app.ts" }); // → importable URL
 ```
 
-## Full runnable example
+## Examples
+
+Three runnable examples (each has a package script; all hit the live npm
+registry, so they need network on first run):
+
+```sh
+pnpm --filter @statewalker/webrun-modules example              # full-cycle (alias)
+pnpm --filter @statewalker/webrun-modules example:full-cycle   # examples/full-cycle.ts
+pnpm --filter @statewalker/webrun-modules example:server       # examples/http-server.ts (unpkg-like)
+pnpm --filter @statewalker/webrun-modules example:site         # examples/site-pipeline.ts
+```
+
+(From inside the package directory you can drop the `--filter …` prefix:
+`pnpm example:server`.)
 
 [`examples/full-cycle.ts`](./examples/full-cycle.ts) demonstrates the entire
 cycle against the live npm registry — lazy download-on-request, `resolve`,
-`prime`, executing a served module, `?raw`, and the lockfile:
-
-```sh
-pnpm --filter @statewalker/webrun-modules exec tsx examples/full-cycle.ts
-```
+`prime`, executing a served module, `?raw`, and the lockfile.
 
 ### An unpkg-like HTTP service
 
@@ -125,7 +134,7 @@ redirecting a bare/ranged spec to its pinned, versioned URL.
 free Node server that does exactly this:
 
 ```sh
-pnpm --filter @statewalker/webrun-modules exec tsx examples/http-server.ts
+pnpm --filter @statewalker/webrun-modules example:server
 # then:
 curl -L localhost:8787/lodash-es@4/merge   # 302 → /lodash-es@4.18.1/merge.js → importable ESM
 curl -L localhost:8787/debug               # 302 → /debug@4.4.3/src/browser.js

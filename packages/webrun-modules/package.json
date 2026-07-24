@@ -31,6 +31,10 @@
     "build": "rimraf dist && rolldown -c && tsc --emitDeclarationOnly --declaration",
     "test": "vitest run",
     "lint": "biome check src tests",
+    "example": "tsx examples/full-cycle.ts",
+    "example:full-cycle": "tsx examples/full-cycle.ts",
+    "example:server": "tsx examples/http-server.ts",
+    "example:site": "tsx examples/site-pipeline.ts",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
@@ -52,6 +56,7 @@
     "@types/semver": "^7.5.8",
     "rimraf": "catalog:",
     "rolldown": "catalog:",
+    "tsx": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
