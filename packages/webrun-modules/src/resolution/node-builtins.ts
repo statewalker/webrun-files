@@ -61,6 +61,12 @@ export function isNodeBuiltin(spec: string): boolean {
  * Map a Node-builtin specifier under a given target:
  * - `browser` → a `@jspm/core` browser-polyfill package ref (served locally).
  * - `node`    → `{ external }` (leave the `node:`-prefixed specifier in place).
+ *
+ * The subpath is `nodelibs/${name}` (not `nodelibs/browser/…`): `@jspm/core`'s
+ * `exports` map (`"./nodelibs/*"` → `default: "./nodelibs/browser/*.js"`) supplies
+ * the `browser` segment via the export condition. Hard-coding it here would make
+ * the wildcard expand to `nodelibs/browser/browser/${name}.js` — a path that
+ * doesn't exist.
  */
 export function resolveNodeBuiltin(
   spec: string,
@@ -69,5 +75,5 @@ export function resolveNodeBuiltin(
   const name = nodeBuiltinName(spec);
   if (name === undefined) return undefined;
   if (target === "node") return { external: `node:${name}` };
-  return { ref: { pkg: "@jspm/core", subpath: `nodelibs/browser/${name}` } };
+  return { ref: { pkg: "@jspm/core", subpath: `nodelibs/${name}` } };
 }

@@ -53,6 +53,12 @@ export function resolveEntry(
       fields: browser ? ["browser", "module", "main"] : ["module", "main"],
     });
     if (typeof leg === "string") return norm(leg);
+    // `exports` present but neither `.` nor a legacy main resolves: the package has
+    // no root entry (e.g. `@jspm/core`). Fabricating `index.js` here yields a dead
+    // URL that 404s; fail loudly instead (Node throws ERR_PACKAGE_PATH_NOT_EXPORTED).
+    if (manifest.exports !== undefined) {
+      throw new Error(`${manifest.name}: package has no root entry ("." is not exported)`);
+    }
   }
 
   return clean || "index.js";

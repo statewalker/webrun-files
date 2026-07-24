@@ -39,7 +39,13 @@ const PKGS: Record<string, Pkg> = {
   },
   "@jspm/core": {
     version: "2.1.0",
-    manifest: {},
+    // Mirror @jspm/core's real exports: the `browser` segment comes from the
+    // export condition, so subpath `nodelibs/path` maps to `nodelibs/browser/path.js`.
+    manifest: {
+      exports: {
+        "./nodelibs/*": { node: "./nodelibs/node/*.js", default: "./nodelibs/browser/*.js" },
+      },
+    },
     files: { "nodelibs/browser/path.js": `export const sep = "/";` },
   },
   docs: {

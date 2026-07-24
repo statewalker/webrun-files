@@ -43,6 +43,13 @@ describe("resolveEntry", () => {
   it("treats a deep subpath as a direct file when unexported", () => {
     expect(resolveEntry(mk({ main: "./index.js" }), "lib/x.js", "browser")).toBe("lib/x.js");
   });
+
+  it("throws for a root entry when exports omit `.` and there is no legacy main", () => {
+    // e.g. @jspm/core: only `./nodelibs/*` is exported, `.` is not. Fabricating
+    // `index.js` here would produce a dead URL; fail loudly instead.
+    const m = mk({ name: "@jspm/core", exports: { "./nodelibs/*": "./nodelibs/browser/*.js" } });
+    expect(() => resolveEntry(m, undefined, "browser")).toThrow(/no root entry/);
+  });
 });
 
 describe("node builtins", () => {
@@ -55,9 +62,23 @@ describe("node builtins", () => {
 
   it("maps to @jspm/core polyfill under browser, external under node", () => {
     expect(resolveNodeBuiltin("node:path", "browser")).toEqual({
-      ref: { pkg: "@jspm/core", subpath: "nodelibs/browser/path" },
+      ref: { pkg: "@jspm/core", subpath: "nodelibs/path" },
     });
     expect(resolveNodeBuiltin("path", "node")).toEqual({ external: "node:path" });
     expect(resolveNodeBuiltin("zod", "browser")).toBeUndefined();
+  });
+
+  it("subpath resolves via @jspm/core exports without doubling `browser`", () => {
+    // `@jspm/core` maps `./nodelibs/*` → `default: ./nodelibs/browser/*.js`, so the
+    // ref subpath must be `nodelibs/path` — `nodelibs/browser/path` would expand to
+    // the nonexistent `nodelibs/browser/browser/path.js`.
+    const jspm = mk({
+      name: "@jspm/core",
+      exports: {
+        "./nodelibs/*": { node: "./nodelibs/node/*.js", default: "./nodelibs/browser/*.js" },
+      },
+    });
+    const b = resolveNodeBuiltin("node:path", "browser") as { ref: { subpath: string } };
+    expect(resolveEntry(jspm, b.ref.subpath, "browser")).toBe("nodelibs/browser/path.js");
   });
 });
