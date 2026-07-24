@@ -1,4 +1,4 @@
-import type { ModuleRef, ModuleTarget } from "../types.js";
+import type { ModuleTarget } from "../types.js";
 
 /** Node core module names (static list — an isomorphic lib can't read `node:module`). */
 const NODE_BUILTINS = new Set([
@@ -65,7 +65,7 @@ export function isNodeBuiltin(spec: string): boolean {
 export function resolveNodeBuiltin(
   spec: string,
   target: ModuleTarget,
-): { ref: ModuleRef } | { external: string } | undefined {
+): { ref: { pkg: string; subpath: string } } | { external: string } | undefined {
   const name = nodeBuiltinName(spec);
   if (name === undefined) return undefined;
   if (target === "node") return { external: `node:${name}` };

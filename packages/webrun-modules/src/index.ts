@@ -1,3 +1,5 @@
+export { newModuleServer } from "./server/new-module-server.js";
+export { parseSpecifier, relativeUrl } from "./server/specifiers.js";
 export type { NpmRegistrySourceOptions } from "./sources/npm-registry-source.js";
 export { npmRegistrySource } from "./sources/npm-registry-source.js";
 export { untarTgz } from "./sources/untar.js";
