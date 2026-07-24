@@ -1,6 +1,12 @@
 export type { NpmRegistrySourceOptions } from "./sources/npm-registry-source.js";
 export { npmRegistrySource } from "./sources/npm-registry-source.js";
 export { untarTgz } from "./sources/untar.js";
+export {
+  detectFormat,
+  newCjsTransform,
+  newDefaultTransform,
+  newEsmTransform,
+} from "./transform/index.js";
 export type {
   LoadedPackage,
   Lockfile,
