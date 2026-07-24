@@ -67,6 +67,17 @@ describe("version dedupe & lockfile", () => {
     expect(s.lock).toEqual({ lib: "1.2.0" }); // primary unchanged
   });
 
+  it("honors a seeded lock on a cold cache (pins, does not fall to latest)", async () => {
+    const counter = { n: 0 };
+    const s = newModuleServer({
+      cache: new MemFilesApi(),
+      sources: [multiSource(LIB, counter)],
+      lock: { lib: "1.2.0" }, // pin an older version than latest (2.1.0)
+    });
+    const r = await s.resolve({ pkg: "lib" }); // bare ref would be latest without the lock
+    expect(r.url).toBe("/lib@1.2.0/index.js");
+  });
+
   it("persists the lockfile; a reload does not re-solve", async () => {
     const cache = new MemFilesApi();
     const counter = { n: 0 };

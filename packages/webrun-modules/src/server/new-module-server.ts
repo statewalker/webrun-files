@@ -122,12 +122,10 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
     const locked = lock[name];
     let version: string;
     let manifest: PackageManifest;
-    if (
-      locked &&
-      reusable(locked, ref.version) &&
-      (await cache.exists(`/raw/${name}@${locked}/package.json`))
-    ) {
+    if (locked && reusable(locked, ref.version)) {
+      // Honor the lock even on a cold cache — load the *locked* version, not latest.
       version = locked;
+      await ensureRawByKey(`${name}@${version}`);
       manifest = await cachedManifest(`${name}@${version}`);
     } else {
       const loaded = await matchSource(ref).load({ pkg: name, version: ref.version });

@@ -41,6 +41,24 @@ describe("newEsmTransform", () => {
     expect(out).toContain(`import("/RW(dyn-pkg)")`);
   });
 
+  it("transpiles TSX (JSX + types) and rewrites the injected + explicit imports", async () => {
+    const seen: string[] = [];
+    const file: SourceFile = {
+      path: "c.tsx",
+      format: "tsx",
+      source: `import { useState } from "react";\nexport function App(): JSX.Element {\n  const [n] = useState<number>(0);\n  return <h1>Hello {n}</h1>;\n}`,
+    };
+    const out = await t.transform(file, (s) => {
+      seen.push(s);
+      return rw(s);
+    });
+    expect(seen).toContain("react"); // explicit import
+    expect(seen.some((s) => s.startsWith("react/jsx"))).toBe(true); // sucrase-injected JSX runtime
+    expect(out).not.toContain("<h1>"); // JSX compiled away
+    expect(out).not.toContain(": number"); // types stripped
+    expect(out).toContain(`"/RW(react)"`);
+  });
+
   it("leaves a computed dynamic specifier untouched", async () => {
     const file: SourceFile = {
       path: "c.js",

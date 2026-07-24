@@ -146,6 +146,30 @@ point back at the same server. Use it straight from a browser:
 </script>
 ```
 
+### In-browser site pipeline (replacing a jspm-based resolver)
+
+Because the server transpiles first-party TS/TSX **and** resolves the npm deps,
+one `newModuleServer` replaces an entire `@jspm/generator`-based pipeline
+(resolver + CDN providers + `es-module-lexer` rewrite + recursive prefetch +
+`/external` mount). Put your source in a `project` `FilesApi`, mount `server.fetch`
+under a site, and run server modules through the existing server-runner:
+
+```ts
+const server = newModuleServer({ cache, project: myAppFiles, target: "browser" });
+
+new SiteBuilder()
+  .setEndpoint("/", server.fetch)                                  // html + transpiled TSX + deps
+  .setEndpoint("/api", newServerRunner(serverEntryUrl, () => baseUrl)) // run server modules
+  .build();
+```
+
+[`examples/site-pipeline.ts`](./examples/site-pipeline.ts) runs the whole thing
+(JSX/TSX transpiled, `import "react"` rewritten to a same-origin URL, `react` +
+`react/jsx-runtime` resolved, `listResources` = the exact scripts to serve).
+**Note:** the server resolves a bare `import "react"` to *latest* unless a version
+is pinned — seed `lock` (e.g. `{ react: "18.3.1" }`) to honor a project's
+`package.json` versions reproducibly.
+
 ## Options
 
 | Option      | Default                  | Purpose |

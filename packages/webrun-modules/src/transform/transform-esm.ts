@@ -1,22 +1,8 @@
 import { init, parse } from "es-module-lexer";
-import { transform as sucraseTransform } from "sucrase";
 import type { SourceFile, Transform } from "../types.js";
+import { toJs } from "./to-js.js";
 
 let lexerReady: Promise<unknown> | undefined;
-
-/** Strip TS/JSX to plain JS; leave already-ESM JS untouched. */
-function toJs(file: SourceFile): string {
-  if (file.format === "ts" || file.format === "tsx") {
-    const transforms: ("typescript" | "jsx")[] =
-      file.format === "tsx" ? ["typescript", "jsx"] : ["typescript"];
-    return sucraseTransform(file.source, {
-      transforms,
-      jsxRuntime: "automatic",
-      filePath: file.path,
-    }).code;
-  }
-  return file.source;
-}
 
 /**
  * The default per-file transform for ESM (and TS/JSX) sources: transpile to plain
@@ -29,7 +15,7 @@ export function newEsmTransform(): Transform {
     async transform(file: SourceFile, rewrite: (specifier: string) => string): Promise<string> {
       lexerReady ??= init;
       await lexerReady;
-      const js = toJs(file);
+      const js = toJs(file.source, file.format, file.path);
       const [imports] = parse(js, file.path);
       let out = js;
       // Splice from the end so earlier offsets stay valid. For static imports the

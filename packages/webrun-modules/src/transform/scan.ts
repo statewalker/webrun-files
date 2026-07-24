@@ -1,6 +1,7 @@
 import { init as initCjs, parse as parseCjs } from "cjs-module-lexer";
 import { init as initEsm, parse as parseEsm } from "es-module-lexer";
 import type { SourceFormat } from "../types.js";
+import { toJs } from "./to-js.js";
 
 const REQUIRE_RE = /require\(\s*(['"])((?:(?!\1)[^\\]|\\.)*)\1\s*\)/g;
 
@@ -21,7 +22,7 @@ export async function scanSpecifiers(source: string, format: SourceFormat): Prom
   }
   esmReady ??= initEsm;
   await esmReady;
-  const [imports] = parseEsm(source);
+  const [imports] = parseEsm(toJs(source, format));
   const out = new Set<string>();
   for (const imp of imports) if (imp.n != null) out.add(imp.n);
   return [...out];
