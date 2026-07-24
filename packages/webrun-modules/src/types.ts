@@ -14,9 +14,7 @@ export type ModuleTarget = "browser" | "node";
  * subpath) or a URL (a local project script served by this server, or an already
  * resolved local URL).
  */
-export type ModuleRef =
-  | { pkg: string; version?: string; subpath?: string }
-  | { url: string };
+export type ModuleRef = { pkg: string; version?: string; subpath?: string } | { url: string };
 
 /** The result of resolving a `ModuleRef`: a directly `import`-able local URL. */
 export interface ResolvedModule {

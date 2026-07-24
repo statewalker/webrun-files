@@ -35,6 +35,7 @@
   },
   "dependencies": {
     "@statewalker/webrun-files": "catalog:",
+    "@statewalker/webrun-files-mem": "catalog:",
     "es-module-lexer": "catalog:",
     "sucrase": "catalog:",
     "@jspm/generator": "catalog:",
@@ -46,7 +47,6 @@
     "fflate": "^0.8.2"
   },
   "devDependencies": {
-    "@statewalker/webrun-files-mem": "catalog:",
     "@types/node": "catalog:",
     "@types/semver": "^7.5.8",
     "rimraf": "catalog:",

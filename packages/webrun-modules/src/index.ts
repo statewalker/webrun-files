@@ -1,15 +1,18 @@
+export type { NpmRegistrySourceOptions } from "./sources/npm-registry-source.js";
+export { npmRegistrySource } from "./sources/npm-registry-source.js";
+export { untarTgz } from "./sources/untar.js";
 export type {
-  ModuleTarget,
-  ModuleRef,
-  ResolvedModule,
-  Lockfile,
-  PackageManifest,
   LoadedPackage,
-  Source,
-  SourceFormat,
-  SourceFile,
-  Transform,
-  ModuleServerOptions,
+  Lockfile,
+  ModuleRef,
   ModuleServer,
+  ModuleServerOptions,
+  ModuleTarget,
+  PackageManifest,
+  ResolvedModule,
+  Source,
+  SourceFile,
+  SourceFormat,
+  Transform,
 } from "./types.js";
 export { ModuleResolveError, ModuleTransformError } from "./types.js";
