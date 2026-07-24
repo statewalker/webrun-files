@@ -271,6 +271,11 @@ Also exported: `untarTgz(bytes)` (isomorphic npm-tarball unpacker),
   would take over.
 - Dedupe is greedy (first-resolved version wins per name), not a full constraint
   hoist.
+- **Free Node globals under `target: "browser"`.** `require("process")` is
+  polyfilled, but packages that reference `process`, `Buffer`, or `global` as bare
+  *free variables* (e.g. React's `process.env.NODE_ENV`) need the page to define
+  them — set `globalThis.process = { env: { NODE_ENV: "development" } }` (as
+  esbuild/Vite do via a define). Under `target: "node"` they resolve natively.
 - Bundling/copying the resolved graph into a distributable tree, `.d.ts` type
   serving, package lifecycle scripts, and HMR are out of scope.
 
