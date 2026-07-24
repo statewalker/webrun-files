@@ -150,10 +150,41 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
     }
     if (spec.startsWith(".")) {
       const id = await resolveRelativeId(fromId, spec);
-      return { url: spec, id };
+      // Emit the *extension-resolved* relative URL (`./x` → `./x.js`), not the raw
+      // specifier: the browser fetches this URL verbatim, and only a recognized
+      // module extension makes the server transform it + serve `text/javascript`.
+      return { url: jsonModuleUrl(relativeUrl(fromId, id), id), id };
     }
-    const t = await ensurePackage(parseSpecifier(spec));
-    return { url: relativeUrl(fromId, t.id), id: t.id };
+    const { pkg, subpath } = parseSpecifier(spec);
+    // Resolve the version from the *importing package's* context (Node semantics):
+    // a package requiring its own name → itself; a dependency → the importer's
+    // declared range. Falls back to the global lock/latest for project files or
+    // undeclared (transitive) deps.
+    const version = await importerVersion(pkg, fromId);
+    const t = await ensurePackage({ pkg, version, subpath });
+    return { url: jsonModuleUrl(relativeUrl(fromId, t.id), t.id), id: t.id };
+  }
+
+  /** The version constraint a bare specifier should resolve to, from the importer's
+   *  package: self-reference → the importer's own version; a dependency → the
+   *  importer's `package.json` range; otherwise undefined (global lock/latest). */
+  async function importerVersion(pkg: string, fromId: string): Promise<string | undefined> {
+    const m = fromId.match(/^((?:@[^/]+\/)?[^/]+)@([^/]+)\//);
+    if (!m) return undefined; // project file — no package context
+    const [, impName, impVersion] = m;
+    if (pkg === impName) return impVersion; // self-reference → same version
+    const manifest = await cachedManifest(`${impName}@${impVersion}`).catch(() => undefined);
+    return (
+      manifest?.dependencies?.[pkg] ??
+      manifest?.peerDependencies?.[pkg] ??
+      (manifest?.optionalDependencies as Record<string, string> | undefined)?.[pkg]
+    );
+  }
+
+  /** A `.json` imported by a JS module is served as an ESM (`export default …`);
+   *  mark its URL with `?module` so `fetch` wraps it instead of serving raw JSON. */
+  function jsonModuleUrl(url: string, id: string): string {
+    return id.endsWith(".json") ? `${url}?module` : url;
   }
 
   /** Resolve a relative specifier against an importer id to a concrete cache id. */
@@ -213,24 +244,40 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
     return out;
   }
 
-  /** Serve a file's raw bytes (non-module resources, or `?raw`). */
-  async function serveRaw(id: string, asOctet: boolean): Promise<Response> {
-    let bytes: Uint8Array;
+  /** Resolve a file id (project `~/…` or `{pkg}@{ver}/{file}`) to its raw bytes. */
+  async function rawBytes(id: string): Promise<Uint8Array | undefined> {
     if (id.startsWith("~/")) {
       const path = `/${id.slice(2)}`;
-      if (!project || !(await project.exists(path))) return new Response(null, { status: 404 });
-      bytes = await collect(project.read(path));
-    } else {
-      const m = id.match(/^((?:@[^/]+\/)?[^/]+@[^/]+)\/(.+)$/);
-      if (!m) return new Response(null, { status: 404 });
-      await ensureRawByKey(m[1]);
-      const file = await resolveRawFile(m[1], m[2]);
-      if (!(await cache.exists(`/raw/${m[1]}/${file}`))) return new Response(null, { status: 404 });
-      bytes = await collect(cache.read(`/raw/${m[1]}/${file}`));
+      if (!project || !(await project.exists(path))) return undefined;
+      return collect(project.read(path));
     }
+    const m = id.match(/^((?:@[^/]+\/)?[^/]+@[^/]+)\/(.+)$/);
+    if (!m) return undefined;
+    await ensureRawByKey(m[1]);
+    const file = await resolveRawFile(m[1], m[2]);
+    if (!(await cache.exists(`/raw/${m[1]}/${file}`))) return undefined;
+    return collect(cache.read(`/raw/${m[1]}/${file}`));
+  }
+
+  /** Serve a file's raw bytes (non-module resources, or `?raw`). */
+  async function serveRaw(id: string, asOctet: boolean): Promise<Response> {
+    const bytes = await rawBytes(id);
+    if (!bytes) return new Response(null, { status: 404 });
     return new Response(bytes as BodyInit, {
       status: 200,
       headers: { "content-type": asOctet ? "application/octet-stream" : contentType(id) },
+    });
+  }
+
+  /** Serve a JSON file as an ESM module (`export default …`) — how a JS `import`
+   *  of a `.json` is satisfied without relying on browser JSON-import attributes. */
+  async function serveJsonModule(id: string): Promise<Response> {
+    const bytes = await rawBytes(id);
+    if (!bytes) return new Response(null, { status: 404 });
+    const json = new TextDecoder().decode(bytes);
+    return new Response(`export default ${json};`, {
+      status: 200,
+      headers: { "content-type": "text/javascript" },
     });
   }
 
@@ -310,8 +357,12 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
       const url = new URL(request.url);
       const id = idFromPath(url.pathname);
       try {
-        // `?raw` → octet-stream; non-module files (json/md/css/…) → raw + guessed type.
+        // `?raw` → octet-stream; `?module` on a `.json` → ESM wrapper; non-module
+        // files (json/md/css/…) → raw + guessed type.
         if (url.searchParams.has("raw")) return await serveRaw(id, true);
+        if (url.searchParams.has("module") && id.endsWith(".json")) {
+          return await serveJsonModule(id);
+        }
         if (!isModuleFile(id)) return await serveRaw(id, false);
         // module files → transform to ESM.
         const body = (await cache.exists(`${tRoot}/${id}`))

@@ -94,6 +94,66 @@ describe("version dedupe & lockfile", () => {
   });
 });
 
+/** A source with per-version files + declared dependencies. */
+function nestSource(
+  pkgs: Record<string, Record<string, { files: Record<string, string>; deps?: Record<string, string> }>>,
+): Source {
+  return {
+    matches: (ref) => "pkg" in ref && ref.pkg in pkgs,
+    async load(ref) {
+      if (!("pkg" in ref)) throw new Error("bad ref");
+      const vers = Object.keys(pkgs[ref.pkg]);
+      const spec = ref.version ?? "*";
+      const version = semver.maxSatisfying(vers, semver.validRange(spec) ? spec : "*") ?? spec;
+      const entry = pkgs[ref.pkg][version];
+      const files = new MemFilesApi();
+      for (const [p, c] of Object.entries(entry.files)) await writeText(files, `/${p}`, c);
+      return {
+        name: ref.pkg,
+        version,
+        files,
+        manifest: {
+          name: ref.pkg,
+          version,
+          type: "module",
+          main: "./index.js",
+          dependencies: entry.deps ?? {},
+        } as PackageManifest,
+      };
+    },
+  };
+}
+
+const NEST = {
+  self: {
+    "1.0.0": { files: { "index.js": `export const v = "1.0.0";`, "sub/inner.js": `export { v } from "self";` } },
+    "2.0.0": { files: { "index.js": `export const v = "2.0.0";` } },
+  },
+  app: {
+    "1.0.0": { files: { "index.js": `export { v } from "lib";` }, deps: { lib: "^1.0.0" } },
+  },
+  lib: {
+    "1.2.0": { files: { "index.js": `export const v = "1.2.0";` } },
+    "2.1.0": { files: { "index.js": `export const v = "2.1.0";` } },
+  },
+};
+
+describe("importer-context version resolution", () => {
+  it("resolves a package's self-reference to its own version (not latest)", async () => {
+    const s = newModuleServer({ cache: new MemFilesApi(), sources: [nestSource(NEST)] });
+    const body = await (await s.fetch(req("/self@1.0.0/sub/inner.js"))).text();
+    expect(body).toContain(`from "../index.js"`); // self@1.0.0's own index, relative
+    expect(body).not.toContain("self@2.0.0"); // not the global latest
+  });
+
+  it("resolves a dependency to the importer's declared range (not latest)", async () => {
+    const s = newModuleServer({ cache: new MemFilesApi(), sources: [nestSource(NEST)] });
+    const body = await (await s.fetch(req("/app@1.0.0/index.js"))).text();
+    expect(body).toContain(`from "../lib@1.2.0/index.js"`); // app's ^1.0.0 → 1.2.0
+    expect(body).not.toContain("lib@2.1.0"); // not the global latest
+  });
+});
+
 describe("lazy download-on-request (no install step)", () => {
   it("a direct fetch of a never-primed package downloads it once, then caches", async () => {
     const counter = { n: 0 };

@@ -62,6 +62,14 @@ const PKGS: Record<string, Pkg> = {
     manifest: { type: "module", main: "./index.js" },
     files: { "index.js": `import { sep } from "node:path";\nexport const s = sep;` },
   },
+  relimp: {
+    version: "1.0.0",
+    manifest: { type: "module", main: "./lib/index.js" },
+    files: {
+      "lib/index.js": `import sub from "./sub";\nimport pkg from "../package.json";\nexport const y = sub + pkg.name;`,
+      "lib/sub.js": `export default 42;`,
+    },
+  },
 };
 
 const mk = (opts: Partial<Parameters<typeof newModuleServer>[0]> = {}) =>
@@ -100,6 +108,36 @@ describe("newModuleServer", () => {
     const body = await (await s.fetch(req("/usenode@1.0.0/index.js"))).text();
     expect(body).toContain(`from "../@jspm/core@2.1.0/nodelibs/browser/path.js"`);
     expect(body).not.toContain(`from "node:path"`);
+  });
+
+  it("resolves an extensionless relative import to a `.js` module URL (not raw octet-stream)", async () => {
+    const s = mk();
+    const parent = await (await s.fetch(req("/relimp@1.0.0/lib/index.js"))).text();
+    // The rewritten specifier must carry the resolved extension...
+    expect(parent).toContain(`from "./sub.js"`);
+    expect(parent).not.toContain(`from "./sub"`);
+    // ...so the browser fetches a module URL that is transformed and JS-typed.
+    const child = await s.fetch(req("/relimp@1.0.0/lib/sub.js"));
+    expect(child.headers.get("content-type")).toBe("text/javascript");
+    expect(await child.text()).toContain("export default 42");
+  });
+
+  it("serves a JS-imported .json as an ESM module (?module), raw JSON otherwise", async () => {
+    const s = mk();
+    // The importer's `.json` specifier is marked `?module`...
+    const parent = await (await s.fetch(req("/relimp@1.0.0/lib/index.js"))).text();
+    expect(parent).toContain(`from "../package.json?module"`);
+    // ...and that URL is served as a JS module, not application/json.
+    const mod = await s.fetch(req("/relimp@1.0.0/package.json?module"));
+    expect(mod.headers.get("content-type")).toBe("text/javascript");
+    const body = await mod.text();
+    expect(body).toContain("export default");
+    expect(JSON.parse(body.replace(/^export default\s*/, "").replace(/;\s*$/, "")).name).toBe(
+      "relimp",
+    );
+    // The bare URL (no marker) still serves raw JSON data.
+    const raw = await s.fetch(req("/relimp@1.0.0/package.json"));
+    expect(raw.headers.get("content-type")).toBe("application/json");
   });
 
   it("mounts under a basePath: URLs carry the prefix and requests resolve", async () => {
