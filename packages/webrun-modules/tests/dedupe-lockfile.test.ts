@@ -83,6 +83,22 @@ describe("version dedupe & lockfile", () => {
   });
 });
 
+describe("lazy download-on-request (no install step)", () => {
+  it("a direct fetch of a never-primed package downloads it once, then caches", async () => {
+    const counter = { n: 0 };
+    const s = newModuleServer({ cache: new MemFilesApi(), sources: [multiSource(LIB, counter)] });
+    // No resolve, no prime — just fetch. It must download + transform + serve.
+    const first = await s.fetch(req("/app@1.0.0/index.js"));
+    expect(first.status).toBe(200);
+    expect(first.headers.get("content-type")).toBe("text/javascript");
+    expect(counter.n).toBeGreaterThan(0); // the package was fetched on demand
+    const loadsAfterFirst = counter.n;
+    // A second request is served from cache — no new source load.
+    await s.fetch(req("/app@1.0.0/index.js"));
+    expect(counter.n).toBe(loadsAfterFirst);
+  });
+});
+
 describe("isomorphic parity (NodeFilesApi real disk)", () => {
   it("the same server code works over a real-disk FilesApi cache", async () => {
     const dir = await mkdtemp(join(tmpdir(), "wm-node-"));
