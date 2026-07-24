@@ -65,14 +65,24 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
     return JSON.parse(await readText(cache, `/raw/${pkgKey}/package.json`));
   }
 
-  /** Persist a loaded package's files under `/raw/{name}@{version}/…` (idempotent). */
-  async function cacheRaw(name: string, version: string, files: FilesApi): Promise<void> {
+  /** Persist a loaded package's files under `/raw/{name}@{version}/…` (idempotent).
+   *  The manifest is written as `package.json` (the authority — a Source's files
+   *  are not required to include one). */
+  async function cacheRaw(
+    name: string,
+    version: string,
+    files: FilesApi,
+    manifest: PackageManifest,
+  ): Promise<void> {
     const key = `${name}@${version}`;
     if (await cache.exists(`/raw/${key}/package.json`)) return;
     for await (const info of files.list("/", { recursive: true })) {
       if (info.kind === "file") {
         await cache.write(`/raw/${key}${info.path}`, [await collect(files.read(info.path))]);
       }
+    }
+    if (!(await cache.exists(`/raw/${key}/package.json`))) {
+      await writeText(cache, `/raw/${key}/package.json`, JSON.stringify(manifest));
     }
   }
 
@@ -82,7 +92,7 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
     const at = pkgKey.lastIndexOf("@");
     const ref = { pkg: pkgKey.slice(0, at), version: pkgKey.slice(at + 1) };
     const loaded = await matchSource(ref).load(ref);
-    await cacheRaw(loaded.name, loaded.version, loaded.files);
+    await cacheRaw(loaded.name, loaded.version, loaded.files, loaded.manifest);
   }
 
   /** Ensure a package's raw files + manifest are cached; return its pinned id. */
@@ -101,7 +111,7 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
     } else {
       const loaded = await matchSource(ref).load({ pkg: name, version: ref.version });
       version = loaded.version;
-      await cacheRaw(name, version, loaded.files);
+      await cacheRaw(name, version, loaded.files, loaded.manifest);
       manifest = loaded.manifest;
       if (!locked) lock[name] = version;
     }
