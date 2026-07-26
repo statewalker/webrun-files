@@ -40,13 +40,25 @@ export function newCjsTransform(): Transform {
       });
 
       let names: string[] = [];
+      let reexports: string[] = [];
       try {
-        names = parse(file.source).exports.filter((n) => IDENT_RE.test(n) && n !== "default");
+        const parsed = parse(file.source);
+        names = parsed.exports.filter((n) => IDENT_RE.test(n) && n !== "default");
+        reexports = parsed.reexports;
       } catch {
         names = []; // lexer can't parse → default-only interop
       }
       const namedExports = [...new Set(names)]
         .map((n) => `export const ${n} = module.exports.${n};`)
+        .join("\n");
+      // A `module.exports = require("x")` entry (e.g. React's `index.js`) has no
+      // own statically-lexable names — only a reexport. Surface x's named exports
+      // by re-exporting its already-served namespace, so `import { StrictMode }
+      // from "react"` (and the automatic-JSX `jsxDEV` import) resolve. `export *`
+      // never re-exports `default`, so the `export default module.exports` above
+      // stays authoritative.
+      const reexportLines = [...new Set(reexports)]
+        .map((spec) => `export * from ${JSON.stringify(rewrite(spec))};`)
         .join("\n");
 
       const dir = file.path.replace(/\/[^/]*$/, "");
@@ -64,6 +76,7 @@ export function newCjsTransform(): Transform {
         `}).call(module.exports, module, module.exports, require, ${JSON.stringify(file.path)}, ${JSON.stringify(dir)});`,
         `export default module.exports;`,
         namedExports,
+        reexportLines,
       ]
         .filter(Boolean)
         .join("\n");

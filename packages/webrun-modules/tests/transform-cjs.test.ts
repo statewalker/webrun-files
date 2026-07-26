@@ -46,6 +46,28 @@ describe("newCjsTransform (executed)", () => {
     expect(leaf.tag).toBe("leaf");
   });
 
+  it("surfaces named exports through a `module.exports = require(...)` reexport", async () => {
+    // React's entry (`module.exports = require('./cjs/react.development.js')`) is
+    // this shape: the entry has no own exports, only a reexport. The interop must
+    // follow it so `import { StrictMode } from "react"` resolves.
+    const dir = await build({
+      "impl.mjs": {
+        path: "impl.js",
+        format: "cjs",
+        source: `exports.alpha = 1;\nexports.beta = 2;`,
+      },
+      "reexporter.mjs": {
+        path: "reexporter.js",
+        format: "cjs",
+        source: `module.exports = require("./impl");`,
+      },
+    });
+    const mod = await import(pathToFileURL(join(dir, "reexporter.mjs")).href);
+    expect(mod.alpha).toBe(1); // named export surfaced via the reexport
+    expect(mod.beta).toBe(2);
+    expect(mod.default).toEqual({ alpha: 1, beta: 2 }); // default still the object
+  });
+
   it("throws on a computed require at execution time", async () => {
     const dir = await build({
       "bad.mjs": {
