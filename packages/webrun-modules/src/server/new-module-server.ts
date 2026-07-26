@@ -48,6 +48,10 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
   const transformer = options.transform ?? newDefaultTransform();
   const target = options.target ?? "browser";
   const basePath = normalizeBase(options.basePath ?? "/");
+  // Optional prefix (relative to `basePath`) for external package URLs, so npm
+  // deps can be isolated under e.g. `/deps/` while authored project files stay at
+  // `~/`. Default "" ⇒ packages served alongside project files (unchanged).
+  const depsPrefix = normalizeDeps(options.depsPath ?? "");
   const lock: Lockfile = { ...(options.lock ?? {}) };
   const tRoot = `/t/${target}`;
 
@@ -61,11 +65,16 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
     return ready;
   };
 
-  const urlFor = (id: string) => basePath + id;
+  // Project ids (`~/…`) are served verbatim; package ids get the `depsPrefix`.
+  // `urlPath` is the site-relative form (after `basePath`) and the space that
+  // import URLs are made relative in, so cross-prefix imports resolve correctly.
+  const urlPath = (id: string) => (id.startsWith("~/") ? id : depsPrefix + id);
+  const urlFor = (id: string) => basePath + urlPath(id);
   const idFromPath = (pathname: string): string => {
-    const p = pathname.startsWith(basePath)
+    let p = pathname.startsWith(basePath)
       ? pathname.slice(basePath.length)
       : pathname.replace(/^\//, "");
+    if (depsPrefix && p.startsWith(depsPrefix)) p = p.slice(depsPrefix.length);
     return p;
   };
 
@@ -146,14 +155,14 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
     if (builtin) {
       if ("external" in builtin) return { url: builtin.external };
       const t = await ensurePackage(builtin.ref);
-      return { url: relativeUrl(fromId, t.id), id: t.id };
+      return { url: relativeUrl(urlPath(fromId), urlPath(t.id)), id: t.id };
     }
     if (spec.startsWith(".")) {
       const id = await resolveRelativeId(fromId, spec);
       // Emit the *extension-resolved* relative URL (`./x` → `./x.js`), not the raw
       // specifier: the browser fetches this URL verbatim, and only a recognized
       // module extension makes the server transform it + serve `text/javascript`.
-      return { url: jsonModuleUrl(relativeUrl(fromId, id), id), id };
+      return { url: jsonModuleUrl(relativeUrl(urlPath(fromId), urlPath(id)), id), id };
     }
     const { pkg, subpath } = parseSpecifier(spec);
     // Resolve the version from the *importing package's* context (Node semantics):
@@ -162,7 +171,7 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
     // undeclared (transitive) deps.
     const version = await importerVersion(pkg, fromId);
     const t = await ensurePackage({ pkg, version, subpath });
-    return { url: jsonModuleUrl(relativeUrl(fromId, t.id), t.id), id: t.id };
+    return { url: jsonModuleUrl(relativeUrl(urlPath(fromId), urlPath(t.id)), t.id), id: t.id };
   }
 
   /** The version constraint a bare specifier should resolve to, from the importer's
@@ -380,6 +389,14 @@ function normalizeBase(base: string): string {
   let b = base.startsWith("/") ? base : `/${base}`;
   if (!b.endsWith("/")) b += "/";
   return b;
+}
+
+// The deps prefix is relative to `basePath` — no leading slash, trailing slash
+// when non-empty; "" means "no prefix" (packages served alongside project files).
+function normalizeDeps(prefix: string): string {
+  if (!prefix) return "";
+  const s = prefix.replace(/^\/+/, "").replace(/\/+$/, "");
+  return s ? `${s}/` : "";
 }
 
 async function collect(chunks: AsyncIterable<Uint8Array>): Promise<Uint8Array> {

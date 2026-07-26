@@ -150,6 +150,35 @@ describe("newModuleServer", () => {
     expect(await res.text()).toContain(`from "../shout@2.3.1/index.js"`);
   });
 
+  it("isolates external packages under depsPath while project files stay at ~/", async () => {
+    const projectFs = new MemFilesApi();
+    await writeText(
+      projectFs,
+      "/client/main.ts",
+      `import { hi } from "greet";\nexport const out = hi("x");`,
+    );
+    const s = mk({ project: projectFs, depsPath: "/deps/" });
+
+    // project file served at ~/ (no deps prefix)
+    const pr = await s.resolve({ url: "/~/client/main.ts" });
+    expect(pr.url).toBe("/~/client/main.ts");
+    // its bare import is rewritten across the two prefixes: ~/client/ → deps/greet@…
+    const main = await (await s.fetch(req("/~/client/main.ts"))).text();
+    expect(main).toContain(`from "../../deps/greet@1.0.0/index.js"`);
+    expect(main).not.toContain(`from "greet"`);
+
+    // packages resolve + serve under /deps/
+    const gr = await s.resolve({ pkg: "greet" });
+    expect(gr.url).toBe("/deps/greet@1.0.0/index.js");
+    const greet = await s.fetch(req("/deps/greet@1.0.0/index.js"));
+    expect(greet.status).toBe(200);
+    // package→package import stays within /deps/ (relative, unchanged)
+    expect(await greet.text()).toContain(`from "../shout@2.3.1/index.js"`);
+
+    // listResources carries the deps prefix for packages
+    expect(await s.listResources({ pkg: "greet" })).toContain("/deps/greet@1.0.0/index.js");
+  });
+
   it("serves raw untransformed bytes with ?raw, distinct from transformed", async () => {
     const s = mk();
     await s.resolve({ pkg: "greet" }); // warm the raw cache

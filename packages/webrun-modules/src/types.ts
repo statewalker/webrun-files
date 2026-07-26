@@ -97,6 +97,10 @@ export interface ModuleServerOptions {
   lock?: Lockfile;
   /** Mount prefix, e.g. `"/deps/v1/"`. Defaults to `"/"`. */
   basePath?: string;
+  /** Prefix (relative to `basePath`) for external package URLs, isolating npm
+   *  deps under e.g. `"deps/"` while authored project files stay at `~/`.
+   *  Defaults to `""` — packages served alongside project files. */
+  depsPath?: string;
 }
 
 export interface ModuleServer {
