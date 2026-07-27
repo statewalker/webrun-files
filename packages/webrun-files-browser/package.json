@@ -1,6 +1,6 @@
 {
   "name": "@statewalker/webrun-files-browser",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "private": false,
   "type": "module",
   "description": "Browser File System Access API implementation for webrun-files",
@@ -35,7 +35,7 @@
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
-    "@statewalker/webrun-files": "workspace:*"
+    "@statewalker/webrun-files": "workspace:^"
   },
   "devDependencies": {
     "@statewalker/webrun-files-tests": "workspace:*",
