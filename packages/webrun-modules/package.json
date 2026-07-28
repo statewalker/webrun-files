@@ -1,6 +1,6 @@
 {
   "name": "@statewalker/webrun-modules",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": false,
   "type": "module",
   "description": "Isomorphic module/dependency server: resolve + download + transform npm and authored TS/JS into browser-runnable ESM served from a local FilesApi cache, with no runtime CDN dependency",
