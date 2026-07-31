@@ -294,13 +294,23 @@ transform would infer.
 
 `.css` files are processed, not just passed through — by default with
 [Lightning CSS](https://lightningcss.dev/) (nesting flattened, vendor-prefixed
-per its default `targets`); swap in your own with the `css` option:
+against a fixed, conservative modern-browser baseline). `newLightningCssTransform()`
+takes no arguments — it is not configurable. To customize processing (different
+targets, a different engine, Sass, PostCSS, …), implement your own `CssTransform`
+and pass it as the `css` option; the pluggable seam is the override point:
 
 ```ts
-import { newDefaultCssTransform, newLightningCssTransform } from "@statewalker/webrun-modules";
+import { newDefaultCssTransform } from "@statewalker/webrun-modules";
 import type { CssTransform } from "@statewalker/webrun-modules";
 
-newModuleServer({ cache, css: newLightningCssTransform(/* targets, … */) });
+const myCss: CssTransform = {
+  async transform(file, rewrite) {
+    // file = { path, source, cssModules }; call rewrite(spec) per @import/url()
+    return /* processed CSS */ { code: file.source, exports: {} };
+  },
+};
+
+newModuleServer({ cache, css: myCss }); // default is newDefaultCssTransform() (Lightning CSS)
 ```
 
 Two ways to consume a stylesheet:
