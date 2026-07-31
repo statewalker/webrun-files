@@ -343,13 +343,47 @@ Also exported: `untarTgz(bytes)` (isomorphic npm-tarball unpacker),
   would take over.
 - Dedupe is greedy (first-resolved version wins per name), not a full constraint
   hoist.
-- **Free Node globals under `target: "browser"`.** `require("process")` is
-  polyfilled, but packages that reference `process`, `Buffer`, or `global` as bare
-  *free variables* (e.g. React's `process.env.NODE_ENV`) need the page to define
-  them — set `globalThis.process = { env: { NODE_ENV: "development" } }` (as
-  esbuild/Vite do via a define). Under `target: "node"` they resolve natively.
+- **Free Node globals under `target: "browser"`** (`process.env.NODE_ENV` and
+  friends) are solved via the `~deps` proxy layer below — no page-side `define`
+  needed.
 - Bundling/copying the resolved graph into a distributable tree, `.d.ts` type
   serving, package lifecycle scripts, and HMR are out of scope.
+- **`import * as X` of a host-provided module** can't enumerate the instance's
+  keys as named bindings (an ESM proxy can't introspect an arbitrary runtime
+  object) — only `import X from "…"` (default = the instance itself, covering
+  property access) and explicitly-named imports are supported for `host`
+  bindings. Ordinary (non-provided) npm/local deps have no such limit —
+  `export *` re-exports the real module.
+
+## The `~deps` proxy layer
+
+Every external/free-global reference a module makes is rewritten to import a
+small **co-located proxy** (`./~deps/{module}/deps.{name}.js`) instead of the
+bare specifier directly. The module's own bytes are therefore always portable —
+same relative imports whether the target is `local`, `host`, or `cdn` — and the
+per-import proxy is what actually resolves the binding:
+
+- **`provided`** — names bound to **live host instances** (e.g. the page's own
+  `react`, or an app-defined class used as a `Map` key elsewhere) instead of a
+  downloaded copy. Pass a plain `Record<string, unknown>` (copied into the
+  shared registry at construction) or a live `HostRegistry` (`newHostRegistry()`)
+  — passing the instance itself means `.set(name, value)` calls made **after**
+  construction (late registration) are still visible, because the server treats
+  that instance as `globalThis.__webrunHostRegistry`. Every proxy for a provided
+  name reads `globalThis.__webrunHostRegistry.get(name)`, so all importers of
+  `react` (or any provided key, including a class used as an adapter-map key)
+  observe the **same reference** — real object identity, not a copy.
+- **`globals`** — extends/overrides the injectable free-variable allowlist
+  (`process`, `Buffer`, `global`, `globalThis`, `__dirname`, `__filename` by
+  default). A free variable *not* on the allowlist (e.g. `console`) is left as a
+  native reference, never proxied.
+- **`resolveEndpoint`** — swaps the linker that decides how a non-provided bare
+  specifier binds: `local` (same-origin, served from this server's own cache —
+  the default, and the **only** kind the default resolver ever emits: no
+  runtime CDN dependency), `host` (provided names), `cdn` (an external URL), or
+  `inline` (bundled source verbatim). Supply your own `EndpointResolver` to opt
+  into `cdn`/`inline` — swapping it changes only the generated proxy bodies, the
+  module's own imports never change.
 
 ## License
 

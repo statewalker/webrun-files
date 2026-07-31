@@ -146,4 +146,174 @@ describe("~deps proxy layer", () => {
     ).text();
     expect(subProxy).toContain('globalThis.__webrunHostRegistry.get("react/jsx-runtime")');
   });
+
+  it("two modules importing a provided react see the SAME instance (identity)", async () => {
+    const instance = { useState: () => 0, tag: Symbol("react") };
+    const registry = newHostRegistry({ react: instance });
+    const p = new MemFilesApi();
+    await p.write("/a.ts", [
+      new TextEncoder().encode(`import React from "react"; export const A = React;`),
+    ]);
+    await p.write("/b.ts", [
+      new TextEncoder().encode(`import { useState } from "react"; export const B = useState;`),
+    ]);
+    const server = newModuleServer({ cache: new MemFilesApi(), project: p, provided: registry });
+    await server.prime({ url: "/a.ts" });
+    await server.prime({ url: "/b.ts" });
+    // Both proxies read the one registry entry → identity holds at runtime.
+    const pa = await (
+      await server.fetch(new Request("http://h/~/~deps/a.ts/deps.react.js"))
+    ).text();
+    const pb = await (
+      await server.fetch(new Request("http://h/~/~deps/b.ts/deps.react.js"))
+    ).text();
+    expect(pa).toContain('globalThis.__webrunHostRegistry.get("react")');
+    expect(pb).toContain('globalThis.__webrunHostRegistry.get("react")');
+    // No npm react was fetched (identity, not a copy):
+    const files = await server.listResources({ url: "/a.ts" });
+    expect(files.some((u) => u.includes("react@"))).toBe(false);
+  });
+
+  it("class-as-adapter-key: a provided class is the same reference for two importers", async () => {
+    class K {}
+    const registry = newHostRegistry({ "@app/keys": { K } });
+    const p = new MemFilesApi();
+    await p.write("/a.ts", [
+      new TextEncoder().encode(`import { K } from "@app/keys"; export const A = K;`),
+    ]);
+    await p.write("/b.ts", [
+      new TextEncoder().encode(`import { K } from "@app/keys"; export const B = K;`),
+    ]);
+    const server = newModuleServer({ cache: new MemFilesApi(), project: p, provided: registry });
+    await server.fetch(new Request("http://h/~/a.ts")); // generates a.ts's proxy
+    await server.fetch(new Request("http://h/~/b.ts")); // generates b.ts's proxy
+    const pa = await (
+      await server.fetch(new Request("http://h/~/~deps/a.ts/deps.@app__keys.js"))
+    ).text();
+    const pb = await (
+      await server.fetch(new Request("http://h/~/~deps/b.ts/deps.@app__keys.js"))
+    ).text();
+    expect(pa).toContain('globalThis.__webrunHostRegistry.get("@app/keys")');
+    expect(pa).toContain("export const K = __m.K");
+    expect(pb).toContain('globalThis.__webrunHostRegistry.get("@app/keys")');
+    expect(pb).toContain("export const K = __m.K");
+  });
+
+  it("namespace import of an ordinary npm dep works via export *", async () => {
+    const files = new MemFilesApi();
+    await files.write("/index.js", [
+      new TextEncoder().encode(`export const a = 1; export const b = 2;`),
+    ]);
+    await files.write("/package.json", [
+      new TextEncoder().encode(`{"name":"ns","version":"1.0.0"}`),
+    ]);
+    const source = {
+      matches: () => true,
+      load: async () => ({
+        name: "ns",
+        version: "1.0.0",
+        files,
+        manifest: { name: "ns", version: "1.0.0" },
+      }),
+    };
+    const p = new MemFilesApi();
+    await p.write("/app.ts", [
+      new TextEncoder().encode(`import * as ns from "ns"; export const v = ns;`),
+    ]);
+    const server = newModuleServer({
+      cache: new MemFilesApi(),
+      project: p,
+      sources: [source as never],
+    });
+    await server.fetch(new Request("http://h/~/app.ts")); // generates the proxy
+    const proxy = await (
+      await server.fetch(new Request("http://h/~/~deps/app.ts/deps.ns.js"))
+    ).text();
+    expect(proxy).toContain("export * from");
+  });
+
+  it("re-link: a custom resolver changes only the proxy body, not the module's own imports", async () => {
+    const src = `import x from "dep"; export const v = x;`;
+    const pA = new MemFilesApi();
+    await pA.write("/app.ts", [new TextEncoder().encode(src)]);
+    const pB = new MemFilesApi();
+    await pB.write("/app.ts", [new TextEncoder().encode(src)]);
+    const localish = {
+      matches: () => true,
+      load: async () => {
+        const f = new MemFilesApi();
+        await f.write("/index.js", [new TextEncoder().encode("export default 1;")]);
+        await f.write("/package.json", [
+          new TextEncoder().encode(`{"name":"dep","version":"1.0.0"}`),
+        ]);
+        return {
+          name: "dep",
+          version: "1.0.0",
+          files: f,
+          manifest: { name: "dep", version: "1.0.0" },
+        };
+      },
+    };
+    const sA = newModuleServer({
+      cache: new MemFilesApi(),
+      project: pA,
+      sources: [localish as never],
+    });
+    const cdnResolver = {
+      resolve: async (spec: string) => ({ kind: "cdn" as const, url: `https://esm.sh/${spec}` }),
+    };
+    const sB = newModuleServer({
+      cache: new MemFilesApi(),
+      project: pB,
+      sources: [localish as never],
+      resolveEndpoint: cdnResolver,
+    });
+    const codeA = await (await sA.fetch(new Request("http://h/~/app.ts"))).text();
+    const codeB = await (await sB.fetch(new Request("http://h/~/app.ts"))).text();
+    // The module is env-agnostic: it imports the SAME relative proxy path
+    // regardless of resolver — only the proxy body differs.
+    expect(codeA).toContain("./~deps/app.ts/deps.dep.js");
+    expect(codeB).toContain("./~deps/app.ts/deps.dep.js");
+    const proxyB = await (
+      await sB.fetch(new Request("http://h/~/~deps/app.ts/deps.dep.js"))
+    ).text();
+    expect(proxyB).toContain("https://esm.sh/dep");
+  });
+
+  it("env-agnostic output: every import in a transformed module is relative or ./~deps/*", async () => {
+    const registry = newHostRegistry({ react: { useState: () => 0 } });
+    const files = new MemFilesApi();
+    await files.write("/index.js", [new TextEncoder().encode(`export const hi = 1;`)]);
+    await files.write("/package.json", [
+      new TextEncoder().encode(`{"name":"dep","version":"1.0.0"}`),
+    ]);
+    const source = {
+      matches: () => true,
+      load: async () => ({
+        name: "dep",
+        version: "1.0.0",
+        files,
+        manifest: { name: "dep", version: "1.0.0" },
+      }),
+    };
+    const p = new MemFilesApi();
+    await p.write("/lib.ts", [new TextEncoder().encode(`export const lib = 1;`)]);
+    await p.write("/app.ts", [
+      new TextEncoder().encode(
+        `import React from "react";\nimport { hi } from "dep";\nimport { lib } from "./lib.ts";\nexport const v = [React, hi, lib];`,
+      ),
+    ]);
+    const server = newModuleServer({
+      cache: new MemFilesApi(),
+      project: p,
+      provided: registry,
+      sources: [source as never],
+    });
+    const code = await (await server.fetch(new Request("http://h/~/app.ts"))).text();
+    const specifiers = [...code.matchAll(/from\s+"([^"]+)"/g)].map((m) => m[1]);
+    expect(specifiers.length).toBeGreaterThan(0);
+    for (const spec of specifiers) {
+      expect(spec.startsWith(".")).toBe(true); // relative — no bare specifier, no absolute/CDN URL
+    }
+  });
 });
