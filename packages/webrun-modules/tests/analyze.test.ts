@@ -39,3 +39,20 @@ describe("analyze (esm/ts/tsx)", () => {
     expect(d.exports).toContain("b");
   });
 });
+
+describe("analyze (cjs)", () => {
+  it("collects require specifiers, lexed exports, and free globals", async () => {
+    const d = await analyze(
+      [
+        `const path = require("path");`,
+        `const { x } = require("dep");`,
+        `exports.foo = 1;`,
+        `module.exports.bar = process.env.NODE_ENV;`,
+      ].join("\n"),
+      "cjs",
+    );
+    expect(Object.keys(d.imports)).toEqual(expect.arrayContaining(["path", "dep"]));
+    expect(d.exports).toEqual(expect.arrayContaining(["foo", "bar"]));
+    expect(d.imports[""].names).toContain("process");
+  });
+});

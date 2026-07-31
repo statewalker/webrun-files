@@ -1,7 +1,11 @@
 import { parse as acornParse } from "acorn";
 import attachGlobals from "acorn-globals";
+import { init as initCjs, parse as parseCjs } from "cjs-module-lexer";
 import type { ModuleDescriptor, ModuleImport, SourceFormat } from "../types.js";
 import { toJs } from "./to-js.js";
+
+let cjsReady: Promise<unknown> | undefined;
+const REQUIRE_RE = /require\(\s*(['"])((?:(?!\1)[^\\]|\\.)*)\1\s*\)/g;
 
 /** The parser seam. acorn baseline (pure-JS, isomorphic); oxc-wasm may replace
  *  this behind the same signature once the spike validates it. Exported so the
@@ -25,6 +29,8 @@ function emptyImport(): ModuleImport {
  * `acorn-globals` (scope-aware) and recorded under the reserved `""` key.
  */
 export async function analyze(source: string, format: SourceFormat): Promise<ModuleDescriptor> {
+  if (format === "cjs") return analyzeCjs(source);
+
   const js = toJs(source, format);
   const ast = parseEsmModule(js);
   const imports: Record<string, ModuleImport> = {};
@@ -80,6 +86,40 @@ export async function analyze(source: string, format: SourceFormat): Promise<Mod
     };
 
   return { imports, exports: [...exports] };
+}
+
+/**
+ * Analyze a CommonJS module: `require(...)` specifiers via regex, exports via
+ * `cjs-module-lexer` (best-effort static analysis of `exports.x`/`module.exports.x`),
+ * and free globals via `acorn-globals` (CJS parses as a script; `require`/`module`/
+ * `exports` surface as globals too, which is harmless — they aren't in the
+ * injectable allowlist).
+ */
+async function analyzeCjs(source: string): Promise<ModuleDescriptor> {
+  cjsReady ??= initCjs();
+  await cjsReady;
+  const imports: Record<string, ModuleImport> = {};
+  for (const m of source.matchAll(REQUIRE_RE)) imports[m[2]] ??= emptyImport();
+  let exports: string[] = [];
+  try {
+    const parsed = parseCjs(source);
+    exports = [...new Set([...parsed.exports, ...parsed.reexports])];
+    for (const spec of parsed.reexports) imports[spec] ??= emptyImport();
+  } catch {
+    exports = [];
+  }
+  try {
+    const free = (attachGlobals as unknown as (src: string) => { name: string }[])(source);
+    if (free.length)
+      imports[""] = {
+        names: [...new Set(free.map((g) => g.name))],
+        hasNamespace: false,
+        hasDefault: false,
+      };
+  } catch {
+    // unparseable as-is → no global injection (conservative)
+  }
+  return { imports, exports };
 }
 
 /** Pull exported binding names out of an `export const/let/var/function/class` decl. */
