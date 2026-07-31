@@ -69,6 +69,12 @@ export async function analyze(source: string, format: SourceFormat): Promise<Mod
     }
   }
 
+  // Dynamic `import("literal")` — an ImportExpression nested anywhere in the
+  // tree (not just at statement level), so a generic walk is needed. Only
+  // static string sources are captured (matches the old es-module-lexer
+  // behavior); a computed source like `import("./" + n)` is left out.
+  collectDynamicImports(ast.body, importFor);
+
   // Free (unbound) identifiers — scope-aware, so locally-declared names are
   // excluded. MUST pass sourceType:"module" or acorn-globals throws on the
   // import/export statements the stripped `js` still contains.
@@ -120,6 +126,27 @@ async function analyzeCjs(source: string): Promise<ModuleDescriptor> {
     // unparseable as-is → no global injection (conservative)
   }
   return { imports, exports };
+}
+
+/**
+ * Minimal recursive AST walk (no acorn-walk dependency) that finds every
+ * `ImportExpression` node with a string-literal `.source` and registers its
+ * specifier via `importFor`. Computed sources (non-`Literal`) are skipped.
+ */
+function collectDynamicImports(node: any, importFor: (spec: string) => unknown): void {
+  if (node == null || typeof node !== "object") return;
+  if (Array.isArray(node)) {
+    for (const item of node) collectDynamicImports(item, importFor);
+    return;
+  }
+  if (typeof node.type !== "string") return;
+  if (node.type === "ImportExpression" && node.source?.type === "Literal") {
+    if (typeof node.source.value === "string") importFor(node.source.value);
+  }
+  for (const key in node) {
+    if (key === "type") continue;
+    collectDynamicImports(node[key], importFor);
+  }
 }
 
 /** Pull exported binding names out of an `export const/let/var/function/class` decl. */

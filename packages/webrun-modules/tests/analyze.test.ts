@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { analyze } from "../src/transform/analyze.js";
+import { scanSpecifiers } from "../src/transform/scan.js";
 
 describe("analyze (esm/ts/tsx)", () => {
   it("collects named/default/namespace imports per specifier", async () => {
@@ -37,6 +38,30 @@ describe("analyze (esm/ts/tsx)", () => {
     const d = await analyze(`export { b } from "pkg/sub";\nexport * from "other";`, "esm");
     expect(Object.keys(d.imports)).toEqual(expect.arrayContaining(["pkg/sub", "other"]));
     expect(d.exports).toContain("b");
+  });
+
+  it("captures a dynamic import() with a static string specifier", async () => {
+    const d = await analyze(`const m = await import("dyn-pkg");\nexport const p = m;`, "esm");
+    expect(Object.keys(d.imports)).toContain("dyn-pkg");
+    expect(d.imports["dyn-pkg"]).toEqual({ names: [], hasNamespace: false, hasDefault: false });
+  });
+
+  it("skips a dynamic import() with a computed (non-literal) specifier", async () => {
+    const d = await analyze(
+      `const n = "x";\nconst m = await import("./" + n + ".js");\nexport const p = m;`,
+      "esm",
+    );
+    expect(Object.keys(d.imports).some((s) => s.includes(".js"))).toBe(false);
+  });
+});
+
+describe("scanSpecifiers (over analyze)", () => {
+  it("includes a dynamic import()'s static-string specifier", async () => {
+    const specs = await scanSpecifiers(
+      `const m = await import("dyn-pkg");\nexport const p = m;`,
+      "esm",
+    );
+    expect(specs).toContain("dyn-pkg");
   });
 });
 
