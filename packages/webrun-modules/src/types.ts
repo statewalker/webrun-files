@@ -148,6 +148,22 @@ export interface HostRegistry {
   has(name: string): boolean;
 }
 
+export type EndpointBinding =
+  | { kind: "local"; url: string }
+  | { kind: "host"; name: string }
+  | { kind: "cdn"; url: string }
+  | { kind: "inline"; code: string };
+
+export interface EndpointCtx {
+  importerId: string;
+  target: ModuleTarget;
+}
+
+/** Decides how one external specifier binds — the pluggable "linker". */
+export interface EndpointResolver {
+  resolve(specifier: string, ctx: EndpointCtx): Promise<EndpointBinding>;
+}
+
 /** Thrown when a package / version / subpath cannot be resolved. */
 export class ModuleResolveError extends Error {
   constructor(
