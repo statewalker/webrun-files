@@ -141,6 +141,13 @@ export interface ModuleServer {
   readonly lock: Lockfile;
 }
 
+/** Host-populated registry of live module instances bound via the `host` endpoint. */
+export interface HostRegistry {
+  set(name: string, instance: unknown): void;
+  get(name: string): unknown;
+  has(name: string): boolean;
+}
+
 /** Thrown when a package / version / subpath cannot be resolved. */
 export class ModuleResolveError extends Error {
   constructor(
