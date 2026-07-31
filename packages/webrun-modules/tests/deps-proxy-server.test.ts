@@ -41,7 +41,26 @@ describe("~deps proxy layer", () => {
     const g = await (
       await server.fetch(new Request("http://h/~/~deps/app.ts/deps.globals.js"))
     ).text();
-    expect(g).toContain("export const process");
+    expect(g).toContain("export { __g0 as process }"); // alias form (no TDZ)
+  });
+
+  it("emits a globals proxy for `globalThis`/`global` that loads without a TDZ ReferenceError", async () => {
+    const { p, ready } = projectWith(`export const a = global;\nexport const b = globalThis;`);
+    await ready;
+    const server = newModuleServer({ cache: new MemFilesApi(), project: p, target: "browser" });
+    await server.fetch(new Request("http://h/~/app.ts")); // generate the globals proxy
+    const g = await (
+      await server.fetch(new Request("http://h/~/~deps/app.ts/deps.globals.js"))
+    ).text();
+    // The self-referential `export const globalThis = globalThis` form is the bug.
+    expect(g).not.toContain("export const globalThis");
+    expect(g).not.toContain("export const global ");
+    expect(g).toContain("as globalThis }"); // alias
+    expect(g).toContain("as global }"); // alias
+    // Strongest check: the served module actually evaluates without throwing.
+    const mod = await import(`data:text/javascript,${encodeURIComponent(g)}`);
+    expect(mod.globalThis).toBe(globalThis);
+    expect(mod.global).toBe(globalThis);
   });
 
   it("routes an ordinary npm import through a local proxy (custom source, no network)", async () => {

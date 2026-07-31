@@ -268,7 +268,14 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
   async function ensureGlobalsProxy(gid: string, names: string[]): Promise<void> {
     const key = `${tRoot}/${gid}`;
     if (await cache.exists(key)) return;
-    const body = names.map((n) => `export const ${n} = ${globalsMap[n]};`).join("\n");
+    // Export via an internal alias (`const __gI = <expr>; export { __gI as name }`)
+    // rather than `export const name = <expr>`: the latter creates a module-scope
+    // lexical binding named `name`, so a global like `globalThis`/`global` whose
+    // expression is the bare `globalThis` token would resolve to itself in the TDZ
+    // → ReferenceError at load. The alias form leaves the RHS token as the real global.
+    const body = names
+      .map((n, i) => `const __g${i} = ${globalsMap[n]};\nexport { __g${i} as ${n} };`)
+      .join("\n");
     await writeText(cache, key, body);
   }
 

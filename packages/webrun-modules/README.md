@@ -373,6 +373,9 @@ per-import proxy is what actually resolves the binding:
   name reads `globalThis.__webrunHostRegistry.get(name)`, so all importers of
   `react` (or any provided key, including a class used as an adapter-map key)
   observe the **same reference** — real object identity, not a copy.
+  *Caveat:* a live `HostRegistry` installs **itself** as the single realm-global
+  registry, so in a multi-`newModuleServer` **Node** process the last one wins;
+  single-realm browser use is the intended case.
 - **`globals`** — extends/overrides the injectable free-variable allowlist
   (`process`, `Buffer`, `global`, `globalThis`, `__dirname`, `__filename` by
   default). A free variable *not* on the allowlist (e.g. `console`) is left as a

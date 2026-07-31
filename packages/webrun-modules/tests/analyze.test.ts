@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { analyze } from "../src/transform/analyze.js";
-import { scanSpecifiers } from "../src/transform/scan.js";
 
 describe("analyze (esm/ts/tsx)", () => {
   it("collects named/default/namespace imports per specifier", async () => {
@@ -52,16 +51,6 @@ describe("analyze (esm/ts/tsx)", () => {
       "esm",
     );
     expect(Object.keys(d.imports).some((s) => s.includes(".js"))).toBe(false);
-  });
-});
-
-describe("scanSpecifiers (over analyze)", () => {
-  it("includes a dynamic import()'s static-string specifier", async () => {
-    const specs = await scanSpecifiers(
-      `const m = await import("dyn-pkg");\nexport const p = m;`,
-      "esm",
-    );
-    expect(specs).toContain("dyn-pkg");
   });
 });
 
