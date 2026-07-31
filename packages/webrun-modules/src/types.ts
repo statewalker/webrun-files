@@ -127,6 +127,13 @@ export interface ModuleServerOptions {
    *  deps under e.g. `"deps/"` while authored project files stay at `~/`.
    *  Defaults to `""` — packages served alongside project files. */
   depsPath?: string;
+  /** Names bound to live host instances (react, platform classes). Record is
+   *  copied into the shared registry; a HostRegistry is held live. */
+  provided?: HostRegistry | Record<string, unknown>;
+  /** Extend/override the injectable free-global allowlist → module expressions. */
+  globals?: Record<string, string>;
+  /** Swap the linker. Default binds provided/globals to host, else local. */
+  resolveEndpoint?: EndpointResolver;
 }
 
 export interface ModuleServer {

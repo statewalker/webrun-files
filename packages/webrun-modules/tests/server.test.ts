@@ -84,13 +84,16 @@ describe("newModuleServer", () => {
     expect(r.target).toBe("browser");
   });
 
-  it("fetch serves transformed ESM with bare imports rewritten to relative local URLs", async () => {
+  it("fetch serves transformed ESM with bare imports rewritten to a ~deps proxy", async () => {
     const s = mk();
     const res = await s.fetch(req("/greet@1.0.0/index.js"));
     expect(res.headers.get("content-type")).toBe("text/javascript");
     const body = await res.text();
-    expect(body).toContain(`from "../shout@2.3.1/index.js"`);
+    expect(body).toContain(`from "./~deps/index.js/deps.shout.js"`); // proxy, not bare pkg
     expect(body).not.toContain(`from "shout"`); // no bare specifier survives
+    // the proxy re-exports the pinned local endpoint
+    const proxy = await (await s.fetch(req("/greet@1.0.0/~deps/index.js/deps.shout.js"))).text();
+    expect(proxy).toContain(`shout@2.3.1/index.js`);
   });
 
   it("prime warms the whole graph; served output is all same-origin (no CDN / bare)", async () => {
@@ -146,8 +149,10 @@ describe("newModuleServer", () => {
     expect(r.url).toBe("/deps/v1/greet@1.0.0/index.js");
     const res = await s.fetch(req("/deps/v1/greet@1.0.0/index.js"));
     expect(res.status).toBe(200);
-    // relative internal imports keep the same cached bytes portable across prefixes
-    expect(await res.text()).toContain(`from "../shout@2.3.1/index.js"`);
+    // relative internal imports (incl. the ~deps proxy) keep bytes portable across prefixes
+    expect(await res.text()).toContain(`from "./~deps/index.js/deps.shout.js"`);
+    const proxy = await s.fetch(req("/deps/v1/greet@1.0.0/~deps/index.js/deps.shout.js"));
+    expect(await proxy.text()).toContain(`shout@2.3.1/index.js`);
   });
 
   it("isolates external packages under depsPath while project files stay at ~/", async () => {
@@ -162,21 +167,30 @@ describe("newModuleServer", () => {
     // project file served at ~/ (no deps prefix)
     const pr = await s.resolve({ url: "/~/client/main.ts" });
     expect(pr.url).toBe("/~/client/main.ts");
-    // its bare import is rewritten across the two prefixes: ~/client/ → deps/greet@…
+    // its bare import is rewritten to a co-located ~deps proxy (proxy stays at ~/)
     const main = await (await s.fetch(req("/~/client/main.ts"))).text();
-    expect(main).toContain(`from "../../deps/greet@1.0.0/index.js"`);
+    expect(main).toContain(`from "./~deps/main.ts/deps.greet.js"`);
     expect(main).not.toContain(`from "greet"`);
+    // the proxy re-exports the endpoint served under /deps/ (crosses the prefix)
+    const greetProxy = await (await s.fetch(req("/~/client/~deps/main.ts/deps.greet.js"))).text();
+    expect(greetProxy).toContain(`deps/greet@1.0.0/index.js`);
 
     // packages resolve + serve under /deps/
     const gr = await s.resolve({ pkg: "greet" });
     expect(gr.url).toBe("/deps/greet@1.0.0/index.js");
     const greet = await s.fetch(req("/deps/greet@1.0.0/index.js"));
     expect(greet.status).toBe(200);
-    // package→package import stays within /deps/ (relative, unchanged)
-    expect(await greet.text()).toContain(`from "../shout@2.3.1/index.js"`);
+    // greet→shout also goes through a proxy; its endpoint stays within /deps/
+    expect(await greet.text()).toContain(`./~deps/index.js/deps.shout.js`);
+    const shoutProxy = await (
+      await s.fetch(req("/deps/greet@1.0.0/~deps/index.js/deps.shout.js"))
+    ).text();
+    expect(shoutProxy).toContain(`shout@2.3.1/index.js`);
 
-    // listResources carries the deps prefix for packages
-    expect(await s.listResources({ pkg: "greet" })).toContain("/deps/greet@1.0.0/index.js");
+    // listResources carries the deps prefix for the pinned endpoints
+    const res = await s.listResources({ pkg: "greet" });
+    expect(res).toContain("/deps/greet@1.0.0/index.js");
+    expect(res).toContain("/deps/shout@2.3.1/index.js");
   });
 
   it("serves raw untransformed bytes with ?raw, distinct from transformed", async () => {
@@ -203,8 +217,11 @@ describe("newModuleServer", () => {
     const r = await s.resolve({ url: "/src/app.ts" });
     expect(r.url).toBe("/~/src/app.ts");
     const body = await (await s.fetch(req("/~/src/app.ts"))).text();
-    expect(body).toContain(`from "../../greet@1.0.0/index.js"`);
+    expect(body).toContain(`from "./~deps/app.ts/deps.greet.js"`); // proxy indirection
+    expect(body).not.toContain(`from "greet"`);
     expect(body).not.toContain(": string"); // TS stripped
+    const proxy = await (await s.fetch(req("/~/src/~deps/app.ts/deps.greet.js"))).text();
+    expect(proxy).toContain(`greet@1.0.0/index.js`);
   });
 
   it("dedupes to one version per package name in the lock", async () => {
@@ -213,10 +230,14 @@ describe("newModuleServer", () => {
     expect(s.lock).toEqual({ greet: "1.0.0", shout: "2.3.1" });
   });
 
-  it("listResources returns the reachable module URLs from an entry", async () => {
+  it("listResources returns the reachable module URLs from an entry (incl. proxies)", async () => {
     const s = mk();
     const urls = await s.listResources({ pkg: "greet" });
-    expect(urls).toEqual(["/greet@1.0.0/index.js", "/shout@2.3.1/index.js"]);
+    expect(urls).toEqual([
+      "/greet@1.0.0/index.js",
+      "/greet@1.0.0/~deps/index.js/deps.shout.js",
+      "/shout@2.3.1/index.js",
+    ]);
   });
 
   it("listResources carries the basePath prefix", async () => {

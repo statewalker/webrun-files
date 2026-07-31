@@ -1,13 +1,19 @@
 import type { FilesApi } from "@statewalker/webrun-files";
 import { readText, writeText } from "@statewalker/webrun-files";
 import semver from "semver";
+import { newDefaultEndpointResolver } from "../deps/endpoint-resolver.js";
+import { globalHostRegistry, HOST_REGISTRY_KEY } from "../deps/host-registry.js";
+import { proxyBody, proxyId } from "../deps/proxy.js";
 import { resolveNodeBuiltin } from "../resolution/node-builtins.js";
 import { resolveEntry } from "../resolution/resolve-entry.js";
 import { npmRegistrySource } from "../sources/npm-registry-source.js";
+import { analyze } from "../transform/analyze.js";
 import { detectFormat, newDefaultTransform } from "../transform/index.js";
-import { scanSpecifiers } from "../transform/scan.js";
 import type {
+  EndpointBinding,
+  HostRegistry,
   Lockfile,
+  ModuleImport,
   ModuleRef,
   ModuleServer,
   ModuleServerOptions,
@@ -54,6 +60,51 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
   const depsPrefix = normalizeDeps(options.depsPath ?? "");
   const lock: Lockfile = { ...(options.lock ?? {}) };
   const tRoot = `/t/${target}`;
+
+  // Provided registry: a live `HostRegistry` BECOMES the realm-global so served
+  // proxies + `providedNames` read the same object (late `.set` calls stay
+  // visible); a plain Record is copied into the shared global registry.
+  if (options.provided && typeof (options.provided as HostRegistry).get === "function") {
+    (globalThis as Record<string, unknown>)[HOST_REGISTRY_KEY] = options.provided;
+  }
+  const registry = globalHostRegistry();
+  if (options.provided && typeof (options.provided as HostRegistry).get !== "function") {
+    for (const [k, v] of Object.entries(options.provided as Record<string, unknown>)) {
+      registry.set(k, v);
+    }
+  }
+  // A name is host-provided when the registry holds the exact name OR its package
+  // root (so both `react` and `react/jsx-runtime` bind to the `react` instance).
+  const providedNames = (name: string) =>
+    name !== "" && (registry.has(name) || registry.has(parseSpecifier(name).pkg));
+
+  const DEFAULT_GLOBALS: Record<string, string> = {
+    process:
+      target === "browser"
+        ? `globalThis.process ?? { env: { NODE_ENV: "production" } }`
+        : `globalThis.process`,
+    Buffer: `globalThis.Buffer`,
+    global: `globalThis`,
+    globalThis: `globalThis`,
+    __dirname: `"/"`,
+    __filename: `"/"`,
+  };
+  const globalsMap = { ...DEFAULT_GLOBALS, ...(options.globals ?? {}) };
+
+  // The linker: `host` for provided names, same-origin `local` (via the existing
+  // package resolution) otherwise. Globals are handled separately (prepend), so
+  // the `""` key never reaches the resolver.
+  const resolver =
+    options.resolveEndpoint ??
+    newDefaultEndpointResolver({
+      providedNames: (n) => (n === "" ? false : providedNames(n)),
+      localUrl: async (spec, ctx) => {
+        const { pkg, subpath } = parseSpecifier(spec);
+        const version = await importerVersion(pkg, ctx.importerId);
+        const t = await ensurePackage({ pkg, version, subpath });
+        return t.id; // canonical id; the served endpoint url is `urlPath(t.id)`
+      },
+    });
 
   let ready: Promise<void> | undefined;
   const init = () => {
@@ -148,8 +199,17 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
     return { name, version, file, id: `${name}@${version}/${file}`, manifest };
   }
 
-  /** Resolve an import specifier (from `fromId`) to what to emit + its cache id. */
-  async function resolveSpec(spec: string, fromId: string): Promise<{ url: string; id?: string }> {
+  /** Resolve an import specifier (from `fromId`) to what to emit + its cache id.
+   *  A bare external specifier is rewritten to a co-located `~deps` proxy: the
+   *  importer imports the proxy relatively (`id` = proxy id), and the proxy's
+   *  real endpoint (for a `local` binding) is returned as `endpointId` so the
+   *  graph walker caches it. `imp` carries the importer's used bindings, which
+   *  shape the proxy's re-exports (needed only for the external branch). */
+  async function resolveSpec(
+    spec: string,
+    fromId: string,
+    imp: ModuleImport,
+  ): Promise<{ url: string; id?: string; endpointId?: string }> {
     if (/^(https?:|data:)/.test(spec)) return { url: spec }; // absolute — pass through
     const builtin = resolveNodeBuiltin(spec, target); // node: builtins → polyfill/external
     if (builtin) {
@@ -164,14 +224,48 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
       // module extension makes the server transform it + serve `text/javascript`.
       return { url: jsonModuleUrl(relativeUrl(urlPath(fromId), urlPath(id)), id), id };
     }
-    const { pkg, subpath } = parseSpecifier(spec);
-    // Resolve the version from the *importing package's* context (Node semantics):
-    // a package requiring its own name → itself; a dependency → the importer's
-    // declared range. Falls back to the global lock/latest for project files or
-    // undeclared (transitive) deps.
-    const version = await importerVersion(pkg, fromId);
-    const t = await ensurePackage({ pkg, version, subpath });
-    return { url: jsonModuleUrl(relativeUrl(urlPath(fromId), urlPath(t.id)), t.id), id: t.id };
+    // Bare external specifier → generate a co-located proxy; import the proxy.
+    const pid = proxyId(fromId, spec);
+    let binding: EndpointBinding;
+    let endpointId: string | undefined;
+    if (providedNames(spec)) {
+      binding = { kind: "host", name: spec };
+    } else {
+      binding = await resolver.resolve(spec, { importerId: fromId, target });
+      if (binding.kind === "local") endpointId = binding.url; // canonical id → walked
+    }
+    await ensureProxy(pid, binding, imp);
+    return { url: relativeUrl(urlPath(fromId), urlPath(pid)), id: pid, endpointId };
+  }
+
+  /** Generate + cache a proxy module (idempotent). The served endpoint url is the
+   *  binding's `urlPath`-mapped id so it resolves across the `depsPath` boundary
+   *  (both the proxy id and its endpoint are wired in served-url space). */
+  async function ensureProxy(
+    pid: string,
+    binding: EndpointBinding,
+    imp: ModuleImport,
+  ): Promise<void> {
+    const key = `${tRoot}/${pid}`;
+    if (await cache.exists(key)) return;
+    const wire: EndpointBinding =
+      binding.kind === "local" ? { kind: "local", url: urlPath(binding.url) } : binding;
+    const body = proxyBody({
+      proxyId: urlPath(pid),
+      binding: wire,
+      imp,
+      registryKey: HOST_REGISTRY_KEY,
+    });
+    await writeText(cache, key, body);
+  }
+
+  /** Generate + cache the co-located globals proxy exporting the used allowlisted
+   *  free globals (idempotent). */
+  async function ensureGlobalsProxy(gid: string, names: string[]): Promise<void> {
+    const key = `${tRoot}/${gid}`;
+    if (await cache.exists(key)) return;
+    const body = names.map((n) => `export const ${n} = ${globalsMap[n]};`).join("\n");
+    await writeText(cache, key, body);
   }
 
   /** The version constraint a bare specifier should resolve to, from the importer's
@@ -242,15 +336,32 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
     return { path: `/${pkgKey}/${file}`, source, format: detectFormat(file, source, manifest) };
   }
 
-  /** Transform a module (pre-resolving its specifiers) and cache the ESM output. */
+  /** Transform a module (pre-resolving its specifiers) and cache the ESM output.
+   *  Bare specifiers rewrite to `~deps` proxies; used allowlisted free globals get
+   *  a prepended import from a co-located globals proxy (the server owns the
+   *  prepend, not the Transform). */
   async function transformAndCache(id: string): Promise<string> {
     const { path, source, format } = await loadRaw(id);
-    const specs = await scanSpecifiers(source, format);
+    const { imports } = await analyze(source, format);
     const map = new Map<string, string>();
-    for (const spec of specs) map.set(spec, (await resolveSpec(spec, id)).url);
+    for (const spec of Object.keys(imports)) {
+      if (spec === "") continue;
+      map.set(spec, (await resolveSpec(spec, id, imports[spec])).url);
+    }
+    // Globals: prepend an import from a co-located globals proxy for allowlisted
+    // free vars (declared/imported names never appear in the `""` free-global set).
+    const usedGlobals = (imports[""]?.names ?? []).filter((n) => n in globalsMap);
+    let prelude = "";
+    if (usedGlobals.length) {
+      const gid = proxyId(id, "");
+      await ensureGlobalsProxy(gid, usedGlobals);
+      prelude = `import { ${usedGlobals.join(", ")} } from ${JSON.stringify(
+        relativeUrl(urlPath(id), urlPath(gid)),
+      )};\n`;
+    }
     const { code } = await transformer.transform({ path, source, format }, (s) => map.get(s) ?? s);
-    await writeText(cache, `${tRoot}/${id}`, code);
-    return code;
+    await writeText(cache, `${tRoot}/${id}`, prelude + code);
+    return prelude + code;
   }
 
   /** Resolve a file id (project `~/…` or `{pkg}@{ver}/{file}`) to its raw bytes. */
@@ -309,6 +420,9 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
       const id = queue.shift();
       if (id === undefined || seen.has(id)) continue;
       seen.add(id);
+      // `~deps` proxies are pre-generated into `/t/{target}` by their importer's
+      // resolveSpec/transformAndCache — served from cache, never re-analyzed.
+      if (id.includes("/~deps/") && (await cache.exists(`${tRoot}/${id}`))) continue;
       if (!isModuleFile(id)) {
         // non-JS resource (json/css/…): ensure it's cached, don't scan/transform.
         const m = id.match(/^((?:@[^/]+\/)?[^/]+@[^/]+)\//);
@@ -316,9 +430,17 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
         continue;
       }
       const { source, format } = await loadRaw(id);
-      for (const spec of await scanSpecifiers(source, format)) {
-        const { id: childId } = await resolveSpec(spec, id);
-        if (childId && !seen.has(childId)) queue.push(childId);
+      const { imports } = await analyze(source, format);
+      for (const spec of Object.keys(imports)) {
+        if (spec === "") {
+          // Only allowlisted free globals get a proxy (matches transformAndCache);
+          // real globals like `console`/`Math` are left as native references.
+          if (imports[""].names.some((n) => n in globalsMap)) queue.push(proxyId(id, ""));
+          continue;
+        }
+        const { id: childId, endpointId } = await resolveSpec(spec, id, imports[spec]);
+        if (childId && !seen.has(childId)) queue.push(childId); // the proxy
+        if (endpointId && !seen.has(endpointId)) queue.push(endpointId); // the real endpoint
       }
       await transformAndCache(id);
     }
@@ -373,10 +495,12 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
           return await serveJsonModule(id);
         }
         if (!isModuleFile(id)) return await serveRaw(id, false);
-        // module files → transform to ESM.
-        const body = (await cache.exists(`${tRoot}/${id}`))
-          ? await readText(cache, `${tRoot}/${id}`)
-          : await transformAndCache(id);
+        // module files → transform to ESM. `~deps` proxies are pre-generated into
+        // `/t/{target}`; a missing one has no `/raw/` to transform → 404 (never
+        // routed through transformAndCache).
+        const cached = await cache.exists(`${tRoot}/${id}`);
+        if (!cached && id.includes("/~deps/")) return new Response(null, { status: 404 });
+        const body = cached ? await readText(cache, `${tRoot}/${id}`) : await transformAndCache(id);
         return new Response(body, { status: 200, headers: { "content-type": "text/javascript" } });
       } catch {
         return new Response(null, { status: 404 });
