@@ -79,4 +79,42 @@ describe("CSS serving", () => {
     expect(urls.some((u) => u.endsWith("base.css"))).toBe(true);
     expect(urls.some((u) => u.endsWith("logo.svg"))).toBe(true);
   });
+
+  it("a CSS @import cycle terminates and lists each file exactly once", async () => {
+    const p = await project({
+      "/app.ts": `import "./a.css"; export const ok = 1;`,
+      "/a.css": `@import "./b.css"; .a { color: red }`,
+      "/b.css": `@import "./a.css"; .b { color: blue }`,
+    });
+    const server = newModuleServer({ cache: new MemFilesApi(), project: p });
+    const urls = await server.listResources({ url: "/app.ts" }); // hangs (timeout) if the cycle isn't guarded
+    expect(urls.filter((u) => u.endsWith("a.css")).length).toBe(1);
+    expect(urls.filter((u) => u.endsWith("b.css")).length).toBe(1);
+  });
+
+  it("a bare-package CSS @import is traversed by listResources via the direct resolver (no ~deps proxy)", async () => {
+    // Same in-memory Source pattern as the direct-resolution test above.
+    const source: Source = {
+      matches: (ref) => "pkg" in ref && ref.pkg === "some-pkg",
+      async load(ref) {
+        if (!("pkg" in ref)) throw new Error("bad ref");
+        const files = new MemFilesApi();
+        await files.write("/reset.css", [new TextEncoder().encode(`html { margin: 0 }`)]);
+        return {
+          name: "some-pkg",
+          version: "1.0.0",
+          files,
+          manifest: { name: "some-pkg", version: "1.0.0" } as PackageManifest,
+        };
+      },
+    };
+    const p = await project({
+      "/app.ts": `import "./main.css"; export const ok = 1;`,
+      "/main.css": `@import "some-pkg/reset.css";`,
+    });
+    const server = newModuleServer({ cache: new MemFilesApi(), project: p, sources: [source] });
+    const urls = await server.listResources({ url: "/app.ts" });
+    expect(urls.some((u) => u.endsWith("some-pkg@1.0.0/reset.css"))).toBe(true); // direct endpoint
+    expect(urls.some((u) => u.includes("~deps/"))).toBe(false); // never proxied
+  });
 });
