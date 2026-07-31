@@ -108,6 +108,26 @@ export interface Transform {
   transform(file: SourceFile, rewrite: (specifier: string) => string): Promise<TransformResult>;
 }
 
+/** A CSS file to process. `cssModules` runs the engine in CSS-Modules mode. */
+export interface CssFile {
+  path: string;
+  source: string;
+  cssModules: boolean;
+}
+/** Result of a per-file CSS transform. */
+export interface CssTransformResult {
+  /** processed CSS (nesting flattened, prefixed, @import/url placeholders substituted). */
+  code: string;
+  /** CSS Modules export map: local name → scoped name. Empty when not a module. */
+  exports: Record<string, string>;
+  /** source map — populated by plan #3; unset here. */
+  map?: string;
+}
+/** Pluggable per-file CSS transform. `rewrite` maps a @import/url specifier to a same-origin URL. */
+export interface CssTransform {
+  transform(file: CssFile, rewrite: (specifier: string) => string): Promise<CssTransformResult>;
+}
+
 export interface ModuleServerOptions {
   /** Injected cache — NodeFilesApi / browser-OPFS / MemFilesApi. Never node:fs. */
   cache: FilesApi;
@@ -117,6 +137,8 @@ export interface ModuleServerOptions {
   sources?: Source[];
   /** Per-file transform; defaults to the sucrase-based ESM + CJS-interop transform. */
   transform?: Transform;
+  /** Per-file CSS transform; defaults to the Lightning CSS (WASM) transform. */
+  css?: CssTransform;
   /** Selects `exports` conditions and cache key. Defaults to `"browser"`. */
   target?: ModuleTarget;
   /** Optional lockfile input for reproducible resolution; also written by `prime`. */
