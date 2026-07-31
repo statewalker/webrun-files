@@ -13,7 +13,7 @@ describe("newEsmTransform", () => {
       format: "ts",
       source: `import { z } from "zod";\nconst x: number = z;\nexport default x;`,
     };
-    const out = await t.transform(file, rw);
+    const { code: out } = await t.transform(file, rw);
     expect(out).toContain(`from "/RW(zod)"`);
     expect(out).not.toContain(": number");
     expect(out).toContain("export default x");
@@ -31,7 +31,7 @@ describe("newEsmTransform", () => {
         `console.log(a, m);`,
       ].join("\n"),
     };
-    const out = await t.transform(file, (s) => {
+    const { code: out } = await t.transform(file, (s) => {
       seen.push(s);
       return rw(s);
     });
@@ -48,7 +48,7 @@ describe("newEsmTransform", () => {
       format: "tsx",
       source: `import { useState } from "react";\nexport function App(): JSX.Element {\n  const [n] = useState<number>(0);\n  return <h1>Hello {n}</h1>;\n}`,
     };
-    const out = await t.transform(file, (s) => {
+    const { code: out } = await t.transform(file, (s) => {
       seen.push(s);
       return rw(s);
     });
@@ -65,7 +65,7 @@ describe("newEsmTransform", () => {
       format: "esm",
       source: `const n = "x"; export const p = import("./" + n + ".js");`,
     };
-    const out = await t.transform(file, rw);
+    const { code: out } = await t.transform(file, rw);
     expect(out).toContain(`import("./" + n + ".js")`);
     expect(out).not.toContain("RW(");
   });

@@ -248,9 +248,9 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
     const specs = await scanSpecifiers(source, format);
     const map = new Map<string, string>();
     for (const spec of specs) map.set(spec, (await resolveSpec(spec, id)).url);
-    const out = await transformer.transform({ path, source, format }, (s) => map.get(s) ?? s);
-    await writeText(cache, `${tRoot}/${id}`, out);
-    return out;
+    const { code } = await transformer.transform({ path, source, format }, (s) => map.get(s) ?? s);
+    await writeText(cache, `${tRoot}/${id}`, code);
+    return code;
   }
 
   /** Resolve a file id (project `~/…` or `{pkg}@{ver}/{file}`) to its raw bytes. */

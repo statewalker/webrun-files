@@ -1,35 +1,56 @@
-import { init, parse } from "es-module-lexer";
-import type { SourceFile, Transform } from "../types.js";
+import type { SourceFile, Transform, TransformResult } from "../types.js";
+import { parseEsmModule } from "./analyze.js";
 import { toJs } from "./to-js.js";
 
-let lexerReady: Promise<unknown> | undefined;
+/** Recursively find `import(<literal>)` argument nodes (static-string dynamic
+ *  imports). Computed args (BinaryExpression, …) are left untouched. */
+function walkDynamicImports(node: any, cb: (arg: any) => void): void {
+  if (!node || typeof node !== "object") return;
+  if (node.type === "ImportExpression" && node.source) cb(node.source);
+  for (const k of Object.keys(node)) {
+    const v = (node as Record<string, unknown>)[k];
+    if (Array.isArray(v)) for (const c of v) walkDynamicImports(c, cb);
+    else if (v && typeof (v as { type?: unknown }).type === "string") walkDynamicImports(v, cb);
+  }
+}
 
 /**
- * The default per-file transform for ESM (and TS/JSX) sources: transpile to plain
- * JS, then rewrite every static/dynamic-string import & re-export specifier in
- * place via `rewrite`, leaving quotes and everything else byte-for-byte intact.
- * Computed dynamic specifiers (no static string) are left untouched.
+ * Transpile TS/JSX to JS, then rewrite every static import/re-export/dynamic-string
+ * specifier in place via `rewrite`. acorn gives each specifier string-literal's
+ * `[start,end)` (quotes included); we splice from the end so earlier offsets stay
+ * valid, preserving the original quote character.
  */
 export function newEsmTransform(): Transform {
   return {
-    async transform(file: SourceFile, rewrite: (specifier: string) => string): Promise<string> {
-      lexerReady ??= init;
-      await lexerReady;
+    async transform(
+      file: SourceFile,
+      rewrite: (specifier: string) => string,
+    ): Promise<TransformResult> {
       const js = toJs(file.source, file.format, file.path);
-      const [imports] = parse(js, file.path);
-      let out = js;
-      // Splice from the end so earlier offsets stay valid. For static imports the
-      // [s,e) span sits *inside* the quotes; for dynamic `import("x")` it *includes*
-      // them — detect a leading quote and preserve it either way.
-      for (let i = imports.length - 1; i >= 0; i--) {
-        const imp = imports[i];
-        if (imp.n == null) continue; // computed/dynamic specifier — cannot rewrite statically
-        const q = out[imp.s];
-        const quoted = q === '"' || q === "'" || q === "`";
-        const replacement = quoted ? q + rewrite(imp.n) + q : rewrite(imp.n);
-        out = out.slice(0, imp.s) + replacement + out.slice(imp.e);
+      const ast = parseEsmModule(js);
+      const spans: { s: number; e: number; value: string }[] = [];
+      for (const node of ast.body as any[]) {
+        if (
+          (node.type === "ImportDeclaration" ||
+            node.type === "ExportNamedDeclaration" ||
+            node.type === "ExportAllDeclaration") &&
+          node.source
+        ) {
+          spans.push({ s: node.source.start, e: node.source.end, value: node.source.value });
+        }
       }
-      return out;
+      walkDynamicImports(ast, (arg) => {
+        if (arg.type === "Literal" && typeof arg.value === "string") {
+          spans.push({ s: arg.start, e: arg.end, value: arg.value });
+        }
+      });
+      spans.sort((a, b) => b.s - a.s); // splice from the end
+      let out = js;
+      for (const sp of spans) {
+        const q = out[sp.s]; // opening quote (start includes it)
+        out = out.slice(0, sp.s) + q + rewrite(sp.value) + q + out.slice(sp.e);
+      }
+      return { code: out };
     },
   };
 }

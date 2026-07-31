@@ -1,5 +1,5 @@
 import { init, parse } from "cjs-module-lexer";
-import type { SourceFile, Transform } from "../types.js";
+import type { SourceFile, Transform, TransformResult } from "../types.js";
 
 let lexerReady: Promise<unknown> | undefined;
 
@@ -27,7 +27,10 @@ function findRequires(source: string): string[] {
  */
 export function newCjsTransform(): Transform {
   return {
-    async transform(file: SourceFile, rewrite: (specifier: string) => string): Promise<string> {
+    async transform(
+      file: SourceFile,
+      rewrite: (specifier: string) => string,
+    ): Promise<TransformResult> {
       lexerReady ??= init();
       await lexerReady;
 
@@ -62,7 +65,7 @@ export function newCjsTransform(): Transform {
         .join("\n");
 
       const dir = file.path.replace(/\/[^/]*$/, "");
-      return [
+      const code = [
         ...importLines,
         `const __ns = {\n${mapEntries.join("\n")}\n};`,
         `const module = { exports: {} };`,
@@ -80,6 +83,7 @@ export function newCjsTransform(): Transform {
       ]
         .filter(Boolean)
         .join("\n");
+      return { code };
     },
   };
 }

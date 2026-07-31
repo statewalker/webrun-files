@@ -9,9 +9,8 @@ const REQUIRE_RE = /require\(\s*(['"])((?:(?!\1)[^\\]|\\.)*)\1\s*\)/g;
 
 /** The parser seam. acorn baseline (pure-JS, isomorphic); oxc-wasm may replace
  *  this behind the same signature once the spike validates it. Exported so the
- *  ESM transform reuses the SAME parser config for its specifier-rewrite spans
- *  (replacing es-module-lexer — see Task 7). acorn sets `start`/`end` on every
- *  node natively, which the splice needs. */
+ *  ESM transform reuses the SAME parser config for its specifier-rewrite spans.
+ *  acorn sets `start`/`end` on every node natively, which the splice needs. */
 export function parseEsmModule(js: string) {
   return acornParse(js, { ecmaVersion: "latest", sourceType: "module" }) as unknown as {
     body: any[];
@@ -71,8 +70,8 @@ export async function analyze(source: string, format: SourceFormat): Promise<Mod
 
   // Dynamic `import("literal")` — an ImportExpression nested anywhere in the
   // tree (not just at statement level), so a generic walk is needed. Only
-  // static string sources are captured (matches the old es-module-lexer
-  // behavior); a computed source like `import("./" + n)` is left out.
+  // static string sources are captured; a computed source like
+  // `import("./" + n)` is left out.
   collectDynamicImports(ast.body, importFor);
 
   // Free (unbound) identifiers — scope-aware, so locally-declared names are

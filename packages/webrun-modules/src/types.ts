@@ -99,8 +99,13 @@ export interface ModuleDescriptor {
  * passing every discovered specifier through `rewrite` (which returns the
  * same-origin, prefix-portable relative URL to emit).
  */
+export interface TransformResult {
+  code: string;
+  /** source map — populated by spec #3; unset here. */
+  map?: string;
+}
 export interface Transform {
-  transform(file: SourceFile, rewrite: (specifier: string) => string): Promise<string>;
+  transform(file: SourceFile, rewrite: (specifier: string) => string): Promise<TransformResult>;
 }
 
 export interface ModuleServerOptions {

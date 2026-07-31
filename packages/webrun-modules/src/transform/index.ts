@@ -1,4 +1,10 @@
-import type { PackageManifest, SourceFile, SourceFormat, Transform } from "../types.js";
+import type {
+  PackageManifest,
+  SourceFile,
+  SourceFormat,
+  Transform,
+  TransformResult,
+} from "../types.js";
 import { newCjsTransform } from "./transform-cjs.js";
 import { newEsmTransform } from "./transform-esm.js";
 
@@ -9,7 +15,7 @@ export function newDefaultTransform(): Transform {
   const esm = newEsmTransform();
   const cjs = newCjsTransform();
   return {
-    transform(file: SourceFile, rewrite: (specifier: string) => string): Promise<string> {
+    transform(file: SourceFile, rewrite: (specifier: string) => string): Promise<TransformResult> {
       return file.format === "cjs" ? cjs.transform(file, rewrite) : esm.transform(file, rewrite);
     },
   };

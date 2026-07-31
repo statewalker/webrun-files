@@ -17,7 +17,8 @@ async function build(files: Record<string, SourceFile>): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "cjs-spike-"));
   dirs.push(dir);
   for (const [name, file] of Object.entries(files)) {
-    await writeFile(join(dir, name), await t.transform(file, rw));
+    const { code } = await t.transform(file, rw);
+    await writeFile(join(dir, name), code);
   }
   return dir;
 }
