@@ -40,6 +40,8 @@
   "dependencies": {
     "@statewalker/webrun-files": "catalog:",
     "@statewalker/webrun-files-mem": "catalog:",
+    "acorn": "^8.12.1",
+    "acorn-globals": "^7.0.1",
     "es-module-lexer": "catalog:",
     "sucrase": "catalog:",
     "@jspm/generator": "catalog:",

@@ -73,6 +73,27 @@ export interface SourceFile {
   format: SourceFormat;
 }
 
+/** One specifier's imported bindings (which forms are used). */
+export interface ModuleImport {
+  /** named imports, e.g. { useState } → ["useState"] */
+  names: string[];
+  /** `import * as X` present */
+  hasNamespace: boolean;
+  /** `import X` (default) present */
+  hasDefault: boolean;
+}
+
+/**
+ * Static-analysis result for one module. Free globals are modeled as imports
+ * from the reserved `""` (host/globalThis) pseudo-module.
+ */
+export interface ModuleDescriptor {
+  /** specifier → imported bindings; key "" holds detected free-global names. */
+  imports: Record<string, ModuleImport>;
+  /** the module's own exported names (default counted as "default"). */
+  exports: string[];
+}
+
 /**
  * Pluggable per-file transform seam. Turns one raw file into browser-runnable ESM,
  * passing every discovered specifier through `rewrite` (which returns the
