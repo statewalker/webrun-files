@@ -65,4 +65,18 @@ describe("CSS serving", () => {
     expect(css).toContain("https://cdn.example.com/reset.css"); // absolute URL untouched
     expect(css).toContain("data:image/png;base64,AAAA"); // data: URL untouched
   });
+
+  it("CSS @import and url() targets are traversed by listResources", async () => {
+    const p = await project({
+      "/app.ts": `import "./main.css"; export const ok = 1;`,
+      "/main.css": `@import "./base.css"; .a { background: url(./logo.svg) }`,
+      "/base.css": `.b { color: blue }`,
+      "/logo.svg": `<svg/>`,
+    });
+    const server = newModuleServer({ cache: new MemFilesApi(), project: p });
+    const urls = await server.listResources({ url: "/app.ts" });
+    expect(urls.some((u) => u.endsWith("main.css"))).toBe(true);
+    expect(urls.some((u) => u.endsWith("base.css"))).toBe(true);
+    expect(urls.some((u) => u.endsWith("logo.svg"))).toBe(true);
+  });
 });

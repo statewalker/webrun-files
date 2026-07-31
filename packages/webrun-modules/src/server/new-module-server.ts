@@ -494,6 +494,18 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
       // `~deps` proxies are pre-generated into `/t/{target}` by their importer's
       // resolveSpec/transformAndCache — served from cache, never re-analyzed.
       if (id.includes("/~deps/") && (await cache.exists(`${tRoot}/${id}`))) continue;
+      if (isCssFile(id)) {
+        await cssTransformAndCache(id); // ensures the file + its exports are cached
+        const { path, source } = await loadRaw(id);
+        // Reuse cssSpecifiers (Task 2, 3c) — the SAME helper cssTransformAndCache uses
+        // — then re-derive child ids via CSS's own direct resolver (never `resolveSpec`:
+        // that one proxies bare externals through `~deps`, which CSS must not do).
+        for (const spec of await cssSpecifiers(path, source)) {
+          const { id: childId } = await resolveCssSpec(spec, id);
+          if (childId && !seen.has(childId)) queue.push(childId);
+        }
+        continue;
+      }
       if (!isModuleFile(id)) {
         // non-JS resource (json/css/…): ensure it's cached, don't scan/transform.
         const m = id.match(/^((?:@[^/]+\/)?[^/]+@[^/]+)\//);
