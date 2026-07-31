@@ -6,6 +6,7 @@ export type { NpmRegistrySourceOptions } from "./sources/npm-registry-source.js"
 export { npmRegistrySource } from "./sources/npm-registry-source.js";
 export { untarTgz } from "./sources/untar.js";
 export { analyze } from "./transform/analyze.js";
+export { newDefaultCssTransform, newLightningCssTransform } from "./transform/css/index.js";
 export {
   detectFormat,
   newCjsTransform,
@@ -13,6 +14,9 @@ export {
   newEsmTransform,
 } from "./transform/index.js";
 export type {
+  CssFile,
+  CssTransform,
+  CssTransformResult,
   EndpointBinding,
   EndpointCtx,
   EndpointResolver,

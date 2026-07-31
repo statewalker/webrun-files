@@ -187,6 +187,7 @@ is pinned — seed `lock` (e.g. `{ react: "18.3.1" }`) to honor a project's
 | `project`   | —                        | `FilesApi` of local project files to serve. |
 | `sources`   | `[npmRegistrySource()]`  | Acquisition sources (npm tarball by default). |
 | `transform` | `newDefaultTransform()`  | Per-file transform (ESM + CJS-interop). |
+| `css`       | `newDefaultCssTransform()` | Per-file CSS transform (Lightning CSS). |
 | `target`    | `"browser"`              | Selects `exports` conditions + cache key; `"node"` supported. |
 | `lock`      | —                        | A `Lockfile` (pins versions); `prime` also writes one back. |
 | `basePath`  | `"/"`                    | Mount prefix, e.g. `"/deps/v1/"`. |
@@ -289,12 +290,50 @@ newModuleServer({ cache, transform: myTransform });
 `detectFormat(path, source, manifest?)` returns the `SourceFormat` the default
 transform would infer.
 
+## CSS
+
+`.css` files are processed, not just passed through — by default with
+[Lightning CSS](https://lightningcss.dev/) (nesting flattened, vendor-prefixed
+per its default `targets`); swap in your own with the `css` option:
+
+```ts
+import { newDefaultCssTransform, newLightningCssTransform } from "@statewalker/webrun-modules";
+import type { CssTransform } from "@statewalker/webrun-modules";
+
+newModuleServer({ cache, css: newLightningCssTransform(/* targets, … */) });
+```
+
+Two ways to consume a stylesheet:
+
+- **`import "./x.css"` from JS/TS** — resolves to `x.css?module`, a JS module
+  that injects a `<style>` element on import and default-exports the CSS text
+  (or, for `*.module.css`, the **CSS Modules class map** — `{ localName:
+  scopedName }`, empty object when the file has no class selectors to scope).
+  The `<style>` injection is guarded by `typeof document !== "undefined"`, so
+  the same module evaluates cleanly under `target: "node"` (no DOM, no throw) —
+  it just skips the injection and still returns the default export.
+- **a bare `.css` URL** (no `?module`) — serves the processed stylesheet as
+  `text/css`, for a `<link rel="stylesheet">`.
+
+`@import` and `url(...)` targets are rewritten to same-origin URLs exactly like
+JS imports (direct to a pinned package URL for bare specifiers — CSS never
+goes through the `~deps` proxy layer, since it has no imperative bindings to
+proxy) and are joined by `listResources`/`prime`.
+
+**Out of scope:** Tailwind JIT (precompile Tailwind to plain CSS before
+serving), CSS-in-JS, CSS source maps (tracked for a later `map` field on
+`CssTransformResult`), and a bare `import "some-pkg/styles.css"` written
+directly in JS/TS source (resolve it to a URL and use `<link>`, or author a
+`.css` file that `@import`s it).
+
 ## Serving surface
 
 `server.fetch(request)` is a plain `(Request) => Promise<Response>`:
 
 - JS/TS module files are transformed and served as `text/javascript`;
-- non-module files (`package.json`, `README.md`, `.css`, …) are served **raw**,
+- `.css` files are processed (see [CSS](#css) below) — a bare `.css` URL serves
+  processed `text/css`; `?module` serves a JS wrapper;
+- other non-module files (`package.json`, `README.md`, …) are served **raw**,
   untransformed, with a content-type guessed from the extension
   (`application/json`, `text/markdown`, …);
 - append `?raw` to get the raw bytes of *any* file as `application/octet-stream`;

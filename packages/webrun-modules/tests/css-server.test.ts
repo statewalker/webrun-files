@@ -117,4 +117,44 @@ describe("CSS serving", () => {
     expect(urls.some((u) => u.endsWith("some-pkg@1.0.0/reset.css"))).toBe(true); // direct endpoint
     expect(urls.some((u) => u.includes("~deps/"))).toBe(false); // never proxied
   });
+
+  it("*.module.css import default-exports the scoped class map", async () => {
+    const p = await project({
+      "/app.ts": `import styles from "./s.module.css"; export const cls = styles.title;`,
+      "/s.module.css": `.title { color: red }`,
+    });
+    const server = newModuleServer({ cache: new MemFilesApi(), project: p });
+    const mod = await (await server.fetch(new Request("http://h/~/s.module.css?module"))).text();
+    expect(mod).toContain("export default {");
+    expect(mod).toContain("title");
+    expect(mod).toContain('createElement("style")'); // still injects
+  });
+
+  it("*.module.css with zero class selectors still default-exports the (empty) map, not the CSS string", async () => {
+    const p = await project({
+      "/app.ts": `import styles from "./e.module.css"; export const ok = styles;`,
+      "/e.module.css": `:root { --x: 1 } body { margin: 0 }`,
+    });
+    const server = newModuleServer({ cache: new MemFilesApi(), project: p });
+    const mod = await (await server.fetch(new Request("http://h/~/e.module.css?module"))).text();
+    expect(mod).toContain("export default {"); // the map, even though it's empty
+    expect(mod).not.toMatch(/export default "/); // never the CSS text for a .module.css
+  });
+
+  it("Node target: importing a CSS module does not throw and evaluates cleanly (guarded injection)", async () => {
+    const p = await project({
+      "/x.css": `.a{color:red}`,
+      "/app.ts": `import "./x.css"; export const ok = 1;`,
+    });
+    const server = newModuleServer({ cache: new MemFilesApi(), project: p, target: "node" });
+    const mod = await (await server.fetch(new Request("http://h/~/x.css?module"))).text();
+    // Actually EVALUATE the module in this document-less Node realm — proves the
+    // `typeof document !== "undefined"` guard really gates the DOM call (a
+    // substring check can't distinguish "gated" from "merely present in source").
+    const evaluated: { default: string } = await import(
+      `data:text/javascript,${encodeURIComponent(mod)}`
+    );
+    expect(typeof evaluated.default).toBe("string");
+    expect(evaluated.default).toContain("color: red");
+  });
 });
