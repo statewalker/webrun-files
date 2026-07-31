@@ -8,8 +8,10 @@ import { resolveNodeBuiltin } from "../resolution/node-builtins.js";
 import { resolveEntry } from "../resolution/resolve-entry.js";
 import { npmRegistrySource } from "../sources/npm-registry-source.js";
 import { analyze } from "../transform/analyze.js";
+import { newDefaultCssTransform } from "../transform/css/index.js";
 import { detectFormat, newDefaultTransform } from "../transform/index.js";
 import type {
+  CssTransformResult,
   EndpointBinding,
   HostRegistry,
   Lockfile,
@@ -28,10 +30,10 @@ const RAW_EXT = ["", ".js", ".mjs", ".cjs", ".json", "/index.js", "/index.mjs"];
 /** JS/TS module files — the only ones the transform touches. */
 const MODULE_EXT = /\.(?:m|c)?[jt]sx?$/;
 const isModuleFile = (path: string) => MODULE_EXT.test(path);
+const isCssFile = (path: string) => /\.css$/.test(path);
 
 const CONTENT_TYPES: Record<string, string> = {
   json: "application/json",
-  css: "text/css",
   md: "text/markdown",
   html: "text/html",
   svg: "image/svg+xml",
@@ -52,6 +54,7 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
   const project = options.project;
   const sources = options.sources ?? [npmRegistrySource()];
   const transformer = options.transform ?? newDefaultTransform();
+  const cssTransformer = options.css ?? newDefaultCssTransform();
   const target = options.target ?? "browser";
   const basePath = normalizeBase(options.basePath ?? "/");
   // Optional prefix (relative to `basePath`) for external package URLs, so npm
@@ -222,7 +225,7 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
       // Emit the *extension-resolved* relative URL (`./x` → `./x.js`), not the raw
       // specifier: the browser fetches this URL verbatim, and only a recognized
       // module extension makes the server transform it + serve `text/javascript`.
-      return { url: jsonModuleUrl(relativeUrl(urlPath(fromId), urlPath(id)), id), id };
+      return { url: moduleMarkedUrl(relativeUrl(urlPath(fromId), urlPath(id)), id), id };
     }
     // Bare external specifier → generate a co-located proxy; import the proxy.
     const pid = proxyId(fromId, spec);
@@ -295,10 +298,67 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
     );
   }
 
-  /** A `.json` imported by a JS module is served as an ESM (`export default …`);
-   *  mark its URL with `?module` so `fetch` wraps it instead of serving raw JSON. */
-  function jsonModuleUrl(url: string, id: string): string {
-    return id.endsWith(".json") ? `${url}?module` : url;
+  /** A `.json`/`.css` imported by a JS module is served as an ESM (`export
+   *  default …`); mark its URL with `?module` so `fetch` wraps it instead of
+   *  serving the raw resource. */
+  function moduleMarkedUrl(url: string, id: string): string {
+    return id.endsWith(".json") || id.endsWith(".css") ? `${url}?module` : url;
+  }
+
+  /** Direct CSS specifier resolution. Unlike JS's `resolveSpec`, a bare package
+   *  specifier here is resolved straight to its same-origin URL — never proxied
+   *  through `~deps` (CSS stays direct, per the Global Constraints). Mirrors
+   *  `resolveSpec`'s relative + local-package branches; reuses the same closures
+   *  (`resolveRelativeId`, `ensurePackage`, `importerVersion`, `urlPath`) plus the
+   *  imported `parseSpecifier`/`relativeUrl` — no new imports needed. */
+  async function resolveCssSpec(
+    spec: string,
+    fromId: string,
+  ): Promise<{ url: string; id?: string }> {
+    if (/^(https?:|data:)/.test(spec)) return { url: spec }; // absolute — pass through
+    if (spec.startsWith(".")) {
+      const id = await resolveRelativeId(fromId, spec);
+      return { url: relativeUrl(urlPath(fromId), urlPath(id)), id };
+    }
+    // Bare package specifier (e.g. "some-pkg/reset.css") — resolve directly.
+    const { pkg, subpath } = parseSpecifier(spec);
+    const version = await importerVersion(pkg, fromId);
+    const t = await ensurePackage({ pkg, version, subpath });
+    return { url: relativeUrl(urlPath(fromId), urlPath(t.id)), id: t.id };
+  }
+
+  /** Run one CSS-transform pass that only CAPTURES the @import/url() specifiers a
+   *  file references (via the seam's `rewrite` callback), without resolving them.
+   *  Shared by `cssTransformAndCache` (below) and `walkGraph`'s CSS branch
+   *  (Task 3) — one implementation, two callers. */
+  async function cssSpecifiers(path: string, source: string): Promise<string[]> {
+    const cssModules = /\.module\.css$/.test(path);
+    const specs = new Set<string>();
+    await cssTransformer.transform({ path, source, cssModules }, (s) => {
+      specs.add(s);
+      return s;
+    });
+    return [...specs];
+  }
+
+  /** Transform + cache a `.css` file. Two Lightning CSS passes: pass 1 (via
+   *  `cssSpecifiers`) captures every @import/url() specifier; the specifiers are
+   *  then resolved asynchronously (the seam's `rewrite` itself must stay sync,
+   *  so resolution can't happen inline); pass 2 substitutes the resolved urls. */
+  async function cssTransformAndCache(id: string): Promise<CssTransformResult> {
+    const { path, source } = await loadRaw(id);
+    const cssModules = /\.module\.css$/.test(id);
+    const rewrites = new Map<string, string>();
+    for (const spec of await cssSpecifiers(path, source)) {
+      rewrites.set(spec, (await resolveCssSpec(spec, id)).url);
+    }
+    const out = await cssTransformer.transform(
+      { path, source, cssModules },
+      (s) => rewrites.get(s) ?? s,
+    );
+    await writeText(cache, `${tRoot}/${id}`, out.code);
+    await writeText(cache, `${tRoot}/${id}.exports.json`, JSON.stringify(out.exports));
+    return out;
   }
 
   /** Resolve a relative specifier against an importer id to a concrete cache id. */
@@ -507,6 +567,27 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
         if (url.searchParams.has("module") && id.endsWith(".json")) {
           return await serveJsonModule(id);
         }
+        if (isCssFile(id)) {
+          const cssModules = /\.module\.css$/.test(id);
+          if (!url.searchParams.has("module")) {
+            const cachedCss = await cache.exists(`${tRoot}/${id}`);
+            const code = cachedCss
+              ? await readText(cache, `${tRoot}/${id}`)
+              : (await cssTransformAndCache(id)).code;
+            return new Response(code, { status: 200, headers: { "content-type": "text/css" } });
+          }
+          const cachedExports = await cache.exists(`${tRoot}/${id}.exports.json`);
+          const result = cachedExports
+            ? {
+                code: await readText(cache, `${tRoot}/${id}`),
+                exports: JSON.parse(await readText(cache, `${tRoot}/${id}.exports.json`)),
+              }
+            : await cssTransformAndCache(id);
+          return new Response(cssModuleWrapper(result.code, result.exports, cssModules), {
+            status: 200,
+            headers: { "content-type": "text/javascript" },
+          });
+        }
         if (!isModuleFile(id)) return await serveRaw(id, false);
         // module files → transform to ESM. `~deps` proxies are pre-generated into
         // `/t/{target}`; a missing one has no `/raw/` to transform → 404 (never
@@ -520,6 +601,25 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
       }
     },
   };
+}
+
+/** JS module that injects the processed CSS as a <style> (guarded for non-DOM /
+ *  Node) and default-exports the CSS Modules class map (when `cssModules`) or
+ *  the CSS text otherwise. */
+function cssModuleWrapper(
+  css: string,
+  exports: Record<string, string>,
+  cssModules: boolean,
+): string {
+  return [
+    `const css = ${JSON.stringify(css)};`,
+    `if (typeof document !== "undefined") {`,
+    `  const el = document.createElement("style");`,
+    `  el.textContent = css;`,
+    `  document.head.appendChild(el);`,
+    `}`,
+    `export default ${cssModules ? JSON.stringify(exports) : "css"};`,
+  ].join("\n");
 }
 
 function normalizeBase(base: string): string {

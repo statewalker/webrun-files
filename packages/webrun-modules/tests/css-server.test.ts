@@ -1,0 +1,68 @@
+import { MemFilesApi } from "@statewalker/webrun-files-mem";
+import { describe, expect, it } from "vitest";
+import { newModuleServer } from "../src/server/new-module-server.js";
+import type { PackageManifest, Source } from "../src/types.js";
+
+async function project(files: Record<string, string>) {
+  const p = new MemFilesApi();
+  for (const [k, v] of Object.entries(files)) await p.write(k, [new TextEncoder().encode(v)]);
+  return p;
+}
+
+describe("CSS serving", () => {
+  it("serves processed text/css at a bare .css url", async () => {
+    const p = await project({ "/a.css": `.x { .y { color: red } }` });
+    const server = newModuleServer({ cache: new MemFilesApi(), project: p });
+    const res = await server.fetch(new Request("http://h/~/a.css"));
+    expect(res.headers.get("content-type")).toBe("text/css");
+    expect(await res.text()).toMatch(/\.x \.y/); // processed
+  });
+
+  it('import "./a.css" resolves to ?module and serves a <style>-injecting JS module', async () => {
+    const p = await project({
+      "/app.js": `import "./a.css";\nexport const ok = 1;`,
+      "/a.css": `.x { color: red }`,
+    });
+    const server = newModuleServer({ cache: new MemFilesApi(), project: p });
+    const app = await (await server.fetch(new Request("http://h/~/app.js"))).text();
+    expect(app).toContain("a.css?module");
+    const mod = await server.fetch(new Request("http://h/~/a.css?module"));
+    expect(mod.headers.get("content-type")).toBe("text/javascript");
+    const js = await mod.text();
+    expect(js).toContain('createElement("style")');
+    expect(js).toContain("appendChild");
+  });
+
+  it("a bare @import resolves DIRECTLY (no ~deps proxy) to a pinned package URL", async () => {
+    // Minimal in-memory Source — no network (mirrors tests/server.test.ts's memSource pattern).
+    const source: Source = {
+      matches: (ref) => "pkg" in ref && ref.pkg === "some-pkg",
+      async load(ref) {
+        if (!("pkg" in ref)) throw new Error("bad ref");
+        const files = new MemFilesApi();
+        await files.write("/reset.css", [new TextEncoder().encode(`html { margin: 0 }`)]);
+        return {
+          name: "some-pkg",
+          version: "1.0.0",
+          files,
+          manifest: { name: "some-pkg", version: "1.0.0" } as PackageManifest,
+        };
+      },
+    };
+    const p = await project({ "/main.css": `@import "some-pkg/reset.css";` });
+    const server = newModuleServer({ cache: new MemFilesApi(), project: p, sources: [source] });
+    const css = await (await server.fetch(new Request("http://h/~/main.css"))).text();
+    expect(css).toContain("some-pkg@1.0.0/reset.css"); // direct pinned URL
+    expect(css).not.toContain("~deps/"); // never proxied
+  });
+
+  it("resolveCssSpec passes an absolute/data: URL through unchanged", async () => {
+    const p = await project({
+      "/main.css": `@import "https://cdn.example.com/reset.css"; .a { background: url(data:image/png;base64,AAAA) }`,
+    });
+    const server = newModuleServer({ cache: new MemFilesApi(), project: p });
+    const css = await (await server.fetch(new Request("http://h/~/main.css"))).text();
+    expect(css).toContain("https://cdn.example.com/reset.css"); // absolute URL untouched
+    expect(css).toContain("data:image/png;base64,AAAA"); // data: URL untouched
+  });
+});
