@@ -229,7 +229,11 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
     let binding: EndpointBinding;
     let endpointId: string | undefined;
     if (providedNames(spec)) {
-      binding = { kind: "host", name: spec };
+      // Bind to the registered key — the exact spec if registered, else its
+      // package root (so `react/jsx-runtime` reads the `react` instance, not the
+      // unregistered full spec which would resolve to `undefined` at load).
+      const providedKey = registry.has(spec) ? spec : parseSpecifier(spec).pkg;
+      binding = { kind: "host", name: providedKey };
     } else {
       binding = await resolver.resolve(spec, { importerId: fromId, target });
       if (binding.kind === "local") endpointId = binding.url; // canonical id → walked
@@ -350,7 +354,7 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
     }
     // Globals: prepend an import from a co-located globals proxy for allowlisted
     // free vars (declared/imported names never appear in the `""` free-global set).
-    const usedGlobals = (imports[""]?.names ?? []).filter((n) => n in globalsMap);
+    const usedGlobals = (imports[""]?.names ?? []).filter((n) => Object.hasOwn(globalsMap, n));
     let prelude = "";
     if (usedGlobals.length) {
       const gid = proxyId(id, "");
@@ -435,7 +439,9 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
         if (spec === "") {
           // Only allowlisted free globals get a proxy (matches transformAndCache);
           // real globals like `console`/`Math` are left as native references.
-          if (imports[""].names.some((n) => n in globalsMap)) queue.push(proxyId(id, ""));
+          if (imports[""].names.some((n) => Object.hasOwn(globalsMap, n))) {
+            queue.push(proxyId(id, ""));
+          }
           continue;
         }
         const { id: childId, endpointId } = await resolveSpec(spec, id, imports[spec]);

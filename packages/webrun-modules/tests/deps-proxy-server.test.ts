@@ -95,4 +95,55 @@ describe("~deps proxy layer", () => {
     ).text();
     expect(proxy).toContain('globalThis.__webrunHostRegistry.get("react")'); // host, not local
   });
+
+  it("does not treat a free identifier named like an Object.prototype member as a global (I1)", async () => {
+    // `toString` is a free global here, but it is NOT an own key of the allowlist —
+    // `n in globalsMap` would falsely match it (prototype chain) and emit a broken
+    // `export const toString = function toString(){…}` module. `Object.hasOwn` must not.
+    const { p, ready } = projectWith(`export const x = toString;`);
+    await ready;
+    const server = newModuleServer({ cache: new MemFilesApi(), project: p });
+    const code = await (await server.fetch(new Request("http://h/~/app.ts"))).text();
+    expect(code).not.toContain("./~deps/app.ts/deps.globals.js"); // no globals proxy prepended
+    expect(code).not.toContain("export const toString"); // never a broken globals export
+    // and the (never-generated) globals proxy is a 404, not a syntax-error module
+    const g = await server.fetch(new Request("http://h/~/~deps/app.ts/deps.globals.js"));
+    expect(g.status).toBe(404);
+  });
+
+  it("binds a provided-root subpath to the registered root key, not the full spec (I2)", async () => {
+    // Only `react` is registered; `react/jsx-runtime` (sucrase auto-injects it for
+    // any JSX) must bind host to `react`, not the unregistered `react/jsx-runtime`.
+    const { p, ready } = projectWith(
+      `import { jsx } from "react/jsx-runtime";\nexport const j = jsx;`,
+    );
+    await ready;
+    const rootServer = newModuleServer({
+      cache: new MemFilesApi(),
+      project: p,
+      provided: newHostRegistry({ react: { jsx: () => 0 } }), // ROOT only
+    });
+    await rootServer.fetch(new Request("http://h/~/app.ts")); // generate the proxy
+    const rootProxy = await (
+      await rootServer.fetch(new Request("http://h/~/~deps/app.ts/deps.react__jsx-runtime.js"))
+    ).text();
+    expect(rootProxy).toContain('globalThis.__webrunHostRegistry.get("react")');
+    expect(rootProxy).not.toContain('.get("react/jsx-runtime")');
+
+    // …but an explicitly-registered subpath uses its own key (most specific wins).
+    const { p: p2, ready: ready2 } = projectWith(
+      `import { jsx } from "react/jsx-runtime";\nexport const j = jsx;`,
+    );
+    await ready2;
+    const subServer = newModuleServer({
+      cache: new MemFilesApi(),
+      project: p2,
+      provided: newHostRegistry({ "react/jsx-runtime": { jsx: () => 0 } }),
+    });
+    await subServer.fetch(new Request("http://h/~/app.ts")); // generate the proxy
+    const subProxy = await (
+      await subServer.fetch(new Request("http://h/~/~deps/app.ts/deps.react__jsx-runtime.js"))
+    ).text();
+    expect(subProxy).toContain('globalThis.__webrunHostRegistry.get("react/jsx-runtime")');
+  });
 });
