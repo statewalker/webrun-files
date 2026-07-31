@@ -1,32 +1,13 @@
-import { init as initCjs, parse as parseCjs } from "cjs-module-lexer";
-import { init as initEsm, parse as parseEsm } from "es-module-lexer";
 import type { SourceFormat } from "../types.js";
-import { toJs } from "./to-js.js";
-
-const REQUIRE_RE = /require\(\s*(['"])((?:(?!\1)[^\\]|\\.)*)\1\s*\)/g;
-
-let esmReady: Promise<unknown> | undefined;
-let cjsReady: Promise<unknown> | undefined;
+import { analyze } from "./analyze.js";
 
 /**
  * List the import specifiers a file's transform will rewrite — the exact same set
  * the ESM/CJS transforms discover — so the server can pre-resolve them (async)
- * before running the synchronous rewrite. For TS/JSX the raw source is scanned;
- * `es-module-lexer` tolerates types well enough to find every specifier.
+ * before running the synchronous rewrite. Derived from `analyze()`'s descriptor;
+ * the reserved `""` key (free globals) is not a specifier and is filtered out.
  */
 export async function scanSpecifiers(source: string, format: SourceFormat): Promise<string[]> {
-  if (format === "cjs") {
-    cjsReady ??= initCjs();
-    await cjsReady;
-    return [...new Set([...source.matchAll(REQUIRE_RE)].map((m) => m[2]))];
-  }
-  esmReady ??= initEsm;
-  await esmReady;
-  const [imports] = parseEsm(toJs(source, format));
-  const out = new Set<string>();
-  for (const imp of imports) if (imp.n != null) out.add(imp.n);
-  return [...out];
+  const { imports } = await analyze(source, format);
+  return Object.keys(imports).filter((s) => s !== "");
 }
-
-// re-export so callers can warm the CJS lexer for export detection if needed
-export { parseCjs };

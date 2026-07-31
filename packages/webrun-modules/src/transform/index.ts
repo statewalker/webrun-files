@@ -2,6 +2,8 @@ import type { PackageManifest, SourceFile, SourceFormat, Transform } from "../ty
 import { newCjsTransform } from "./transform-cjs.js";
 import { newEsmTransform } from "./transform-esm.js";
 
+export { analyze } from "./analyze.js";
+
 /** The default per-file transform: dispatch ESM/TS/JSX vs CJS by `file.format`. */
 export function newDefaultTransform(): Transform {
   const esm = newEsmTransform();
