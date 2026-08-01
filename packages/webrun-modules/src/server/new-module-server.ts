@@ -227,17 +227,23 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
       // module extension makes the server transform it + serve `text/javascript`.
       return { url: moduleMarkedUrl(relativeUrl(urlPath(fromId), urlPath(id)), id), id };
     }
-    // Bare CSS specifier (e.g. "some-pkg/reset.css") — CSS never goes through
-    // `~deps`; resolve it directly like the relative branch, `?module`-marked.
-    if (isCssFile(spec)) {
+    // Host-provided/builtin wins before the CSS reroute below — a host-registered
+    // name (even one ending in `.css`) must bind to the host, never CSS.
+    const provided = providedNames(spec);
+    // Bare CSS-looking specifier (e.g. "some-pkg/reset.css") — CSS never goes
+    // through `~deps`; resolve it directly like the relative branch, then
+    // classify by the RESOLVED file, not the raw spec: only an actually-CSS
+    // target routes direct `?module`. A JS-main package that merely has a
+    // `.css`-suffixed NAME falls through to the ordinary proxy path below.
+    if (!provided && isCssFile(spec)) {
       const { url, id } = await resolveCssSpec(spec, fromId);
-      return { url: moduleMarkedUrl(url, id ?? spec), id };
+      if (id && isCssFile(id)) return { url: moduleMarkedUrl(url, id), id };
     }
     // Bare external specifier → generate a co-located proxy; import the proxy.
     const pid = proxyId(fromId, spec);
     let binding: EndpointBinding;
     let endpointId: string | undefined;
-    if (providedNames(spec)) {
+    if (provided) {
       // Bind to the registered key — the exact spec if registered, else its
       // package root (so `react/jsx-runtime` reads the `react` instance, not the
       // unregistered full spec which would resolve to `undefined` at load).
