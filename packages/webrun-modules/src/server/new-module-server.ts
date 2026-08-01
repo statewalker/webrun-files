@@ -227,6 +227,12 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
       // module extension makes the server transform it + serve `text/javascript`.
       return { url: moduleMarkedUrl(relativeUrl(urlPath(fromId), urlPath(id)), id), id };
     }
+    // Bare CSS specifier (e.g. "some-pkg/reset.css") — CSS never goes through
+    // `~deps`; resolve it directly like the relative branch, `?module`-marked.
+    if (isCssFile(spec)) {
+      const { url, id } = await resolveCssSpec(spec, fromId);
+      return { url: moduleMarkedUrl(url, id ?? spec), id };
+    }
     // Bare external specifier → generate a co-located proxy; import the proxy.
     const pid = proxyId(fromId, spec);
     let binding: EndpointBinding;

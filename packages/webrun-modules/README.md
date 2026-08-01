@@ -315,13 +315,16 @@ newModuleServer({ cache, css: myCss }); // default is newDefaultCssTransform() (
 
 Two ways to consume a stylesheet:
 
-- **`import "./x.css"` from JS/TS** — resolves to `x.css?module`, a JS module
-  that injects a `<style>` element on import and default-exports the CSS text
-  (or, for `*.module.css`, the **CSS Modules class map** — `{ localName:
+- **`import "./x.css"` or `import "some-pkg/x.css"` from JS/TS** — both
+  relative and bare specifiers resolve to `x.css?module`, a JS module that
+  injects a `<style>` element on import and default-exports the CSS text (or,
+  for `*.module.css`, the **CSS Modules class map** — `{ localName:
   scopedName }`, empty object when the file has no class selectors to scope).
-  The `<style>` injection is guarded by `typeof document !== "undefined"`, so
-  the same module evaluates cleanly under `target: "node"` (no DOM, no throw) —
-  it just skips the injection and still returns the default export.
+  A bare specifier resolves directly to its pinned package URL — like CSS's
+  own `@import`/`url()` resolution, it never goes through the `~deps` proxy
+  layer. The `<style>` injection is guarded by `typeof document !== "undefined"`,
+  so the same module evaluates cleanly under `target: "node"` (no DOM, no
+  throw) — it just skips the injection and still returns the default export.
 - **a bare `.css` URL** (no `?module`) — serves the processed stylesheet as
   `text/css`, for a `<link rel="stylesheet">`.
 
@@ -331,10 +334,9 @@ goes through the `~deps` proxy layer, since it has no imperative bindings to
 proxy) and are joined by `listResources`/`prime`.
 
 **Out of scope:** Tailwind JIT (precompile Tailwind to plain CSS before
-serving), CSS-in-JS, CSS source maps (tracked for a later `map` field on
-`CssTransformResult`), and a bare `import "some-pkg/styles.css"` written
-directly in JS/TS source (resolve it to a URL and use `<link>`, or author a
-`.css` file that `@import`s it).
+serving), CSS-in-JS, Sass/PostCSS (bring your own via the `CssTransform` seam
+above), and CSS source maps (tracked for a later `map` field on
+`CssTransformResult`).
 
 ## Serving surface
 
