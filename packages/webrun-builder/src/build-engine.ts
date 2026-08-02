@@ -303,7 +303,7 @@ export class BuildEngine<THost> {
             });
             errors.push(
               new Error(
-                `ProjectBuilder.run: no scheduling progress for ${maxStalledPasses} ` +
+                `BuildEngine.run: no scheduling progress for ${maxStalledPasses} ` +
                   `consecutive passes (stuck at "${target}"); a builder is not draining ` +
                   "its input or repeatedly throws",
               ),

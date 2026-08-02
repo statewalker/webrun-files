@@ -11,7 +11,10 @@ export interface Logger {
   debug(...args: unknown[]): void;
 }
 
-/** A no-op `Logger`, the default when none is injected. */
+/**
+ * A no-op `Logger`. `BuildContext.logger` is required — there is no fallback; this
+ * is a convenience a caller may pass explicitly to silence engine logging.
+ */
 export const NULL_LOGGER: Logger = {
   info: () => {},
   warn: () => {},

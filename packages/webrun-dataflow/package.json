@@ -4,7 +4,7 @@
   "private": false,
   "type": "module",
   "description": "Signal-driven dataflow graph (forward impact propagation + filtered Kahn topo sort), with per-cell transaction and per-entry updates stores plus in-memory implementations. Zero deps.",
-  "homepage": "https://github.com/statewalker/statewalker-shared",
+  "homepage": "https://github.com/statewalker/webrun-files/tree/main/packages/webrun-dataflow#readme",
   "author": {
     "name": "Mikhail Kotelnikov",
     "email": "mikhail.kotelnikov@gmail.com"
@@ -12,7 +12,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/statewalker/statewalker-shared.git"
+    "url": "git+https://github.com/statewalker/webrun-files.git"
   },
   "exports": {
     ".": "./src/index.ts"
