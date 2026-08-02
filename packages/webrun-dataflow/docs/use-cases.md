@@ -1,8 +1,8 @@
 # Use cases
 
-`shared-dataflow` was born from content pipelines, but the shape is general. Anything that can be drawn as "boxes consume/produce named channels, and change on the left should ripple to the right" maps onto it.
+`webrun-dataflow` was born from content pipelines, but the shape is general. Anything that can be drawn as "boxes consume/produce named channels, and change on the left should ripple to the right" maps onto it.
 
-The common signature: **stages where each one cares only about "what's new since I last looked," and where correctness depends on the cascade settling into a consistent state**. If you can draw that diagram on a whiteboard, `shared-dataflow` is the runtime under it.
+The common signature: **stages where each one cares only about "what's new since I last looked," and where correctness depends on the cascade settling into a consistent state**. If you can draw that diagram on a whiteboard, `webrun-dataflow` is the runtime under it.
 
 ## Example domains
 

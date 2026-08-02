@@ -55,7 +55,7 @@ export type ReadOrderBy = "stamp" | "uri";
 /**
  * Per-`(signal, uri)` updates log plus a per-cell handled dimension, used by
  * handlers driving multi-stage dataflow pipelines. Sits alongside
- * `TransactionStore` and `DataflowGraph` as a leaf of `@statewalker/shared-dataflow`.
+ * `TransactionStore` and `DataflowGraph` as a leaf of `@statewalker/webrun-dataflow`.
  *
  * Two logical relations:
  *

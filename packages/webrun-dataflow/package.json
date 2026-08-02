@@ -1,5 +1,5 @@
 {
-  "name": "@statewalker/shared-dataflow",
+  "name": "@statewalker/webrun-dataflow",
   "version": "0.1.0",
   "private": false,
   "type": "module",

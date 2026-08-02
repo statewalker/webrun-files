@@ -1,4 +1,4 @@
-# @statewalker/shared-dataflow
+# @statewalker/webrun-dataflow
 
 Signal-driven dataflow graph: forward impact propagation + filtered Kahn topological sort. Zero runtime dependencies.
 
@@ -6,7 +6,7 @@ Signal-driven dataflow graph: forward impact propagation + filtered Kahn topolog
 
 Many real systems share the same shape: **something upstream changes, and a cascade of downstream work has to catch up** — in the right order, without redoing work that's already done, without losing progress if something fails, and without melting the machine when a thousand things change at once.
 
-Hand-rolling that for every pipeline ends up reinventing the same wheel: queues, watermarks, retry logic, ordering hacks, "is this already up to date?" checks, ad-hoc resumption flags. `shared-dataflow` is that wheel, factored out and made declarative.
+Hand-rolling that for every pipeline ends up reinventing the same wheel: queues, watermarks, retry logic, ordering hacks, "is this already up to date?" checks, ad-hoc resumption flags. `webrun-dataflow` is that wheel, factored out and made declarative.
 
 Concretely, it gives you:
 
@@ -41,7 +41,7 @@ This avoids races without requiring priorities or timestamps; ordering is purely
 ## How to use
 
 ```ts
-import { DataflowGraph } from "@statewalker/shared-dataflow";
+import { DataflowGraph } from "@statewalker/webrun-dataflow";
 
 const graph = new DataflowGraph([
   { id: "A", inputs: [],     outputs: ["x", "n"] },
@@ -145,7 +145,7 @@ interface TransactionStore {
 Reference implementation backed by a single counter and a `Map<CellId, number>`. State lives in this process; nothing persists across restarts. Suitable for tests and single-process use.
 
 ```ts
-import { InMemoryTransactionStore } from "@statewalker/shared-dataflow";
+import { InMemoryTransactionStore } from "@statewalker/webrun-dataflow";
 
 const store = new InMemoryTransactionStore();
 const tx = await store.newTransactionId(); // 1, 2, 3, ...
@@ -246,7 +246,7 @@ function newExtractor(deps: { files: FilesApi; updatesStore: UpdatesStore }): Ce
 **2. Fine, per-cell handled watermark** (`readUpdates` / `readCellUpdates` + `handleUpdate`). The watermark is per `(signal, cell, uri)`. Use this when **multiple cells consume the same signal and must handle each change independently**, or for **sink/fan-out cells** that have no single output signal to act as their watermark. Each cell advances its own watermark by calling `handleUpdate` on the input it just processed:
 
 ```ts
-import { readCellUpdates } from "@statewalker/shared-dataflow";
+import { readCellUpdates } from "@statewalker/webrun-dataflow";
 
 // Two cells both consume "file-source"; each tracks the same file independently.
 function newPreviewer(deps: { graph: DataflowGraph; updatesStore: UpdatesStore }): CellHandler {
@@ -281,7 +281,7 @@ function newPreviewer(deps: { graph: DataflowGraph; updatesStore: UpdatesStore }
 - Memory is O(number of input signals), independent of how many URIs match — and the merge is lazy, so a consumer that `break`s early stops the underlying reads.
 
 ```ts
-import { readCellUpdates, aggregateByUri } from "@statewalker/shared-dataflow";
+import { readCellUpdates, aggregateByUri } from "@statewalker/webrun-dataflow";
 
 // One record per uri, with every contributing upstream entry:
 const byUri = await aggregateByUri(readCellUpdates(store, graph, "Index"));
@@ -297,7 +297,7 @@ After handling a yielded entry, call `handleUpdate` with `stamp >= entry.stamp` 
 Reference implementation backed by two maps — `Map<Signal, Map<Uri, Stamp>>` (updates) and `Map<Signal, Map<Cell, Map<Uri, Stamp>>>` (handled). State lives in this process; nothing persists across restarts. The constructor accepts an optional serialized state, and `snapshot()` / `toJSON()` dump it:
 
 ```ts
-import { InMemoryUpdatesStore } from "@statewalker/shared-dataflow";
+import { InMemoryUpdatesStore } from "@statewalker/webrun-dataflow";
 
 const store = new InMemoryUpdatesStore();
 await store.setUpdate({ signal: "files", uri: "f1", stamp: 1 });
@@ -431,7 +431,7 @@ import {
   DataflowGraph,
   InMemoryTransactionStore,
   UpdatesManager,
-} from "@statewalker/shared-dataflow";
+} from "@statewalker/webrun-dataflow";
 
 const graph = new DataflowGraph([
   { id: "Detect",  inputs: ["fs-tick"],         outputs: ["files-changed"] },
