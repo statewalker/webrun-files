@@ -1,8 +1,7 @@
 import { type CellDefinition, DataflowGraph, readCellUpdates } from "@statewalker/webrun-dataflow";
 import { type FilesApi, joinPath, tryReadText } from "@statewalker/webrun-files";
-import { type Logger, loggerOf } from "../types/logger.js";
-import { DEFAULT_SYSTEM_FOLDER, type Project } from "../types/project.js";
 import { tryReadJson, writeJsonAtomic } from "./json-io.js";
+import type { Logger } from "./logger.js";
 import { makeProjectIgnore } from "./project-ignore.js";
 import { FileBackedTransactionStore } from "./transaction-store.js";
 import type {
@@ -13,6 +12,18 @@ import type {
   SignalName,
 } from "./types.js";
 import { FileBackedUpdatesStore } from "./updates-store.js";
+
+/**
+ * Ambient build context: where state lives (`files` under `rootPath`, in the
+ * `systemFolder` system directory) and where the engine logs. Host-neutral — the
+ * generic `host` handed to builders is carried alongside, not part of this shape.
+ */
+export interface BuildContext {
+  files: FilesApi;
+  rootPath: string;
+  systemFolder: string;
+  logger: Logger;
+}
 
 /** Reserved cell id of the built-in generic source scanner. */
 export const SCAN_CELL = "SourceScanner";
@@ -64,22 +75,25 @@ const DEFAULT_YIELD_CONFIG: YieldConfig = {
 };
 
 /**
- * The generic build engine, a project-level adapter resolved via
- * `project.requireAdapter(ProjectBuilder)`. Schedules signal-driven builders over
+ * The generic, host-agnostic build engine. Schedules signal-driven builders over
  * `@statewalker/webrun-dataflow`, drives centralized update / transaction stores
- * (persisted under the project system folder), and provides generic source
- * change-detection. Knows nothing wiki-specific; a project's "nature" contributes
- * builders via `registerBuilder` / a `BuilderProvider`.
+ * (persisted under `rootPath`/`systemFolder`/`state`), and provides generic source
+ * change-detection over a `FilesApi`. Knows nothing about any host; the injected
+ * `host: THost` is passed through to each builder handler untouched, and a caller's
+ * "nature" contributes builders via `registerBuilder` / a `BuilderProvider`.
  */
-export class ProjectBuilder {
-  private readonly builders = new Map<string, RegisteredBuilder>();
+export class BuildEngine<THost> {
+  private readonly builders = new Map<string, RegisteredBuilder<THost>>();
   private graph?: DataflowGraph;
   private stores?: Stores;
   private yieldCounter = 0;
   private yieldCfg: YieldConfig = DEFAULT_YIELD_CONFIG;
   private sourceIgnore?: () => Promise<(uri: string) => boolean>;
+  private readonly ctx: BuildContext & { host: THost };
 
-  constructor(readonly project: Project) {}
+  constructor(opts: BuildContext & { host: THost }) {
+    this.ctx = opts;
+  }
 
   /** Override the cooperative-yield throttle. */
   configureYield(partial: Partial<YieldConfig>): this {
@@ -106,19 +120,19 @@ export class ProjectBuilder {
   }
 
   private get filesApi(): FilesApi {
-    return this.project.workspace.files;
+    return this.ctx.files;
   }
 
   private get systemFolder(): string {
-    return DEFAULT_SYSTEM_FOLDER;
+    return this.ctx.systemFolder;
   }
 
   private stateDir(): string {
-    return joinPath(this.project.path, this.systemFolder, "state");
+    return joinPath(this.ctx.rootPath, this.systemFolder, "state");
   }
 
   /** Register a builder; returns an unregister function. */
-  registerBuilder(builder: RegisteredBuilder): () => void {
+  registerBuilder(builder: RegisteredBuilder<THost>): () => void {
     if (builder.id === SCAN_CELL) {
       throw new Error(`Builder id "${SCAN_CELL}" is reserved for the source scanner`);
     }
@@ -237,7 +251,7 @@ export class ProjectBuilder {
     const runBuilder = async (id: string): Promise<boolean> => {
       const b = this.builders.get(id);
       if (!b) return true;
-      const gen = b.handler(this.project);
+      const gen = b.handler(this.ctx.host);
       let res = await gen.next();
       while (!res.done) {
         const u = res.value;
@@ -250,7 +264,7 @@ export class ProjectBuilder {
     const stages = this.executionOrder(graph).filter((c) => c !== SCAN_CELL);
     const only = opts?.builders ? new Set(opts.builders) : undefined;
     const active = only ? stages.filter((c) => only.has(c)) : stages;
-    const log = loggerOf(this.project, "ProjectBuilder");
+    const log = this.ctx.logger;
     log.info("build run started", { stages: active });
 
     try {
@@ -493,19 +507,19 @@ export class ProjectBuilder {
   private async scan(stores: Stores, transactionId: number, log: Logger): Promise<boolean> {
     const { updates, scannerState } = stores;
     let emitted = false;
-    const base = this.project.path.replace(/^\/+|\/+$/g, "");
+    const base = this.ctx.rootPath.replace(/^\/+|\/+$/g, "");
     // `.projectignore` (gitignore-style) at the project root: excluded paths are
     // skipped here, so they never enter `seen` and any previously-indexed ones are
     // emitted as `sources-removed` below — adding a rule prunes their artifacts.
     const projectIgnore = makeProjectIgnore(
-      await tryReadText(this.filesApi, joinPath(this.project.path, ".projectignore")),
+      await tryReadText(this.filesApi, joinPath(this.ctx.rootPath, ".projectignore")),
     );
     // Compose `.projectignore` with the nature-supplied ignore (re-read each scan).
     const natureIgnore = this.sourceIgnore ? await this.sourceIgnore() : undefined;
     const isIgnored = (uri: string) => projectIgnore(uri) || (natureIgnore?.(uri) ?? false);
     const seen = new Set<string>();
     const changed: { uri: string; mtime: number }[] = [];
-    for await (const info of this.filesApi.list(this.project.path, {
+    for await (const info of this.filesApi.list(this.ctx.rootPath, {
       recursive: true,
     })) {
       if (info.kind !== "file") continue;

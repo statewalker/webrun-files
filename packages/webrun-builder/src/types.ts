@@ -1,5 +1,3 @@
-import type { Project } from "../types/project.js";
-
 /** A dataflow signal name (e.g. `"sources"`, `"content"`, `"summarized"`). */
 export type SignalName = string;
 
@@ -23,25 +21,27 @@ export interface BuilderUpdate {
 }
 
 /**
- * A builder handler: reads its input deltas (via `project.requireAdapter(ProjectBuilder)`),
- * processes them, yields output updates for downstream builders, and returns `true` when
- * all upstream updates were handled (no re-run needed) or `false` to request a re-run.
+ * A builder handler: reads its input deltas (via the injected host), processes
+ * them, yields output updates for downstream builders, and returns `true` when all
+ * upstream updates were handled (no re-run needed) or `false` to request a re-run.
+ * `THost` is whatever the engine was constructed with and is passed through
+ * untouched — the engine never inspects it.
  */
-export type BuilderHandler = (
-  project: Project,
+export type BuilderHandler<THost> = (
+  host: THost,
 ) => AsyncGenerator<EmittedUpdate, boolean | undefined>;
 
-/** A builder registered on a `ProjectBuilder`. */
-export interface RegisteredBuilder {
+/** A builder registered on a `BuildEngine<THost>`. */
+export interface RegisteredBuilder<THost> {
   id: string;
   inputs: readonly SignalName[];
   outputs: readonly SignalName[];
-  handler: BuilderHandler;
+  handler: BuilderHandler<THost>;
 }
 
-/** An adapter that contributes builders to a project's pipeline (its "nature"). */
-export interface BuilderProvider {
-  builders(): readonly RegisteredBuilder[];
+/** An adapter that contributes builders to a build pipeline (a host's "nature"). */
+export interface BuilderProvider<THost> {
+  builders(): readonly RegisteredBuilder<THost>[];
 }
 
 /** Progress event yielded by `ProjectBuilder.run`. */
