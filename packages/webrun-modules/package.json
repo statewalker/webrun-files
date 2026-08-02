@@ -38,8 +38,8 @@
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
-    "@statewalker/webrun-files": "catalog:",
-    "@statewalker/webrun-files-mem": "catalog:",
+    "@statewalker/webrun-files": "workspace:*",
+    "@statewalker/webrun-files-mem": "workspace:*",
     "acorn": "^8.12.1",
     "acorn-globals": "^7.0.1",
     "sucrase": "catalog:",
@@ -53,7 +53,7 @@
     "lightningcss-wasm": "^1.27.0"
   },
   "devDependencies": {
-    "@statewalker/webrun-files-node": "catalog:",
+    "@statewalker/webrun-files-node": "workspace:*",
     "@types/node": "catalog:",
     "@types/semver": "^7.5.8",
     "rimraf": "catalog:",
