@@ -5,7 +5,7 @@ import {
   type SerializedUpdatesStore,
   type UpdateEntry,
   type UpdatesStore,
-} from "@statewalker/shared-dataflow";
+} from "@statewalker/webrun-dataflow";
 import type { FilesApi } from "@statewalker/webrun-files";
 import { tryReadJson, writeJsonAtomic } from "./json-io.js";
 

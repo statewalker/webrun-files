@@ -1,4 +1,4 @@
-import { type CellDefinition, DataflowGraph, readCellUpdates } from "@statewalker/shared-dataflow";
+import { type CellDefinition, DataflowGraph, readCellUpdates } from "@statewalker/webrun-dataflow";
 import { type FilesApi, joinPath, tryReadText } from "@statewalker/webrun-files";
 import { type Logger, loggerOf } from "../types/logger.js";
 import { DEFAULT_SYSTEM_FOLDER, type Project } from "../types/project.js";
@@ -66,7 +66,7 @@ const DEFAULT_YIELD_CONFIG: YieldConfig = {
 /**
  * The generic build engine, a project-level adapter resolved via
  * `project.requireAdapter(ProjectBuilder)`. Schedules signal-driven builders over
- * `@statewalker/shared-dataflow`, drives centralized update / transaction stores
+ * `@statewalker/webrun-dataflow`, drives centralized update / transaction stores
  * (persisted under the project system folder), and provides generic source
  * change-detection. Knows nothing wiki-specific; a project's "nature" contributes
  * builders via `registerBuilder` / a `BuilderProvider`.

@@ -1,4 +1,4 @@
-import type { CellId, TransactionStore } from "@statewalker/shared-dataflow";
+import type { CellId, TransactionStore } from "@statewalker/webrun-dataflow";
 import type { FilesApi } from "@statewalker/webrun-files";
 import { tryReadJson, writeJsonAtomic } from "./json-io.js";
 
