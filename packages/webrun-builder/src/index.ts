@@ -7,6 +7,7 @@ export {
   type YieldConfig,
 } from "./build-engine.js";
 export { type Logger, NULL_LOGGER } from "./logger.js";
+export { compileIgnoreRules, type IgnoreRule, makeProjectIgnore } from "./project-ignore.js";
 export type {
   BuilderHandler,
   BuilderProvider,
