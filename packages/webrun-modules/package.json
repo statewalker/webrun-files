@@ -1,0 +1,69 @@
+{
+  "name": "@statewalker/webrun-modules",
+  "version": "0.2.0",
+  "private": false,
+  "type": "module",
+  "description": "Isomorphic module/dependency server: resolve + download + transform npm and authored TS/JS into browser-runnable ESM served from a local FilesApi cache, with no runtime CDN dependency",
+  "homepage": "https://github.com/statewalker/webrun-files/tree/main/packages/webrun-modules#readme",
+  "author": {
+    "name": "Mikhail Kotelnikov",
+    "email": "mikhail.kotelnikov@gmail.com"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/statewalker/webrun-files.git"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "rimraf dist && rolldown -c && tsc --emitDeclarationOnly --declaration",
+    "test": "vitest run",
+    "lint": "biome check src tests",
+    "example": "tsx examples/full-cycle.ts",
+    "example:full-cycle": "tsx examples/full-cycle.ts",
+    "example:server": "tsx examples/http-server.ts",
+    "example:site": "tsx examples/site-pipeline.ts",
+    "prepublishOnly": "pnpm run build"
+  },
+  "dependencies": {
+    "@statewalker/webrun-files": "workspace:*",
+    "@statewalker/webrun-files-mem": "workspace:*",
+    "acorn": "^8.12.1",
+    "acorn-globals": "^7.0.1",
+    "sucrase": "catalog:",
+    "@jspm/generator": "catalog:",
+    "cjs-module-lexer": "^1.4.1",
+    "resolve.exports": "^2.0.3",
+    "npm-package-arg": "^12.0.0",
+    "semver": "^7.6.3",
+    "@jspm/core": "^2.1.0",
+    "fflate": "^0.8.2",
+    "lightningcss-wasm": "^1.27.0"
+  },
+  "devDependencies": {
+    "@statewalker/webrun-files-node": "workspace:*",
+    "@types/node": "catalog:",
+    "@types/semver": "^7.5.8",
+    "rimraf": "catalog:",
+    "rolldown": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  }
+}
