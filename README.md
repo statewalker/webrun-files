@@ -88,7 +88,12 @@ interface FilesApi {
 
 ## Packages
 
-This repository is organized as a monorepo containing seven packages.
+This repository is the **webrun runtime monorepo**. Alongside the `webrun-files`
+FS family (the `FilesApi` interface and its backends) it hosts the runtime layers
+built on top of them: a signal-driven dataflow graph, an incremental build engine,
+and an on-request module server.
+
+### Files (`FilesApi` and backends)
 
 ### [@statewalker/webrun-files](./packages/webrun-files)
 
@@ -195,6 +200,31 @@ createFilesApiTests('MyCustomFilesApi', async () => ({
 ```
 
 The suite covers 50+ test cases including basic operations, edge cases, concurrent access, and error handling.
+
+### Runtime (built on `FilesApi`)
+
+#### [@statewalker/webrun-dataflow](./packages/webrun-dataflow)
+
+Signal-driven dataflow graph — forward impact propagation plus a filtered Kahn
+topological sort — with per-cell transaction and per-entry updates stores (and
+in-memory implementations). Turns "something upstream changed" into the minimum
+correct downstream cascade, in dependency order, resumable after failure. Zero
+runtime dependencies.
+
+#### [@statewalker/webrun-builder](./packages/webrun-builder)
+
+Generic, host-agnostic incremental build engine (`BuildEngine<THost>`). Schedules
+signal-driven builders over `@statewalker/webrun-dataflow`, drives file-backed
+update / transaction stores over a `FilesApi`, and detects source changes by
+scanning a project tree (with `.projectignore` support and `sources-removed`
+tombstones). A frontier/convergence scheduler with cooperative yield/checkpoint.
+
+#### [@statewalker/webrun-modules](./packages/webrun-modules)
+
+Runs authored TS/JS apps — and the arbitrary npm modules they import — in the
+browser or Node with no runtime CDN dependency and no install step: packages are
+downloaded, resolved, and transformed on request, then served from a `FilesApi`
+cache as same-origin ESM.
 
 ## Development
 
