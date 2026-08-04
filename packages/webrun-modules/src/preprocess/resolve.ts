@@ -187,11 +187,10 @@ export async function resolveSpec(
   return { url: ctx.policy.servedUrl(pid, fromId), id: pid, endpointId };
 }
 
-/** Generate + cache a proxy module (idempotent). The served endpoint url is the
- *  binding's `urlPath`-mapped id so it resolves across the `depsPath` boundary;
- *  `proxyBody` relativizes it against the proxy id. (Routing the endpoint through
- *  the policy is a build/ext-map concern that also re-signatures `proxyBody` — out
- *  of scope for the keep-ext server extraction.) */
+/** Generate + cache a proxy module (idempotent). A `local` endpoint's URL is
+ *  shaped through the URL policy (`servedUrl(endpointId, pid)`) so it carries the
+ *  driver's extension decision (keep-ext keeps the source ext; ext-map rewrites to
+ *  `.js`) and is already relativized — `proxyBody` splices it in verbatim. */
 export async function ensureProxy(
   pid: string,
   binding: EndpointBinding,
@@ -202,13 +201,10 @@ export async function ensureProxy(
     const key = ctx.policy.emittedPath(pid);
     if (await ctx.cache.exists(key)) return;
     const wire: EndpointBinding =
-      binding.kind === "local" ? { kind: "local", url: urlPath(binding.url, ctx) } : binding;
-    const body = proxyBody({
-      proxyId: urlPath(pid, ctx),
-      binding: wire,
-      imp,
-      registryKey: HOST_REGISTRY_KEY,
-    });
+      binding.kind === "local"
+        ? { kind: "local", url: ctx.policy.servedUrl(binding.url, pid) }
+        : binding;
+    const body = proxyBody({ binding: wire, imp, registryKey: HOST_REGISTRY_KEY });
     await writeText(ctx.cache, key, body);
   });
 }

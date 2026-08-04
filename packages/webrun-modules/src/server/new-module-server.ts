@@ -1,6 +1,5 @@
-import { readText, writeText } from "@statewalker/webrun-files";
+import { readText } from "@statewalker/webrun-files";
 import { globalHostRegistry, HOST_REGISTRY_KEY } from "../deps/host-registry.js";
-import { proxyId } from "../deps/proxy.js";
 import {
   defaultGlobals,
   makeKeepExtPolicy,
@@ -9,18 +8,9 @@ import {
   urlPath,
 } from "../preprocess/context.js";
 import { cssModuleWrapper, preprocessModule, serveJsonModule } from "../preprocess/module.js";
-import {
-  cssSpecifiers,
-  ensurePackage,
-  ensureRawByKey,
-  loadRaw,
-  makeDefaultEndpointResolver,
-  rawBytes,
-  resolveCssSpec,
-  resolveSpec,
-} from "../preprocess/resolve.js";
+import { ensurePackage, makeDefaultEndpointResolver, rawBytes } from "../preprocess/resolve.js";
+import { walkFrom } from "../preprocess/walk.js";
 import { npmRegistrySource } from "../sources/npm-registry-source.js";
-import { analyze } from "../transform/analyze.js";
 import { newDefaultCssTransform } from "../transform/css/index.js";
 import { newDefaultTransform } from "../transform/index.js";
 import type {
@@ -163,58 +153,6 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
     return (await ensurePackage(ref, ctx)).id;
   }
 
-  /** Walk + transform + cache the whole graph from an entry; persist the lockfile.
-   *  Returns the entry id and every reachable module id. */
-  async function walkGraph(entry: ModuleRef): Promise<{ rootId: string; ids: string[] }> {
-    const rootId = await resolveEntryId(entry);
-    const seen = new Set<string>();
-    const queue = [rootId];
-    while (queue.length) {
-      const id = queue.shift();
-      if (id === undefined || seen.has(id)) continue;
-      seen.add(id);
-      // `~deps` proxies are pre-generated into `/t/{target}` by their importer's
-      // resolveSpec/transformAndCache — served from cache, never re-analyzed.
-      if (id.includes("/~deps/") && (await cache.exists(`${tRoot}/${id}`))) continue;
-      if (isCssFile(id)) {
-        await cssTransformAndCache(id); // ensures the file + its exports are cached
-        const { path, source } = await loadRaw(id, ctx);
-        // Reuse cssSpecifiers — the SAME helper cssTransformAndCache uses — then
-        // re-derive child ids via CSS's own direct resolver (never `resolveSpec`:
-        // that one proxies bare externals through `~deps`, which CSS must not do).
-        for (const spec of await cssSpecifiers(path, source, ctx)) {
-          const { id: childId } = await resolveCssSpec(spec, id, ctx);
-          if (childId && !seen.has(childId)) queue.push(childId);
-        }
-        continue;
-      }
-      if (!isModuleFile(id)) {
-        // non-JS resource (json/css/…): ensure it's cached, don't scan/transform.
-        const m = id.match(/^((?:@[^/]+\/)?[^/]+@[^/]+)\//);
-        if (m) await ensureRawByKey(m[1], ctx);
-        continue;
-      }
-      const { source, format } = await loadRaw(id, ctx);
-      const { imports } = await analyze(source, format);
-      for (const spec of Object.keys(imports)) {
-        if (spec === "") {
-          // Only allowlisted free globals get a proxy (matches transformAndCache);
-          // real globals like `console`/`Math` are left as native references.
-          if (imports[""].names.some((n) => Object.hasOwn(ctx.globals, n))) {
-            queue.push(proxyId(id, ""));
-          }
-          continue;
-        }
-        const { id: childId, endpointId } = await resolveSpec(spec, id, imports[spec], ctx);
-        if (childId && !seen.has(childId)) queue.push(childId); // the proxy
-        if (endpointId && !seen.has(endpointId)) queue.push(endpointId); // the real endpoint
-      }
-      await transformAndCache(id);
-    }
-    await writeText(cache, "/lock.json", JSON.stringify(lock));
-    return { rootId, ids: [...seen] };
-  }
-
   return {
     get lock() {
       return lock;
@@ -228,13 +166,15 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
 
     async prime(entry: ModuleRef): Promise<ResolvedModule> {
       await init();
-      const { rootId } = await walkGraph(entry);
+      const rootId = await resolveEntryId(entry);
+      await walkFrom(rootId, ctx);
       return { url: urlFor(rootId), target };
     },
 
     async listResources(entry: ModuleRef): Promise<string[]> {
       await init();
-      const { ids } = await walkGraph(entry);
+      const rootId = await resolveEntryId(entry);
+      const ids = await walkFrom(rootId, ctx);
       return ids.map(urlFor).sort();
     },
 
