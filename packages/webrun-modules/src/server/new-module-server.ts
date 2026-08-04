@@ -8,9 +8,9 @@ import {
   type UrlPolicy,
   urlPath,
 } from "../preprocess/context.js";
+import { cssModuleWrapper, preprocessModule, serveJsonModule } from "../preprocess/module.js";
 import {
   cssSpecifiers,
-  ensureGlobalsProxy,
   ensurePackage,
   ensureRawByKey,
   loadRaw,
@@ -34,7 +34,6 @@ import type {
   ResolvedModule,
 } from "../types.js";
 import { ModuleResolveError } from "../types.js";
-import { relativeUrl } from "./specifiers.js";
 
 /** JS/TS module files — the only ones the transform touches. */
 const MODULE_EXT = /\.(?:m|c)?[jt]sx?$/;
@@ -130,52 +129,19 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
     return p;
   };
 
-  /** Transform + cache a `.css` file. Two Lightning CSS passes: pass 1 (via
-   *  `cssSpecifiers`) captures every @import/url() specifier; the specifiers are
-   *  then resolved asynchronously (the seam's `rewrite` itself must stay sync,
-   *  so resolution can't happen inline); pass 2 substitutes the resolved urls. */
+  /** Transform + cache a `.css` file via the shared `preprocessModule` core, then
+   *  reconstruct the `CssTransformResult` (its exports come back from the sidecar
+   *  the core just wrote) for the callers that need the class map. */
   async function cssTransformAndCache(id: string): Promise<CssTransformResult> {
-    const { path, source } = await loadRaw(id, ctx);
-    const cssModules = /\.module\.css$/.test(id);
-    const rewrites = new Map<string, string>();
-    for (const spec of await cssSpecifiers(path, source, ctx)) {
-      rewrites.set(spec, (await resolveCssSpec(spec, id, ctx)).url);
-    }
-    const out = await cssTransformer.transform(
-      { path, source, cssModules },
-      (s) => rewrites.get(s) ?? s,
-    );
-    await writeText(cache, `${tRoot}/${id}`, out.code);
-    await writeText(cache, `${tRoot}/${id}.exports.json`, JSON.stringify(out.exports));
-    return out;
+    const { code } = await preprocessModule(id, ctx);
+    const exports = JSON.parse(await readText(cache, `${tRoot}/${id}.exports.json`));
+    return { code, exports };
   }
 
-  /** Transform a module (pre-resolving its specifiers) and cache the ESM output.
-   *  Bare specifiers rewrite to `~deps` proxies; used allowlisted free globals get
-   *  a prepended import from a co-located globals proxy (the server owns the
-   *  prepend, not the Transform). */
+  /** Transform + cache a module (JS/TS/JSX/TSX) via the shared `preprocessModule`
+   *  core; returns the emitted ESM body. */
   async function transformAndCache(id: string): Promise<string> {
-    const { path, source, format } = await loadRaw(id, ctx);
-    const { imports } = await analyze(source, format);
-    const map = new Map<string, string>();
-    for (const spec of Object.keys(imports)) {
-      if (spec === "") continue;
-      map.set(spec, (await resolveSpec(spec, id, imports[spec], ctx)).url);
-    }
-    // Globals: prepend an import from a co-located globals proxy for allowlisted
-    // free vars (declared/imported names never appear in the `""` free-global set).
-    const usedGlobals = (imports[""]?.names ?? []).filter((n) => Object.hasOwn(ctx.globals, n));
-    let prelude = "";
-    if (usedGlobals.length) {
-      const gid = proxyId(id, "");
-      await ensureGlobalsProxy(gid, usedGlobals, ctx);
-      prelude = `import { ${usedGlobals.join(", ")} } from ${JSON.stringify(
-        relativeUrl(urlPath(id, ctx), urlPath(gid, ctx)),
-      )};\n`;
-    }
-    const { code } = await transformer.transform({ path, source, format }, (s) => map.get(s) ?? s);
-    await writeText(cache, `${tRoot}/${id}`, prelude + code);
-    return prelude + code;
+    return (await preprocessModule(id, ctx)).code;
   }
 
   /** Serve a file's raw bytes (non-module resources, or `?raw`). */
@@ -185,18 +151,6 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
     return new Response(bytes as BodyInit, {
       status: 200,
       headers: { "content-type": asOctet ? "application/octet-stream" : contentType(id) },
-    });
-  }
-
-  /** Serve a JSON file as an ESM module (`export default …`) — how a JS `import`
-   *  of a `.json` is satisfied without relying on browser JSON-import attributes. */
-  async function serveJsonModule(id: string): Promise<Response> {
-    const bytes = await rawBytes(id, ctx);
-    if (!bytes) return new Response(null, { status: 404 });
-    const json = new TextDecoder().decode(bytes);
-    return new Response(`export default ${json};`, {
-      status: 200,
-      headers: { "content-type": "text/javascript" },
     });
   }
 
@@ -305,7 +259,12 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
         // files (json/md/css/…) → raw + guessed type.
         if (url.searchParams.has("raw")) return await serveRaw(id, true);
         if (url.searchParams.has("module") && id.endsWith(".json")) {
-          return await serveJsonModule(id);
+          const code = await serveJsonModule(id, ctx);
+          if (code === undefined) return new Response(null, { status: 404 });
+          return new Response(code, {
+            status: 200,
+            headers: { "content-type": "text/javascript" },
+          });
         }
         if (isCssFile(id)) {
           const cssModules = /\.module\.css$/.test(id);
@@ -341,25 +300,6 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
       }
     },
   };
-}
-
-/** JS module that injects the processed CSS as a <style> (guarded for non-DOM /
- *  Node) and default-exports the CSS Modules class map (when `cssModules`) or
- *  the CSS text otherwise. */
-function cssModuleWrapper(
-  css: string,
-  exports: Record<string, string>,
-  cssModules: boolean,
-): string {
-  return [
-    `const css = ${JSON.stringify(css)};`,
-    `if (typeof document !== "undefined") {`,
-    `  const el = document.createElement("style");`,
-    `  el.textContent = css;`,
-    `  document.head.appendChild(el);`,
-    `}`,
-    `export default ${cssModules ? JSON.stringify(exports) : "css"};`,
-  ].join("\n");
 }
 
 function normalizeBase(base: string): string {
