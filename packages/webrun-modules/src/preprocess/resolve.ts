@@ -308,7 +308,31 @@ export async function resolveRelativeId(
     const file = await resolveRawFile(pkgKey, rel, ctx);
     return `${pkgKey}/${file}`;
   }
-  return base; // project-relative
+  return await resolveProjectId(base, ctx); // project-relative
+}
+
+/** Source extensions probed for a project-relative id, in priority order. TS/TSX
+ *  first so an ESM-convention `.js` import resolves to its `.ts`/`.tsx` source. */
+const PROJECT_EXT = [".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs", ".json"];
+
+/**
+ * Map a project-relative id (`~/…`) to the id of the source file that actually
+ * exists. A `.js`/`.jsx` specifier (the standard ESM convention) commonly names a
+ * `.ts`/`.tsx` source; the raw id would then have no backing file. If the literal
+ * id already exists it is returned unchanged (no behaviour change for real `.js`
+ * sources or `.json`/`.css` ids); otherwise the JS-family extension is swapped for
+ * each source extension, then `index.*` is tried. The literal is the last resort so
+ * an unresolvable id stays identical to the pre-probe behaviour.
+ */
+export async function resolveProjectId(base: string, ctx: PreprocessContext): Promise<string> {
+  const files = ctx.files;
+  if (!files || !base.startsWith("~/")) return base;
+  const has = (id: string) => files.exists(`/${id.slice(2)}`);
+  if (await has(base)) return base;
+  const stem = base.replace(/\.(?:m|c)?jsx?$/, ""); // ./app.js → ./app, then probe source exts
+  for (const ext of PROJECT_EXT) if (await has(stem + ext)) return stem + ext;
+  for (const ext of PROJECT_EXT) if (await has(`${base}/index${ext}`)) return `${base}/index${ext}`;
+  return base;
 }
 
 /** Try extension/index variants for a package-relative file; return what exists. */
