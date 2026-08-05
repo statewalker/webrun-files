@@ -27,10 +27,17 @@ function emptyImport(): ModuleImport {
  * sucrase-injected `react/jsx-runtime` import). Free globals are detected with
  * `acorn-globals` (scope-aware) and recorded under the reserved `""` key.
  */
-export async function analyze(source: string, format: SourceFormat): Promise<ModuleDescriptor> {
+export async function analyze(
+  source: string,
+  format: SourceFormat,
+  production = false,
+): Promise<ModuleDescriptor> {
   if (format === "cjs") return analyzeCjs(source);
 
-  const js = toJs(source, format);
+  // Must match the transform's `production` so the scanner sees the SAME injected
+  // `react/jsx*-runtime` import the transform emits (else the resolved dep and the
+  // emitted specifier diverge and the JSX runtime import 404s).
+  const js = toJs(source, format, undefined, production);
   const ast = parseEsmModule(js);
   const imports: Record<string, ModuleImport> = {};
   const exports = new Set<string>();

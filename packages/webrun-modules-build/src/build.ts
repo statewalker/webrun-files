@@ -82,7 +82,7 @@ export function newProjectBuild(opts: ProjectBuildOptions): ProjectBuild {
     tRoot: `/t/${target}`,
     lock: {},
     sources: opts.sources ?? [npmRegistrySource()],
-    transform: opts.transform ?? newDefaultTransform(),
+    transform: opts.transform ?? newDefaultTransform(target === "browser"),
     css: opts.css ?? newDefaultCssTransform(),
     registry: newHostRegistry(),
     globals: defaultGlobals(target),
