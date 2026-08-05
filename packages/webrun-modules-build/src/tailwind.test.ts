@@ -42,7 +42,7 @@ describe("newProjectBuild — Tailwind transform (build-only)", () => {
     expect(injector).toContain(".p-4");
   });
 
-  it("suppresses the bare `@import \"tailwindcss\"` so the walk never npm-resolves it", async () => {
+  it('suppresses the bare `@import "tailwindcss"` so the walk never npm-resolves it', async () => {
     const project = new MemFilesApi();
     await writeText(project, "/main.tsx", `import "./styles.css";\nexport const x = 1;`);
     await writeText(project, "/styles.css", `@import "tailwindcss";`);
