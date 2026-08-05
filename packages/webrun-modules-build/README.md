@@ -29,20 +29,12 @@ artifact still exists — so editing a root re-transforms only the root, and a d
 transforms its shared node once, not once per path. `project` and `cache` must be
 distinct `FilesApi` instances (asserted).
 
-## Known limitations (Phase 3)
+## CSS emission
 
-CSS support here is **minimal and known-incomplete**; the following are owned by the
-Phase 3 (CSS/Tailwind) work and are **not** handled by this package:
-
-- **CSS reached from JS emits a single `.js` injector.** An `import "./styles.css"`
-  from JS becomes one `cssModuleWrapper` `.js` that injects a `<style>`. That is the
-  only CSS form emitted.
-- **F2 — `@import`-chained `.css` is not followed.** An `@import "./other.css"` keeps
-  its `.css` specifier while the ext-map policy names the target `.js`; the chained
-  stylesheet is never emitted, so its styles are **silently dropped** (404 on the
-  dangling `@import`, plus a dead `.js`).
-- **F3 — `url()` asset references are not emitted.** `url("./logo.png")` is rewritten
-  but the asset is not a module/css/json/package id, so it is never emitted →
-  runtime **404**.
-
-Treat CSS beyond a single JS-imported stylesheet as unsupported until Phase 3.
+- **CSS reached from JS emits a `.js` injector.** An `import "./styles.css"` from JS
+  becomes one `cssModuleWrapper` `.js` that injects a `<style>`.
+- **F2 — `@import`-chained `.css` is emitted as a real file.** An `@import "./other.css"`
+  keeps its `.css` specifier; the chained stylesheet is written as a live `.css` at its
+  `urlPath` (alongside its `.js` form) so the injected `@import` resolves.
+- **F3 — `url()` asset references are copied.** `url("./logo.png")` targets a
+  non-code asset id, copied verbatim to its (unchanged) ext-map path.
