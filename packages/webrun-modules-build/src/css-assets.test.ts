@@ -68,4 +68,24 @@ describe("newProjectBuild — Prune F2 .css orphan", () => {
     expect(await cache.exists("/~/b.js")).toBe(false);
     expect(await cache.exists("/~/b.css")).toBe(false);
   });
+
+  it("removes an emitted /~/logo.png asset when its source is deleted", async () => {
+    const project = new MemFilesApi();
+    await writeText(project, "/main.tsx", `import "./a.css";\nexport const x = 1;`);
+    await writeText(project, "/a.css", `.a { background: url("./logo.png"); }`);
+    await project.write("/logo.png", [new Uint8Array([0x89, 0x50, 0x4e, 0x47])]);
+    const cache = new MemFilesApi();
+    const build = newProjectBuild({ project, cache });
+
+    await build.build();
+    expect(await cache.exists("/~/logo.png")).toBe(true);
+
+    await tick();
+    await project.remove("/logo.png");
+    await build.build();
+
+    // The asset's emitted path is its own `emitted` (ext-map leaves .png), so the
+    // generic Prune path removes it on `sources-removed`.
+    expect(await cache.exists("/~/logo.png")).toBe(false);
+  });
 });
