@@ -2,9 +2,20 @@ import { readText, tryReadText, writeText } from "@statewalker/webrun-files";
 import {
   cssModuleWrapper,
   type PreprocessContext,
+  rawBytes,
   serveJsonModule,
   urlPath,
 } from "@statewalker/webrun-modules";
+
+/** Code/json/css module extensions the build transforms into `.js` forms. Anything
+ *  else reached in a walk (e.g. a `url("./logo.png")` target) is an opaque ASSET:
+ *  copied verbatim to its (unchanged) ext-map path, never transformed. */
+const MODULE_EXT = /\.(?:m|c)?[jt]sx?$|\.json$|\.css$/i;
+
+/** An id is an asset when its extension is not a code/json/css module extension. */
+export function isAsset(id: string): boolean {
+  return !MODULE_EXT.test(id);
+}
 
 /**
  * Emit the build's static module forms for the JSON/CSS ids in a walk closure.
@@ -53,6 +64,11 @@ export async function emitBuildForms(ids: string[], ctx: PreprocessContext): Pro
       const exports = exportsJson ? (JSON.parse(exportsJson) as Record<string, string>) : {};
       const cssModules = /\.module\.css$/.test(id);
       await writeText(ctx.cache, emitted, cssModuleWrapper(css, exports, cssModules));
+    } else if (isAsset(id)) {
+      // F3: a `url("./logo.png")` target — copy the raw bytes verbatim to its
+      // ext-map path (a non-code ext is left unchanged, so `emitted` = `/~/logo.png`).
+      const bytes = await rawBytes(id, ctx);
+      if (bytes) await ctx.cache.write(emitted, [bytes]);
     }
   }
 }

@@ -1,6 +1,6 @@
 import type { RegisteredBuilder } from "@statewalker/webrun-builder";
 import { walkFrom } from "@statewalker/webrun-modules";
-import { emitBuildForms } from "./emit-forms.js";
+import { emitBuildForms, isAsset } from "./emit-forms.js";
 import type { WebrunBuildHost } from "./host.js";
 
 export const CLASSIFY_CELL = "Classify";
@@ -76,7 +76,7 @@ export function webrunBuilders(served: string[]): RegisteredBuilder<WebrunBuildH
             // is only present when the transform actually ran (else it's already the
             // wrapped `.js`, which must not be double-wrapped).
             await emitBuildForms(
-              ids.filter((x) => x.endsWith(".json") || host.emitted.has(x)),
+              ids.filter((x) => x.endsWith(".json") || isAsset(x) || host.emitted.has(x)),
               host.ctx,
             );
             yield { signal: SERVED_SIGNAL, uri: host.ctx.policy.emittedPath(id), stamp: u.stamp };

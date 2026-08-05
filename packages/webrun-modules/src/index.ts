@@ -20,7 +20,7 @@ export {
   newDefaultTransformRegistry,
   newTransformRegistry,
 } from "./preprocess/registry.js";
-export { makeDefaultEndpointResolver, resolveSpec } from "./preprocess/resolve.js";
+export { makeDefaultEndpointResolver, rawBytes, resolveSpec } from "./preprocess/resolve.js";
 export { walkFrom } from "./preprocess/walk.js";
 export { resolveNodeBuiltin } from "./resolution/node-builtins.js";
 export { resolveEntry } from "./resolution/resolve-entry.js";

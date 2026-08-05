@@ -1,4 +1,4 @@
-import { readText, writeText } from "@statewalker/webrun-files";
+import { readFile, readText, writeText } from "@statewalker/webrun-files";
 import { MemFilesApi } from "@statewalker/webrun-files-mem";
 import { describe, expect, it } from "vitest";
 import { newProjectBuild } from "./index.js";
@@ -27,5 +27,23 @@ describe("newProjectBuild — F2 @import-chained CSS", () => {
     const bCss = await readText(cache, "/~/b.css");
     expect(bCss).toContain(".b");
     expect(bCss).toContain("color"); // b's rule, processed (lightningcss minifies blue → #00f)
+  });
+});
+
+describe("newProjectBuild — F3 url() asset references", () => {
+  it("copies a url()-referenced asset verbatim to its ext-map path", async () => {
+    const project = new MemFilesApi();
+    await writeText(project, "/main.tsx", `import "./a.css";\nexport const x = 1;`);
+    await writeText(project, "/a.css", `.a { background: url("./logo.png"); }`);
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01, 0x02]);
+    await project.write("/logo.png", [bytes]);
+    const cache = new MemFilesApi();
+
+    await newProjectBuild({ project, cache }).build();
+
+    // The asset is emitted at its ext-map path (non-code ext left unchanged).
+    expect(await cache.exists("/~/logo.png")).toBe(true);
+    const out = await readFile(cache, "/~/logo.png");
+    expect([...out]).toEqual([...bytes]); // byte-identical copy, no transform
   });
 });
