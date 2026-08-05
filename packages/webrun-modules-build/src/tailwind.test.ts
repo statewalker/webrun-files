@@ -20,4 +20,19 @@ describe("newProjectBuild — Tailwind transform (build-only)", () => {
     expect(injector).toContain(".flex");
     expect(injector).toContain(".p-4");
   });
+
+  it("suppresses the bare `@import \"tailwindcss\"` so the walk never npm-resolves it", async () => {
+    const project = new MemFilesApi();
+    await writeText(project, "/main.tsx", `import "./styles.css";\nexport const x = 1;`);
+    await writeText(project, "/styles.css", `@import "tailwindcss";`);
+    const cache = new MemFilesApi();
+
+    // Empty `sources`: any real npm resolution of `tailwindcss` would throw. The
+    // build must complete without one — the transform generated the stylesheet and
+    // walk suppressed the bare specifier — and still emit the generic utilities.
+    await expect(newProjectBuild({ project, cache, sources: [] }).build()).resolves.toBeDefined();
+
+    const injector = await readText(cache, "/~/styles.js");
+    expect(injector).toContain(".flex");
+  });
 });
