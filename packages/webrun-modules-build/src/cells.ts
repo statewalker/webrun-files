@@ -51,7 +51,7 @@ export function webrunBuilders(served: string[]): RegisteredBuilder<WebrunBuildH
                 : undefined;
           if (signal) yield { signal, uri: u.uri, stamp: u.stamp };
           await u.handled();
-          await host.engine.yieldControl();
+          if (!(await host.engine.yieldControl())) return false;
         }
         return true;
       },
@@ -104,7 +104,7 @@ export function webrunBuilders(served: string[]): RegisteredBuilder<WebrunBuildH
             if (await host.cache.exists(path)) await host.cache.remove(path);
           }
           await u.handled();
-          await host.engine.yieldControl();
+          if (!(await host.engine.yieldControl())) return false;
         }
         return true;
       },
@@ -121,7 +121,7 @@ export function webrunBuilders(served: string[]): RegisteredBuilder<WebrunBuildH
         })) {
           served.push(u.uri);
           await u.handled();
-          await host.engine.yieldControl();
+          if (!(await host.engine.yieldControl())) return false;
         }
         return true;
       },
