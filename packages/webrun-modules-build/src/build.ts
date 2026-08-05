@@ -63,6 +63,11 @@ function hashSource(source: string): string {
 
 export function newProjectBuild(opts: ProjectBuildOptions): ProjectBuild {
   const { project, cache } = opts;
+  // The scanner re-ingests `~`-prefixed emitted ids; if project and cache were the
+  // same FilesApi the emitted tree would feed back as sources. Keep them disjoint.
+  if (project === cache) {
+    throw new Error("newProjectBuild: `project` and `cache` must be distinct FilesApi instances");
+  }
   const target = opts.target ?? "browser";
 
   const ctx: PreprocessContext = {
