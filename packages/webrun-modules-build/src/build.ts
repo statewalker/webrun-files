@@ -17,6 +17,7 @@ import {
   type Transform,
   type UrlPolicy,
 } from "@statewalker/webrun-modules";
+import { newTailwindTransform } from "@statewalker/webrun-tailwind";
 import { webrunBuilders } from "./cells.js";
 import type { WebrunBuildHost } from "./host.js";
 import { makeExtMapPolicy } from "./url-policy.js";
@@ -91,6 +92,10 @@ export function newProjectBuild(opts: ProjectBuildOptions): ProjectBuild {
   };
   ctx.policy = makeExtMapPolicy(ctx);
   ctx.resolveEndpoint = makeDefaultEndpointResolver(ctx);
+  // BUILD-ONLY: register the Tailwind transform for `tailwind-css` inputs. The
+  // request-time server never registers it, so `tailwind-css` falls back to the
+  // plain `css` transform there — server behaviour is unchanged.
+  ctx.transforms?.register(newTailwindTransform());
 
   const served: string[] = [];
   const emitted = new Set<string>();
