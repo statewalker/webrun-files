@@ -20,8 +20,8 @@ describe("makeExtMapPolicy", () => {
     expect(p.servedUrl("~/data.json", "~/main.tsx")).toBe("./data.js");
   });
 
-  it("keeps css as .css", () => {
-    expect(p.servedUrl("~/styles.css", "~/main.tsx")).toBe("./styles.css");
+  it("ext-maps css to .js (imported from JS → injector .js form)", () => {
+    expect(p.servedUrl("~/styles.css", "~/main.tsx")).toBe("./styles.js");
   });
 
   it("never marks ?module on any form", () => {

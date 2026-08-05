@@ -5,12 +5,17 @@ import {
   urlPath,
 } from "@statewalker/webrun-modules";
 
-/** Ext-map: JS-family (`.ts/.tsx/.js/.jsx/.mjs/.cjs/.mts/.cts`) and `.json` collapse
- *  to `.js`; `.css` is kept; anything else is left as-is. This is the batch driver's
- *  extension decision — every emitted module is a static `.js`, so an import's final
- *  URL is a pure function of the specifier name (content-independent). */
+/** Ext-map: JS-family (`.ts/.tsx/.js/.jsx/.mjs/.cjs/.mts/.cts`), `.json`, and `.css`
+ *  all collapse to `.js` — every emitted module is a static `.js`, so an import's
+ *  final URL is a pure function of the specifier name (content-independent). A JSON
+ *  import becomes a `serveJsonModule` `.js`; a CSS import from JS becomes a
+ *  `cssModuleWrapper` injector `.js` (emit forms wired in the build's Preprocess
+ *  cell). Anything else is left as-is. */
 function extMap(path: string): string {
-  return path.replace(/\.(?:m|c)?[jt]sx?$/i, ".js").replace(/\.json$/i, ".js");
+  return path
+    .replace(/\.(?:m|c)?[jt]sx?$/i, ".js")
+    .replace(/\.json$/i, ".js")
+    .replace(/\.css$/i, ".js");
 }
 
 /**

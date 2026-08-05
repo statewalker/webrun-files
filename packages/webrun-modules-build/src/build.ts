@@ -1,6 +1,7 @@
 import { BuildEngine, NULL_LOGGER } from "@statewalker/webrun-builder";
 import type { FilesApi } from "@statewalker/webrun-files";
 import {
+  type CssTransform,
   defaultGlobals,
   type EndpointResolver,
   type ModuleTarget,
@@ -11,6 +12,7 @@ import {
   npmRegistrySource,
   type PreprocessContext,
   type Source,
+  type Transform,
   type UrlPolicy,
 } from "@statewalker/webrun-modules";
 import { webrunBuilders } from "./cells.js";
@@ -27,6 +29,10 @@ export interface ProjectBuildOptions {
   target?: ModuleTarget;
   /** Package sources for external specifiers (default the npm registry source). */
   sources?: Source[];
+  /** Override the JS/TS transform (default `newDefaultTransform()`); a test seam. */
+  transform?: Transform;
+  /** Override the CSS transform (default `newDefaultCssTransform()`); a test seam. */
+  css?: CssTransform;
 }
 
 /** A prepared batch build over a project. */
@@ -56,8 +62,8 @@ export function newProjectBuild(opts: ProjectBuildOptions): ProjectBuild {
     tRoot: `/t/${target}`,
     lock: {},
     sources: opts.sources ?? [npmRegistrySource()],
-    transform: newDefaultTransform(),
-    css: newDefaultCssTransform(),
+    transform: opts.transform ?? newDefaultTransform(),
+    css: opts.css ?? newDefaultCssTransform(),
     registry: newHostRegistry(),
     globals: defaultGlobals(target),
     inflight: new Map(),
