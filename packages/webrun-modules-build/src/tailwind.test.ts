@@ -56,6 +56,25 @@ describe("newProjectBuild — Tailwind transform (build-only)", () => {
     const injector = await readText(cache, "/~/styles.js");
     expect(injector).toContain(".flex");
   });
+
+  it("honors the project's @theme customizations through the full build", async () => {
+    const project = new MemFilesApi();
+    await writeText(project, "/main.tsx", `import "./styles.css";\nexport const x = 1;`);
+    await writeText(
+      project,
+      "/styles.css",
+      `@import "tailwindcss";\n@theme { --color-brand: #123456; }`,
+    );
+    const cache = new MemFilesApi();
+
+    await newProjectBuild({ project, cache }).build();
+
+    // The custom token yields a real `bg-brand` utility carrying the project value —
+    // proof the entry source (not a fixed default theme) drove generation.
+    const injector = await readText(cache, "/~/styles.js");
+    expect(injector).toContain("bg-brand");
+    expect(injector).toContain("#123456");
+  });
 });
 
 describe("newProjectBuild — Tailwind inputs-only cache key", () => {

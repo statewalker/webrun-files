@@ -11,12 +11,18 @@ server), it turns a `tailwind-css` input into a processed `.css` artifact.
 input type; a project `.css` whose content the core's `detectInputType` sniffs as
 Tailwind (see below) is routed to it instead of the plain CSS transform.
 
-Generation is **generic, all-classes, and DOM-free**:
+Generation is **all-classes and DOM-free**, and it **honors the entry's own
+customizations**:
 
-1. `__unstable__loadDesignSystem("@import \"tailwindcss\";", …)` loads the design
-   system, resolving Tailwind's own bundled CSS (`index/theme/preflight/utilities.css`).
-2. `getClassList()` enumerates **every** utility class name (~23k in 4.3.3).
-3. `compile(entry).build(classNames)` emits the full utility stylesheet.
+1. The project entry `source` drives `__unstable__loadDesignSystem(…)`, so the
+   project's `@theme` tokens, `@utility`/`@layer` rules, and sibling `@import`s take
+   effect (Tailwind's own bundled CSS resolves via `node:fs`; project `@import`s via
+   `ctx.files`). `@import "tailwindcss"` is prepended when the source uses only the
+   legacy `@tailwind` directives, so the full design system always loads.
+2. `getClassList()` enumerates **every** utility class name (~23k in 4.3.3),
+   including those derived from custom tokens.
+3. `compile(entry).build(classNames)` emits the full utility stylesheet, using the
+   project's theme values.
 4. The result is run through the shared CSS transform (Lightning) for parity.
 
 No JSX/HTML/DOM content scanning happens — the build emits the whole utility set and
@@ -51,15 +57,13 @@ entry bytes are unchanged. (`TW_CACHE_VER` overrides the version — a test seam
 The core's `detectInputType` classifies a `.css` as `tailwind-css` when its content
 matches `/^\s*@tailwind\b/m` or `/^\s*@import\s+["']tailwindcss["']/m`. Known edges:
 
-- **Generic-only (customizations not honored).** Generation ignores the project
-  source and always compiles `@import "tailwindcss"`, so a project's own `@theme`,
-  `@utility`, `@layer`, or sibling `@import "./x.css"` are **not** reflected in the
-  generated utilities (they use Tailwind's default theme). Consumers needing custom
-  tokens should treat this as a generic baseline. *(Tracked for follow-up.)*
-- **Comment/subpath edges.** A line-leading `@tailwind`/`@import "tailwindcss"` inside
-  a block comment still matches (build-time only; the server is unaffected via the
-  fallback), and a subpath-only entry (`@import "tailwindcss/utilities"`) is not
+- **Comment/subpath sniff edges.** A line-leading `@tailwind`/`@import "tailwindcss"`
+  inside a block comment still matches (build-time only; the server is unaffected via
+  the fallback), and a subpath-only entry (`@import "tailwindcss/utilities"`) is not
   detected as Tailwind. Keep the Tailwind directive as an effective top-level rule.
+- **Sibling double-emit.** A sibling `@import "./tokens.css"` in the entry is both
+  inlined into the generated stylesheet (authoritative) and, because the walk reaches
+  it independently, emitted as its own `/~/tokens.css` (harmless, unreferenced).
 
 ## Note
 

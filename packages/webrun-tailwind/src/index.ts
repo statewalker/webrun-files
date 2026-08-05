@@ -2,67 +2,85 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
-import { writeText } from "@statewalker/webrun-files";
+import { readText, writeText } from "@statewalker/webrun-files";
 import type { PreprocessContext, RegisteredTransform } from "@statewalker/webrun-modules";
 import { __unstable__loadDesignSystem, compile } from "tailwindcss";
 
 const req = createRequire(import.meta.url);
 
 /** The pinned Tailwind version — the transform's sole input-independent cache
- *  dimension (generation is generic; see `tailwindCacheKey`). */
+ *  dimension (generation is version-keyed; see `tailwindCacheKey`). */
 export const TAILWIND_VERSION = "4.3.3";
 
-/** The canonical entry stylesheet fed to Tailwind's design system + compiler.
- *  Generation is GENERIC — every utility, independent of the project source — so
- *  the entry is always `@import "tailwindcss";`, never the project's own bytes. */
-const ENTRY_CSS = '@import "tailwindcss";';
+/** True when the source already pulls in Tailwind's full design system via the
+ *  v4 `@import "tailwindcss"`. A source that uses only the legacy `@tailwind`
+ *  directives yields a PARTIAL utility set, so we prepend the import (below). */
+const HAS_TW_IMPORT = /^\s*@import\s+["']tailwindcss["']/m;
 
-/**
- * The one place `node:fs` is used: reads the **tailwindcss dependency's own
- * bundled CSS assets** (`index.css`, `theme.css`, `preflight.css`,
- * `utilities.css`) so the design system + compiler can resolve `@import
- * "tailwindcss"` and its sub-imports. This is a build-time dependency-asset read,
- * NOT project/cache I/O — those always go through `ctx.files`/`ctx.cache`. Kept
- * isolated in this resolver by design.
- */
+/** `~/x` id → its project-space path (`/x`); a plain path is returned as-is. */
+function projectPath(id: string): string {
+  return id.startsWith("~/") ? `/${id.slice(2)}` : id;
+}
+
+/** The tailwindcss package root (where `index.css`/`theme.css`/… live).
+ *  require.resolve → …/tailwindcss/dist/lib.(js|mjs); the root is two dirs up. */
 function tailwindDir(): string {
-  // require.resolve("tailwindcss") → …/tailwindcss/dist/lib.(js|mjs); the package
-  // root (where index.css etc. live) is two dirs up.
   return dirname(dirname(req.resolve("tailwindcss")));
 }
 
-async function loadTailwindStylesheet(
-  id: string,
-  base: string,
-): Promise<{ path: string; base: string; content: string }> {
-  const dir = tailwindDir();
-  let path: string;
-  if (id === "tailwindcss") {
-    path = resolve(dir, "index.css");
-  } else if (id.startsWith("tailwindcss/")) {
-    const rel = id.slice("tailwindcss/".length);
-    path = resolve(dir, rel + (rel.endsWith(".css") ? "" : ".css"));
-  } else {
-    path = resolve(base, id);
-  }
-  return { base: dirname(path), content: readFileSync(path, "utf8"), path };
+/**
+ * A ctx-bound `loadStylesheet` resolver. It reads from two roots, chosen by where
+ * the resolved path lands:
+ *  - **tailwindcss's own bundled CSS** (`@import "tailwindcss"` + its sub-imports,
+ *    and any path under the package dir) via `node:fs` — a build-time
+ *    dependency-asset read, NOT project I/O (the ONLY `node:fs` use here).
+ *  - **project-relative `@import`s** (e.g. `@import "./tokens.css"` in the entry)
+ *    via `ctx.files`, so a customized entry's siblings resolve.
+ */
+function makeStylesheetLoader(ctx: PreprocessContext) {
+  const twDir = tailwindDir();
+  return async function loadStylesheet(
+    id: string,
+    base: string,
+  ): Promise<{ path: string; base: string; content: string }> {
+    let path: string;
+    if (id === "tailwindcss") {
+      path = resolve(twDir, "index.css");
+    } else if (id.startsWith("tailwindcss/")) {
+      const rel = id.slice("tailwindcss/".length);
+      path = resolve(twDir, rel + (rel.endsWith(".css") ? "" : ".css"));
+    } else {
+      path = resolve(base, id);
+    }
+    if (path.startsWith(twDir)) {
+      return { base: dirname(path), content: readFileSync(path, "utf8"), path };
+    }
+    if (!ctx.files)
+      throw new Error("webrun-tailwind: ctx.files required to resolve project @import");
+    return { base: dirname(path), content: await readText(ctx.files, path), path };
+  };
 }
 
 /**
- * Generate the generic all-classes Tailwind (v4) stylesheet: load the design
- * system to enumerate every utility class name, then compile the canonical entry
- * against that full candidate set. The project `source` is intentionally ignored
- * — the build emits ALL utilities and the running markup selects what it uses
- * (build-only, no content scanning).
+ * Generate the all-classes Tailwind (v4) stylesheet, HONORING the project entry's
+ * own `@theme`/`@utility`/`@layer` customizations + sibling `@import`s: the entry
+ * source itself drives the design system (so custom tokens exist and theme-derived
+ * utilities use the project's values), then every known utility name is compiled
+ * against that system. Still generic (all utilities, no JSX/HTML/DOM scan) — the
+ * running markup selects what it uses. The v4 `@import "tailwindcss"` is prepended
+ * when absent so a legacy `@tailwind`-directive source still loads the full system.
  */
-export async function generateTailwindCss(_source: string): Promise<string> {
-  const base = tailwindDir();
-  const ds = await __unstable__loadDesignSystem(ENTRY_CSS, {
-    base,
-    loadStylesheet: loadTailwindStylesheet,
-  });
+export async function generateTailwindCss(
+  source: string,
+  ctx: PreprocessContext,
+  entryId: string,
+): Promise<string> {
+  const loadStylesheet = makeStylesheetLoader(ctx);
+  const entry = HAS_TW_IMPORT.test(source) ? source : `@import "tailwindcss";\n${source}`;
+  const base = dirname(projectPath(entryId));
+  const ds = await __unstable__loadDesignSystem(entry, { base, loadStylesheet });
   const candidates = ds.getClassList().map(([name]) => name);
-  const compiler = await compile(ENTRY_CSS, { base, loadStylesheet: loadTailwindStylesheet });
+  const compiler = await compile(entry, { base, loadStylesheet });
   return compiler.build(candidates);
 }
 
@@ -90,7 +108,7 @@ export function newTailwindTransform(): RegisteredTransform {
     outType: "css",
     async run(id: string, source: string, ctx: PreprocessContext) {
       const emittedId = ctx.policy.emittedPath(id);
-      const genericCss = await generateTailwindCss(source);
+      const genericCss = await generateTailwindCss(source, ctx, id);
       // Lightning parity pass with an identity specifier rewrite (the generic
       // stylesheet has no project @import/url specifiers to resolve).
       const out = await ctx.css.transform(
