@@ -3,6 +3,7 @@ import {
   cssModuleWrapper,
   type PreprocessContext,
   serveJsonModule,
+  urlPath,
 } from "@statewalker/webrun-modules";
 
 /**
@@ -43,6 +44,11 @@ export async function emitBuildForms(ids: string[], ctx: PreprocessContext): Pro
       // `walkFrom`/`preprocessModule` wrote the processed CSS to `emitted` and its
       // class map to `${emitted}.exports.json`; wrap them into the injector in place.
       const css = await readText(ctx.cache, emitted);
+      // F2: also emit the processed stylesheet as a real `.css` file at its
+      // urlPath (no ext-map) so an `@import "./x.css"` in another stylesheet — whose
+      // specifier keeps `.css` — resolves to a live file instead of 404. The two
+      // paths differ only by extension (`/~/x.css` vs `/~/x.js`), so no collision.
+      await writeText(ctx.cache, `/${urlPath(id, ctx)}`, css);
       const exportsJson = await tryReadText(ctx.cache, `${emitted}.exports.json`);
       const exports = exportsJson ? (JSON.parse(exportsJson) as Record<string, string>) : {};
       const cssModules = /\.module\.css$/.test(id);
