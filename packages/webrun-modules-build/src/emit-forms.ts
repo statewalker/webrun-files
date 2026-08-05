@@ -20,7 +20,18 @@ import {
  *    default-exports the class map (CSS Modules) or the CSS text. The raw stylesheet
  *    `walkFrom` already wrote at `emittedPath(id)` is read back and wrapped in place.
  *
- * Idempotent: re-running over the same ids rewrites identical bytes.
+ * Idempotent: re-running over the same ids rewrites identical bytes. The caller
+ * (Preprocess cell) passes only freshly-emitted CSS ids so a gate-skipped node's
+ * already-wrapped `.js` is never double-wrapped.
+ *
+ * KNOWN LIMITATIONS — owned by Phase 3 (CSS/Tailwind), NOT handled here:
+ *  - **F2 — `@import`-chained CSS.** `resolveCssSpec` keeps the `.css` extension on
+ *    an `@import`, but the ext-map policy writes the target as `.js`; the referenced
+ *    `.css` file is never emitted, so the `<style>` body still contains a dangling
+ *    `@import "./x.css"` → 404 + silently dropped styles (and a dead `.js` emitted).
+ *  - **F3 — `url()` asset references.** `url("./logo.png")` is rewritten but the
+ *    asset is not a module/css/json/pkg id, so it is never emitted → runtime 404.
+ * Both are deferred to the Phase 3 CSS/Tailwind work; see the package README.
  */
 export async function emitBuildForms(ids: string[], ctx: PreprocessContext): Promise<void> {
   for (const id of ids) {
