@@ -2,7 +2,7 @@ import { writeText } from "@statewalker/webrun-files";
 import { proxyId } from "../deps/proxy.js";
 import { relativeUrl } from "../server/specifiers.js";
 import { analyze } from "../transform/analyze.js";
-import { isCssFile, type PreprocessContext, urlPath } from "./context.js";
+import { coarseBucket, detectInputType, type PreprocessContext, urlPath } from "./context.js";
 import {
   cssSpecifiers,
   ensureGlobalsProxy,
@@ -13,18 +13,21 @@ import {
 } from "./resolve.js";
 
 /** The per-file preprocess core: transform one module id and cache the emitted
- *  artifact, returning the emitted code. Dispatches on file type — CSS gets the
- *  two-pass Lightning CSS treatment (`cssTransform`), JS/TS/JSX/TSX the ESM
- *  transform with `~deps` proxy rewrites + a globals prelude (`jsTransform`).
- *  Writes to `ctx.policy.emittedPath(id)` (the server's `/t/{target}/{id}`),
- *  matching the pre-lift write behaviour exactly. */
+ *  artifact, returning the emitted code. Loads the raw source, classifies it
+ *  (`detectInputType`), then dispatches through `ctx.transforms` — the exact
+ *  registered type when present, else its `coarseBucket` fallback. The default
+ *  registry routes `module` → `jsTransform`, `css` → `cssTransform`, matching the
+ *  pre-registry behaviour exactly. Writes to `ctx.policy.emittedPath(id)`. */
 export async function preprocessModule(
   id: string,
   ctx: PreprocessContext,
 ): Promise<{ code: string; emittedId: string }> {
   const { source } = await loadRaw(id, ctx);
-  if (isCssFile(id)) return cssTransform(id, source, ctx);
-  return jsTransform(id, source, ctx);
+  const registry = ctx.transforms;
+  if (!registry) throw new Error("preprocessModule: ctx.transforms is not set");
+  const ty = detectInputType(id, source);
+  const t = registry.has(ty) ? registry.get(ty) : registry.get(coarseBucket(ty));
+  return t.run(id, source, ctx);
 }
 
 /** CSS branch: two Lightning CSS passes — pass 1 (via `cssSpecifiers`) captures

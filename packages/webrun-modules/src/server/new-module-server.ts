@@ -8,6 +8,7 @@ import {
   urlPath,
 } from "../preprocess/context.js";
 import { cssModuleWrapper, preprocessModule, serveJsonModule } from "../preprocess/module.js";
+import { newDefaultTransformRegistry } from "../preprocess/registry.js";
 import { ensurePackage, makeDefaultEndpointResolver, rawBytes } from "../preprocess/resolve.js";
 import { walkFrom } from "../preprocess/walk.js";
 import { npmRegistrySource } from "../sources/npm-registry-source.js";
@@ -94,6 +95,7 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
     registry,
     globals: { ...defaultGlobals(target), ...(options.globals ?? {}) },
     inflight: new Map(),
+    transforms: newDefaultTransformRegistry(),
     policy: undefined as unknown as UrlPolicy,
     resolveEndpoint: undefined as unknown as EndpointResolver,
   };

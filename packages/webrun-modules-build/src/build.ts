@@ -9,6 +9,7 @@ import {
   makeDefaultEndpointResolver,
   newDefaultCssTransform,
   newDefaultTransform,
+  newDefaultTransformRegistry,
   newHostRegistry,
   npmRegistrySource,
   type PreprocessContext,
@@ -84,6 +85,7 @@ export function newProjectBuild(opts: ProjectBuildOptions): ProjectBuild {
     registry: newHostRegistry(),
     globals: defaultGlobals(target),
     inflight: new Map(),
+    transforms: newDefaultTransformRegistry(),
     policy: undefined as unknown as UrlPolicy,
     resolveEndpoint: undefined as unknown as EndpointResolver,
   };
