@@ -1,31 +1,29 @@
-import type { FilesApi } from "@statewalker/webrun-files";
-import { readText, writeText } from "@statewalker/webrun-files";
-import semver from "semver";
-import { newDefaultEndpointResolver } from "../deps/endpoint-resolver.js";
+import { readText } from "@statewalker/webrun-files";
 import { globalHostRegistry, HOST_REGISTRY_KEY } from "../deps/host-registry.js";
-import { proxyBody, proxyId } from "../deps/proxy.js";
-import { resolveNodeBuiltin } from "../resolution/node-builtins.js";
-import { resolveEntry } from "../resolution/resolve-entry.js";
+import {
+  defaultGlobals,
+  makeKeepExtPolicy,
+  type PreprocessContext,
+  type UrlPolicy,
+  urlPath,
+} from "../preprocess/context.js";
+import { cssModuleWrapper, preprocessModule, serveJsonModule } from "../preprocess/module.js";
+import { ensurePackage, makeDefaultEndpointResolver, rawBytes } from "../preprocess/resolve.js";
+import { walkFrom } from "../preprocess/walk.js";
 import { npmRegistrySource } from "../sources/npm-registry-source.js";
-import { analyze } from "../transform/analyze.js";
 import { newDefaultCssTransform } from "../transform/css/index.js";
-import { detectFormat, newDefaultTransform } from "../transform/index.js";
+import { newDefaultTransform } from "../transform/index.js";
 import type {
   CssTransformResult,
-  EndpointBinding,
+  EndpointResolver,
   HostRegistry,
   Lockfile,
-  ModuleImport,
   ModuleRef,
   ModuleServer,
   ModuleServerOptions,
-  PackageManifest,
   ResolvedModule,
 } from "../types.js";
 import { ModuleResolveError } from "../types.js";
-import { parseSpecifier, relativeUrl } from "./specifiers.js";
-
-const RAW_EXT = ["", ".js", ".mjs", ".cjs", ".json", "/index.js", "/index.mjs"];
 
 /** JS/TS module files — the only ones the transform touches. */
 const MODULE_EXT = /\.(?:m|c)?[jt]sx?$/;
@@ -66,7 +64,8 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
 
   // Provided registry: a live `HostRegistry` BECOMES the realm-global so served
   // proxies + `providedNames` read the same object (late `.set` calls stay
-  // visible); a plain Record is copied into the shared global registry.
+  // visible); a plain Record is copied into the shared global registry. The
+  // extracted resolution core reads `ctx.registry` only (never `globalThis`).
   if (options.provided && typeof (options.provided as HostRegistry).get === "function") {
     (globalThis as Record<string, unknown>)[HOST_REGISTRY_KEY] = options.provided;
   }
@@ -76,38 +75,30 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
       registry.set(k, v);
     }
   }
-  // A name is host-provided when the registry holds the exact name OR its package
-  // root (so both `react` and `react/jsx-runtime` bind to the `react` instance).
-  const providedNames = (name: string) =>
-    name !== "" && (registry.has(name) || registry.has(parseSpecifier(name).pkg));
 
-  const DEFAULT_GLOBALS: Record<string, string> = {
-    process:
-      target === "browser"
-        ? `globalThis.process ?? { env: { NODE_ENV: "production" } }`
-        : `globalThis.process`,
-    Buffer: `globalThis.Buffer`,
-    global: `globalThis`,
-    globalThis: `globalThis`,
-    __dirname: `"/"`,
-    __filename: `"/"`,
+  // The explicit per-file preprocess context: everything the lifted resolution
+  // cluster (`src/preprocess/*`) needs, driven here with the keep-ext policy that
+  // reproduces today's server URLs exactly. `policy` + `resolveEndpoint` close
+  // over `ctx`, so they are wired in immediately after construction.
+  const ctx: PreprocessContext = {
+    files: project,
+    cache,
+    target,
+    basePath,
+    depsPath: depsPrefix,
+    tRoot,
+    lock,
+    sources,
+    transform: transformer,
+    css: cssTransformer,
+    registry,
+    globals: { ...defaultGlobals(target), ...(options.globals ?? {}) },
+    inflight: new Map(),
+    policy: undefined as unknown as UrlPolicy,
+    resolveEndpoint: undefined as unknown as EndpointResolver,
   };
-  const globalsMap = { ...DEFAULT_GLOBALS, ...(options.globals ?? {}) };
-
-  // The linker: `host` for provided names, same-origin `local` (via the existing
-  // package resolution) otherwise. Globals are handled separately (prepend), so
-  // the `""` key never reaches the resolver.
-  const resolver =
-    options.resolveEndpoint ??
-    newDefaultEndpointResolver({
-      providedNames: (n) => (n === "" ? false : providedNames(n)),
-      localUrl: async (spec, ctx) => {
-        const { pkg, subpath } = parseSpecifier(spec);
-        const version = await importerVersion(pkg, ctx.importerId);
-        const t = await ensurePackage({ pkg, version, subpath });
-        return t.id; // canonical id; the served endpoint url is `urlPath(t.id)`
-      },
-    });
+  ctx.policy = makeKeepExtPolicy(ctx);
+  ctx.resolveEndpoint = options.resolveEndpoint ?? makeDefaultEndpointResolver(ctx);
 
   let ready: Promise<void> | undefined;
   const init = () => {
@@ -119,11 +110,7 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
     return ready;
   };
 
-  // Project ids (`~/…`) are served verbatim; package ids get the `depsPrefix`.
-  // `urlPath` is the site-relative form (after `basePath`) and the space that
-  // import URLs are made relative in, so cross-prefix imports resolve correctly.
-  const urlPath = (id: string) => (id.startsWith("~/") ? id : depsPrefix + id);
-  const urlFor = (id: string) => basePath + urlPath(id);
+  const urlFor = (id: string) => basePath + urlPath(id, ctx);
   const idFromPath = (pathname: string): string => {
     let p = pathname.startsWith(basePath)
       ? pathname.slice(basePath.length)
@@ -132,355 +119,28 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
     return p;
   };
 
-  function matchSource(ref: ModuleRef) {
-    const s = sources.find((x) => x.matches(ref));
-    if (!s) throw new ModuleResolveError(ref, "no source matches");
-    return s;
-  }
-
-  function reusable(locked: string, spec: string | undefined): boolean {
-    if (!spec) return true;
-    if (semver.valid(spec)) return locked === spec;
-    if (semver.validRange(spec)) return semver.satisfies(locked, spec);
-    return true; // dist-tag → reuse the locked version
-  }
-
-  async function cachedManifest(pkgKey: string): Promise<PackageManifest> {
-    return JSON.parse(await readText(cache, `/raw/${pkgKey}/package.json`));
-  }
-
-  /** Persist a loaded package's files under `/raw/{name}@{version}/…` (idempotent).
-   *  The manifest is written as `package.json` (the authority — a Source's files
-   *  are not required to include one). */
-  async function cacheRaw(
-    name: string,
-    version: string,
-    files: FilesApi,
-    manifest: PackageManifest,
-  ): Promise<void> {
-    const key = `${name}@${version}`;
-    if (await cache.exists(`/raw/${key}/package.json`)) return;
-    for await (const info of files.list("/", { recursive: true })) {
-      if (info.kind === "file") {
-        await cache.write(`/raw/${key}${info.path}`, [await collect(files.read(info.path))]);
-      }
-    }
-    if (!(await cache.exists(`/raw/${key}/package.json`))) {
-      await writeText(cache, `/raw/${key}/package.json`, JSON.stringify(manifest));
-    }
-  }
-
-  /** Lazily load a package's raw files by its `name@version` cache key (idempotent). */
-  async function ensureRawByKey(pkgKey: string): Promise<void> {
-    if (await cache.exists(`/raw/${pkgKey}/package.json`)) return;
-    const at = pkgKey.lastIndexOf("@");
-    const ref = { pkg: pkgKey.slice(0, at), version: pkgKey.slice(at + 1) };
-    const loaded = await matchSource(ref).load(ref);
-    await cacheRaw(loaded.name, loaded.version, loaded.files, loaded.manifest);
-  }
-
-  /** Ensure a package's raw files + manifest are cached; return its pinned id. */
-  async function ensurePackage(ref: { pkg: string; version?: string; subpath?: string }) {
-    const name = ref.pkg;
-    const locked = lock[name];
-    let version: string;
-    let manifest: PackageManifest;
-    if (locked && reusable(locked, ref.version)) {
-      // Honor the lock even on a cold cache — load the *locked* version, not latest.
-      version = locked;
-      await ensureRawByKey(`${name}@${version}`);
-      manifest = await cachedManifest(`${name}@${version}`);
-    } else {
-      const loaded = await matchSource(ref).load({ pkg: name, version: ref.version });
-      version = loaded.version;
-      await cacheRaw(name, version, loaded.files, loaded.manifest);
-      manifest = loaded.manifest;
-      if (!locked) lock[name] = version;
-    }
-    const entry = resolveEntry(manifest, ref.subpath, target);
-    const file = await resolveRawFile(`${name}@${version}`, entry); // resolve real extension/index
-    return { name, version, file, id: `${name}@${version}/${file}`, manifest };
-  }
-
-  /** Resolve an import specifier (from `fromId`) to what to emit + its cache id.
-   *  A bare external specifier is rewritten to a co-located `~deps` proxy: the
-   *  importer imports the proxy relatively (`id` = proxy id), and the proxy's
-   *  real endpoint (for a `local` binding) is returned as `endpointId` so the
-   *  graph walker caches it. `imp` carries the importer's used bindings, which
-   *  shape the proxy's re-exports (needed only for the external branch). */
-  async function resolveSpec(
-    spec: string,
-    fromId: string,
-    imp: ModuleImport,
-  ): Promise<{ url: string; id?: string; endpointId?: string }> {
-    if (/^(https?:|data:)/.test(spec)) return { url: spec }; // absolute — pass through
-    const builtin = resolveNodeBuiltin(spec, target); // node: builtins → polyfill/external
-    if (builtin) {
-      if ("external" in builtin) return { url: builtin.external };
-      const t = await ensurePackage(builtin.ref);
-      return { url: relativeUrl(urlPath(fromId), urlPath(t.id)), id: t.id };
-    }
-    if (spec.startsWith(".")) {
-      const id = await resolveRelativeId(fromId, spec);
-      // Emit the *extension-resolved* relative URL (`./x` → `./x.js`), not the raw
-      // specifier: the browser fetches this URL verbatim, and only a recognized
-      // module extension makes the server transform it + serve `text/javascript`.
-      return { url: moduleMarkedUrl(relativeUrl(urlPath(fromId), urlPath(id)), id), id };
-    }
-    // Host-provided/builtin wins before the CSS reroute below — a host-registered
-    // name (even one ending in `.css`) must bind to the host, never CSS.
-    const provided = providedNames(spec);
-    // Bare CSS-looking specifier (e.g. "some-pkg/reset.css") — CSS never goes
-    // through `~deps`; resolve it directly like the relative branch, then
-    // classify by the RESOLVED file, not the raw spec: only an actually-CSS
-    // target routes direct `?module`. A JS-main package that merely has a
-    // `.css`-suffixed NAME falls through to the ordinary proxy path below.
-    if (!provided && isCssFile(spec)) {
-      const { url, id } = await resolveCssSpec(spec, fromId);
-      if (id && isCssFile(id)) return { url: moduleMarkedUrl(url, id), id };
-    }
-    // Bare external specifier → generate a co-located proxy; import the proxy.
-    const pid = proxyId(fromId, spec);
-    let binding: EndpointBinding;
-    let endpointId: string | undefined;
-    if (provided) {
-      // Bind to the registered key — the exact spec if registered, else its
-      // package root (so `react/jsx-runtime` reads the `react` instance, not the
-      // unregistered full spec which would resolve to `undefined` at load).
-      const providedKey = registry.has(spec) ? spec : parseSpecifier(spec).pkg;
-      binding = { kind: "host", name: providedKey };
-    } else {
-      binding = await resolver.resolve(spec, { importerId: fromId, target });
-      if (binding.kind === "local") endpointId = binding.url; // canonical id → walked
-    }
-    await ensureProxy(pid, binding, imp);
-    return { url: relativeUrl(urlPath(fromId), urlPath(pid)), id: pid, endpointId };
-  }
-
-  /** Generate + cache a proxy module (idempotent). The served endpoint url is the
-   *  binding's `urlPath`-mapped id so it resolves across the `depsPath` boundary
-   *  (both the proxy id and its endpoint are wired in served-url space). */
-  async function ensureProxy(
-    pid: string,
-    binding: EndpointBinding,
-    imp: ModuleImport,
-  ): Promise<void> {
-    const key = `${tRoot}/${pid}`;
-    if (await cache.exists(key)) return;
-    const wire: EndpointBinding =
-      binding.kind === "local" ? { kind: "local", url: urlPath(binding.url) } : binding;
-    const body = proxyBody({
-      proxyId: urlPath(pid),
-      binding: wire,
-      imp,
-      registryKey: HOST_REGISTRY_KEY,
-    });
-    await writeText(cache, key, body);
-  }
-
-  /** Generate + cache the co-located globals proxy exporting the used allowlisted
-   *  free globals (idempotent). */
-  async function ensureGlobalsProxy(gid: string, names: string[]): Promise<void> {
-    const key = `${tRoot}/${gid}`;
-    if (await cache.exists(key)) return;
-    // Export via an internal alias (`const __gI = <expr>; export { __gI as name }`)
-    // rather than `export const name = <expr>`: the latter creates a module-scope
-    // lexical binding named `name`, so a global like `globalThis`/`global` whose
-    // expression is the bare `globalThis` token would resolve to itself in the TDZ
-    // → ReferenceError at load. The alias form leaves the RHS token as the real global.
-    const body = names
-      .map((n, i) => `const __g${i} = ${globalsMap[n]};\nexport { __g${i} as ${n} };`)
-      .join("\n");
-    await writeText(cache, key, body);
-  }
-
-  /** The version constraint a bare specifier should resolve to, from the importer's
-   *  package: self-reference → the importer's own version; a dependency → the
-   *  importer's `package.json` range; otherwise undefined (global lock/latest). */
-  async function importerVersion(pkg: string, fromId: string): Promise<string | undefined> {
-    const m = fromId.match(/^((?:@[^/]+\/)?[^/]+)@([^/]+)\//);
-    if (!m) return undefined; // project file — no package context
-    const [, impName, impVersion] = m;
-    if (pkg === impName) return impVersion; // self-reference → same version
-    const manifest = await cachedManifest(`${impName}@${impVersion}`).catch(() => undefined);
-    return (
-      manifest?.dependencies?.[pkg] ??
-      manifest?.peerDependencies?.[pkg] ??
-      (manifest?.optionalDependencies as Record<string, string> | undefined)?.[pkg]
-    );
-  }
-
-  /** A `.json`/`.css` imported by a JS module is served as an ESM (`export
-   *  default …`); mark its URL with `?module` so `fetch` wraps it instead of
-   *  serving the raw resource. */
-  function moduleMarkedUrl(url: string, id: string): string {
-    return id.endsWith(".json") || id.endsWith(".css") ? `${url}?module` : url;
-  }
-
-  /** Direct CSS specifier resolution. Unlike JS's `resolveSpec`, a bare package
-   *  specifier here is resolved straight to its same-origin URL — never proxied
-   *  through `~deps` (CSS stays direct, per the Global Constraints). Mirrors
-   *  `resolveSpec`'s relative + local-package branches; reuses the same closures
-   *  (`resolveRelativeId`, `ensurePackage`, `importerVersion`, `urlPath`) plus the
-   *  imported `parseSpecifier`/`relativeUrl` — no new imports needed. */
-  async function resolveCssSpec(
-    spec: string,
-    fromId: string,
-  ): Promise<{ url: string; id?: string }> {
-    if (/^(https?:|data:)/.test(spec)) return { url: spec }; // absolute — pass through
-    if (spec.startsWith(".")) {
-      const id = await resolveRelativeId(fromId, spec);
-      return { url: relativeUrl(urlPath(fromId), urlPath(id)), id };
-    }
-    // Bare package specifier (e.g. "some-pkg/reset.css") — resolve directly.
-    const { pkg, subpath } = parseSpecifier(spec);
-    const version = await importerVersion(pkg, fromId);
-    const t = await ensurePackage({ pkg, version, subpath });
-    return { url: relativeUrl(urlPath(fromId), urlPath(t.id)), id: t.id };
-  }
-
-  /** Run one CSS-transform pass that only CAPTURES the @import/url() specifiers a
-   *  file references (via the seam's `rewrite` callback), without resolving them.
-   *  Shared by `cssTransformAndCache` (below) and `walkGraph`'s CSS branch
-   *  (Task 3) — one implementation, two callers. */
-  async function cssSpecifiers(path: string, source: string): Promise<string[]> {
-    const cssModules = /\.module\.css$/.test(path);
-    const specs = new Set<string>();
-    await cssTransformer.transform({ path, source, cssModules }, (s) => {
-      specs.add(s);
-      return s;
-    });
-    return [...specs];
-  }
-
-  /** Transform + cache a `.css` file. Two Lightning CSS passes: pass 1 (via
-   *  `cssSpecifiers`) captures every @import/url() specifier; the specifiers are
-   *  then resolved asynchronously (the seam's `rewrite` itself must stay sync,
-   *  so resolution can't happen inline); pass 2 substitutes the resolved urls. */
+  /** Transform + cache a `.css` file via the shared `preprocessModule` core, then
+   *  reconstruct the `CssTransformResult` (its exports come back from the sidecar
+   *  the core just wrote) for the callers that need the class map. */
   async function cssTransformAndCache(id: string): Promise<CssTransformResult> {
-    const { path, source } = await loadRaw(id);
-    const cssModules = /\.module\.css$/.test(id);
-    const rewrites = new Map<string, string>();
-    for (const spec of await cssSpecifiers(path, source)) {
-      rewrites.set(spec, (await resolveCssSpec(spec, id)).url);
-    }
-    const out = await cssTransformer.transform(
-      { path, source, cssModules },
-      (s) => rewrites.get(s) ?? s,
-    );
-    await writeText(cache, `${tRoot}/${id}`, out.code);
-    await writeText(cache, `${tRoot}/${id}.exports.json`, JSON.stringify(out.exports));
-    return out;
+    const { code } = await preprocessModule(id, ctx);
+    const exports = JSON.parse(await readText(cache, `${tRoot}/${id}.exports.json`));
+    return { code, exports };
   }
 
-  /** Resolve a relative specifier against an importer id to a concrete cache id. */
-  async function resolveRelativeId(fromId: string, spec: string): Promise<string> {
-    const dir = fromId.split("/").slice(0, -1);
-    for (const part of spec.split("/")) {
-      if (part === "." || part === "") continue;
-      if (part === "..") dir.pop();
-      else dir.push(part);
-    }
-    const base = dir.join("/");
-    const pkgKey = base.match(/^(?:@[^/]+\/)?[^/]+@[^/]+/)?.[0];
-    if (pkgKey) {
-      const rel = base.slice(pkgKey.length + 1);
-      const file = await resolveRawFile(pkgKey, rel);
-      return `${pkgKey}/${file}`;
-    }
-    return base; // project-relative
-  }
-
-  /** Try extension/index variants for a package-relative file; return what exists. */
-  async function resolveRawFile(pkgKey: string, file: string): Promise<string> {
-    for (const ext of RAW_EXT) {
-      if (await cache.exists(`/raw/${pkgKey}/${file}${ext}`)) return file + ext;
-    }
-    return file;
-  }
-
-  /** Load a canonical id's raw source + format context. */
-  async function loadRaw(
-    id: string,
-  ): Promise<{ path: string; source: string; format: ReturnType<typeof detectFormat> }> {
-    if (id.startsWith("~/")) {
-      if (!project) throw new ModuleResolveError({ url: id }, "no project FilesApi");
-      const path = `/${id.slice(2)}`;
-      const source = await readText(project, path);
-      return { path, source, format: detectFormat(path, source) };
-    }
-    const m = id.match(/^((?:@[^/]+\/)?[^/]+@[^/]+)\/(.+)$/);
-    if (!m) throw new ModuleResolveError({ url: id }, "not a module id");
-    const [, pkgKey, rawFile] = m;
-    await ensureRawByKey(pkgKey);
-    const file = await resolveRawFile(pkgKey, rawFile);
-    const source = await readText(cache, `/raw/${pkgKey}/${file}`);
-    const manifest = await cachedManifest(pkgKey).catch(() => undefined);
-    return { path: `/${pkgKey}/${file}`, source, format: detectFormat(file, source, manifest) };
-  }
-
-  /** Transform a module (pre-resolving its specifiers) and cache the ESM output.
-   *  Bare specifiers rewrite to `~deps` proxies; used allowlisted free globals get
-   *  a prepended import from a co-located globals proxy (the server owns the
-   *  prepend, not the Transform). */
+  /** Transform + cache a module (JS/TS/JSX/TSX) via the shared `preprocessModule`
+   *  core; returns the emitted ESM body. */
   async function transformAndCache(id: string): Promise<string> {
-    const { path, source, format } = await loadRaw(id);
-    const { imports } = await analyze(source, format);
-    const map = new Map<string, string>();
-    for (const spec of Object.keys(imports)) {
-      if (spec === "") continue;
-      map.set(spec, (await resolveSpec(spec, id, imports[spec])).url);
-    }
-    // Globals: prepend an import from a co-located globals proxy for allowlisted
-    // free vars (declared/imported names never appear in the `""` free-global set).
-    const usedGlobals = (imports[""]?.names ?? []).filter((n) => Object.hasOwn(globalsMap, n));
-    let prelude = "";
-    if (usedGlobals.length) {
-      const gid = proxyId(id, "");
-      await ensureGlobalsProxy(gid, usedGlobals);
-      prelude = `import { ${usedGlobals.join(", ")} } from ${JSON.stringify(
-        relativeUrl(urlPath(id), urlPath(gid)),
-      )};\n`;
-    }
-    const { code } = await transformer.transform({ path, source, format }, (s) => map.get(s) ?? s);
-    await writeText(cache, `${tRoot}/${id}`, prelude + code);
-    return prelude + code;
-  }
-
-  /** Resolve a file id (project `~/…` or `{pkg}@{ver}/{file}`) to its raw bytes. */
-  async function rawBytes(id: string): Promise<Uint8Array | undefined> {
-    if (id.startsWith("~/")) {
-      const path = `/${id.slice(2)}`;
-      if (!project || !(await project.exists(path))) return undefined;
-      return collect(project.read(path));
-    }
-    const m = id.match(/^((?:@[^/]+\/)?[^/]+@[^/]+)\/(.+)$/);
-    if (!m) return undefined;
-    await ensureRawByKey(m[1]);
-    const file = await resolveRawFile(m[1], m[2]);
-    if (!(await cache.exists(`/raw/${m[1]}/${file}`))) return undefined;
-    return collect(cache.read(`/raw/${m[1]}/${file}`));
+    return (await preprocessModule(id, ctx)).code;
   }
 
   /** Serve a file's raw bytes (non-module resources, or `?raw`). */
   async function serveRaw(id: string, asOctet: boolean): Promise<Response> {
-    const bytes = await rawBytes(id);
+    const bytes = await rawBytes(id, ctx);
     if (!bytes) return new Response(null, { status: 404 });
     return new Response(bytes as BodyInit, {
       status: 200,
       headers: { "content-type": asOctet ? "application/octet-stream" : contentType(id) },
-    });
-  }
-
-  /** Serve a JSON file as an ESM module (`export default …`) — how a JS `import`
-   *  of a `.json` is satisfied without relying on browser JSON-import attributes. */
-  async function serveJsonModule(id: string): Promise<Response> {
-    const bytes = await rawBytes(id);
-    if (!bytes) return new Response(null, { status: 404 });
-    const json = new TextDecoder().decode(bytes);
-    return new Response(`export default ${json};`, {
-      status: 200,
-      headers: { "content-type": "text/javascript" },
     });
   }
 
@@ -490,59 +150,7 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
       const p = idFromPath(ref.url);
       return p.startsWith("~/") ? p : `~/${p.replace(/^\//, "")}`;
     }
-    return (await ensurePackage(ref)).id;
-  }
-
-  /** Walk + transform + cache the whole graph from an entry; persist the lockfile.
-   *  Returns the entry id and every reachable module id. */
-  async function walkGraph(entry: ModuleRef): Promise<{ rootId: string; ids: string[] }> {
-    const rootId = await resolveEntryId(entry);
-    const seen = new Set<string>();
-    const queue = [rootId];
-    while (queue.length) {
-      const id = queue.shift();
-      if (id === undefined || seen.has(id)) continue;
-      seen.add(id);
-      // `~deps` proxies are pre-generated into `/t/{target}` by their importer's
-      // resolveSpec/transformAndCache — served from cache, never re-analyzed.
-      if (id.includes("/~deps/") && (await cache.exists(`${tRoot}/${id}`))) continue;
-      if (isCssFile(id)) {
-        await cssTransformAndCache(id); // ensures the file + its exports are cached
-        const { path, source } = await loadRaw(id);
-        // Reuse cssSpecifiers (Task 2, 3c) — the SAME helper cssTransformAndCache uses
-        // — then re-derive child ids via CSS's own direct resolver (never `resolveSpec`:
-        // that one proxies bare externals through `~deps`, which CSS must not do).
-        for (const spec of await cssSpecifiers(path, source)) {
-          const { id: childId } = await resolveCssSpec(spec, id);
-          if (childId && !seen.has(childId)) queue.push(childId);
-        }
-        continue;
-      }
-      if (!isModuleFile(id)) {
-        // non-JS resource (json/css/…): ensure it's cached, don't scan/transform.
-        const m = id.match(/^((?:@[^/]+\/)?[^/]+@[^/]+)\//);
-        if (m) await ensureRawByKey(m[1]);
-        continue;
-      }
-      const { source, format } = await loadRaw(id);
-      const { imports } = await analyze(source, format);
-      for (const spec of Object.keys(imports)) {
-        if (spec === "") {
-          // Only allowlisted free globals get a proxy (matches transformAndCache);
-          // real globals like `console`/`Math` are left as native references.
-          if (imports[""].names.some((n) => Object.hasOwn(globalsMap, n))) {
-            queue.push(proxyId(id, ""));
-          }
-          continue;
-        }
-        const { id: childId, endpointId } = await resolveSpec(spec, id, imports[spec]);
-        if (childId && !seen.has(childId)) queue.push(childId); // the proxy
-        if (endpointId && !seen.has(endpointId)) queue.push(endpointId); // the real endpoint
-      }
-      await transformAndCache(id);
-    }
-    await writeText(cache, "/lock.json", JSON.stringify(lock));
-    return { rootId, ids: [...seen] };
+    return (await ensurePackage(ref, ctx)).id;
   }
 
   return {
@@ -558,20 +166,22 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
 
     async prime(entry: ModuleRef): Promise<ResolvedModule> {
       await init();
-      const { rootId } = await walkGraph(entry);
+      const rootId = await resolveEntryId(entry);
+      await walkFrom(rootId, ctx);
       return { url: urlFor(rootId), target };
     },
 
     async listResources(entry: ModuleRef): Promise<string[]> {
       await init();
-      const { ids } = await walkGraph(entry);
+      const rootId = await resolveEntryId(entry);
+      const ids = await walkFrom(rootId, ctx);
       return ids.map(urlFor).sort();
     },
 
     async listPackageFiles(ref: ModuleRef): Promise<string[]> {
       await init();
       if ("url" in ref) throw new ModuleResolveError(ref, "not a package reference");
-      const { name, version } = await ensurePackage({ pkg: ref.pkg, version: ref.version });
+      const { name, version } = await ensurePackage({ pkg: ref.pkg, version: ref.version }, ctx);
       const key = `${name}@${version}`;
       const files: string[] = [];
       for await (const info of cache.list(`/raw/${key}`, { recursive: true })) {
@@ -589,7 +199,12 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
         // files (json/md/css/…) → raw + guessed type.
         if (url.searchParams.has("raw")) return await serveRaw(id, true);
         if (url.searchParams.has("module") && id.endsWith(".json")) {
-          return await serveJsonModule(id);
+          const code = await serveJsonModule(id, ctx);
+          if (code === undefined) return new Response(null, { status: 404 });
+          return new Response(code, {
+            status: 200,
+            headers: { "content-type": "text/javascript" },
+          });
         }
         if (isCssFile(id)) {
           const cssModules = /\.module\.css$/.test(id);
@@ -627,25 +242,6 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
   };
 }
 
-/** JS module that injects the processed CSS as a <style> (guarded for non-DOM /
- *  Node) and default-exports the CSS Modules class map (when `cssModules`) or
- *  the CSS text otherwise. */
-function cssModuleWrapper(
-  css: string,
-  exports: Record<string, string>,
-  cssModules: boolean,
-): string {
-  return [
-    `const css = ${JSON.stringify(css)};`,
-    `if (typeof document !== "undefined") {`,
-    `  const el = document.createElement("style");`,
-    `  el.textContent = css;`,
-    `  document.head.appendChild(el);`,
-    `}`,
-    `export default ${cssModules ? JSON.stringify(exports) : "css"};`,
-  ].join("\n");
-}
-
 function normalizeBase(base: string): string {
   let b = base.startsWith("/") ? base : `/${base}`;
   if (!b.endsWith("/")) b += "/";
@@ -658,20 +254,4 @@ function normalizeDeps(prefix: string): string {
   if (!prefix) return "";
   const s = prefix.replace(/^\/+/, "").replace(/\/+$/, "");
   return s ? `${s}/` : "";
-}
-
-async function collect(chunks: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
-  const parts: Uint8Array[] = [];
-  let n = 0;
-  for await (const c of chunks) {
-    parts.push(c);
-    n += c.length;
-  }
-  const out = new Uint8Array(n);
-  let off = 0;
-  for (const p of parts) {
-    out.set(p, off);
-    off += p.length;
-  }
-  return out;
 }

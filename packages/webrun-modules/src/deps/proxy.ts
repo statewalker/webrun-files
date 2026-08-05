@@ -1,4 +1,3 @@
-import { relativeUrl } from "../server/specifiers.js";
 import type { EndpointBinding, ModuleImport } from "../types.js";
 
 const IDENT_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
@@ -19,12 +18,12 @@ export function proxyId(importerId: string, specifier: string): string {
 
 /**
  * The proxy module's ESM source. `local`/`cdn` re-export from a real ESM endpoint
- * (relative for `local`, absolute for `cdn`); `host` reads the shared runtime
- * registry so every proxy of a name yields the SAME instance; `inline` is the
- * bundled body verbatim.
+ * (`binding.url` is the ready endpoint URL for BOTH — the caller shapes the local
+ * one through the URL policy, so `proxyBody` never relativizes and the build's
+ * ext-map policy is honored); `host` reads the shared runtime registry so every
+ * proxy of a name yields the SAME instance; `inline` is the bundled body verbatim.
  */
 export function proxyBody(args: {
-  proxyId: string;
   binding: EndpointBinding;
   imp: ModuleImport;
   registryKey: string;
@@ -45,12 +44,9 @@ export function proxyBody(args: {
     return lines.join("\n");
   }
 
-  // local | cdn — a real ESM endpoint we can re-export from.
-  const endpoint =
-    binding.kind === "local"
-      ? relativeUrl(args.proxyId, binding.url) // url is the endpoint's canonical id for local
-      : binding.url; // absolute CDN url
-  const q = JSON.stringify(endpoint);
+  // local | cdn — a real ESM endpoint we can re-export from; `binding.url` is the
+  // ready endpoint URL (relative for `local`, absolute for `cdn`).
+  const q = JSON.stringify(binding.url);
   const lines: string[] = [];
   if (named.length) lines.push(`export { ${[...new Set(named)].join(", ")} } from ${q};`);
   if (imp.hasDefault) lines.push(`export { default } from ${q};`);
