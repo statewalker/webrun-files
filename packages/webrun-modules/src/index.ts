@@ -1,10 +1,26 @@
 export { newDefaultEndpointResolver } from "./deps/endpoint-resolver.js";
 export { globalHostRegistry, newHostRegistry } from "./deps/host-registry.js";
 export { proxyBody, proxyId } from "./deps/proxy.js";
-export type { PreprocessContext, UrlPolicy } from "./preprocess/context.js";
-export { defaultGlobals, makeKeepExtPolicy, urlPath } from "./preprocess/context.js";
+export type {
+  InputType,
+  PreprocessContext,
+  RegisteredTransform,
+  TransformRegistry,
+  UrlPolicy,
+} from "./preprocess/context.js";
+export {
+  coarseBucket,
+  defaultGlobals,
+  detectInputType,
+  makeKeepExtPolicy,
+  urlPath,
+} from "./preprocess/context.js";
 export { cssModuleWrapper, preprocessModule, serveJsonModule } from "./preprocess/module.js";
-export { makeDefaultEndpointResolver, resolveSpec } from "./preprocess/resolve.js";
+export {
+  newDefaultTransformRegistry,
+  newTransformRegistry,
+} from "./preprocess/registry.js";
+export { makeDefaultEndpointResolver, rawBytes, resolveSpec } from "./preprocess/resolve.js";
 export { walkFrom } from "./preprocess/walk.js";
 export { resolveNodeBuiltin } from "./resolution/node-builtins.js";
 export { resolveEntry } from "./resolution/resolve-entry.js";

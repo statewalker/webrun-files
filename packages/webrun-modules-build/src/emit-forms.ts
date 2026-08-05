@@ -2,8 +2,20 @@ import { readText, tryReadText, writeText } from "@statewalker/webrun-files";
 import {
   cssModuleWrapper,
   type PreprocessContext,
+  rawBytes,
   serveJsonModule,
+  urlPath,
 } from "@statewalker/webrun-modules";
+
+/** Code/json/css module extensions the build transforms into `.js` forms. Anything
+ *  else reached in a walk (e.g. a `url("./logo.png")` target) is an opaque ASSET:
+ *  copied verbatim to its (unchanged) ext-map path, never transformed. */
+const MODULE_EXT = /\.(?:m|c)?[jt]sx?$|\.json$|\.css$/i;
+
+/** An id is an asset when its extension is not a code/json/css module extension. */
+export function isAsset(id: string): boolean {
+  return !MODULE_EXT.test(id);
+}
 
 /**
  * Emit the build's static module forms for the JSON/CSS ids in a walk closure.
@@ -20,18 +32,13 @@ import {
  *    default-exports the class map (CSS Modules) or the CSS text. The raw stylesheet
  *    `walkFrom` already wrote at `emittedPath(id)` is read back and wrapped in place.
  *
+ * Beyond the JS-imported stylesheet, an `@import`-chained `.css` is also emitted as
+ * a real `.css` file at its `urlPath` (so the injected `@import "./x.css"` resolves),
+ * and a `url("./logo.png")` asset is copied verbatim to its ext-map path.
+ *
  * Idempotent: re-running over the same ids rewrites identical bytes. The caller
  * (Preprocess cell) passes only freshly-emitted CSS ids so a gate-skipped node's
  * already-wrapped `.js` is never double-wrapped.
- *
- * KNOWN LIMITATIONS — owned by Phase 3 (CSS/Tailwind), NOT handled here:
- *  - **F2 — `@import`-chained CSS.** `resolveCssSpec` keeps the `.css` extension on
- *    an `@import`, but the ext-map policy writes the target as `.js`; the referenced
- *    `.css` file is never emitted, so the `<style>` body still contains a dangling
- *    `@import "./x.css"` → 404 + silently dropped styles (and a dead `.js` emitted).
- *  - **F3 — `url()` asset references.** `url("./logo.png")` is rewritten but the
- *    asset is not a module/css/json/pkg id, so it is never emitted → runtime 404.
- * Both are deferred to the Phase 3 CSS/Tailwind work; see the package README.
  */
 export async function emitBuildForms(ids: string[], ctx: PreprocessContext): Promise<void> {
   for (const id of ids) {
@@ -43,10 +50,20 @@ export async function emitBuildForms(ids: string[], ctx: PreprocessContext): Pro
       // `walkFrom`/`preprocessModule` wrote the processed CSS to `emitted` and its
       // class map to `${emitted}.exports.json`; wrap them into the injector in place.
       const css = await readText(ctx.cache, emitted);
+      // F2: also emit the processed stylesheet as a real `.css` file at its
+      // urlPath (no ext-map) so an `@import "./x.css"` in another stylesheet — whose
+      // specifier keeps `.css` — resolves to a live file instead of 404. The two
+      // paths differ only by extension (`/~/x.css` vs `/~/x.js`), so no collision.
+      await writeText(ctx.cache, `/${urlPath(id, ctx)}`, css);
       const exportsJson = await tryReadText(ctx.cache, `${emitted}.exports.json`);
       const exports = exportsJson ? (JSON.parse(exportsJson) as Record<string, string>) : {};
       const cssModules = /\.module\.css$/.test(id);
       await writeText(ctx.cache, emitted, cssModuleWrapper(css, exports, cssModules));
+    } else if (isAsset(id)) {
+      // F3: a `url("./logo.png")` target — copy the raw bytes verbatim to its
+      // ext-map path (a non-code ext is left unchanged, so `emitted` = `/~/logo.png`).
+      const bytes = await rawBytes(id, ctx);
+      if (bytes) await ctx.cache.write(emitted, [bytes]);
     }
   }
 }

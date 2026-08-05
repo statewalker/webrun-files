@@ -1,7 +1,7 @@
 import { writeText } from "@statewalker/webrun-files";
 import { proxyId } from "../deps/proxy.js";
 import { analyze } from "../transform/analyze.js";
-import { isCssFile, isModuleFile, type PreprocessContext } from "./context.js";
+import { detectInputType, isCssFile, isModuleFile, type PreprocessContext } from "./context.js";
 import { preprocessModule } from "./module.js";
 import { cssSpecifiers, ensureRawByKey, loadRaw, resolveCssSpec, resolveSpec } from "./resolve.js";
 
@@ -28,10 +28,18 @@ export async function walkFrom(entryId: string, ctx: PreprocessContext): Promise
       if (!(ctx.skipTransform && (await ctx.skipTransform(id, source)))) {
         await preprocessModule(id, ctx); // ensures the file + its exports are cached
       }
+      // BUILD-ONLY: when a Tailwind transform is registered and this file is a
+      // `tailwind-css` input, the transform already generated the full stylesheet,
+      // so the bare `@import "tailwindcss"` (or `tailwindcss/…`) is NOT a real npm
+      // child — suppress it so the walk never tries to npm-resolve it. The server
+      // (no such registered entry) leaves `twActive` false, so it is unaffected.
+      const twActive =
+        !!ctx.transforms?.has("tailwind-css") && detectInputType(id, source) === "tailwind-css";
       // Reuse cssSpecifiers — the SAME helper preprocessModule uses — then
       // re-derive child ids via CSS's own direct resolver (never `resolveSpec`:
       // that one proxies bare externals through `~deps`, which CSS must not do).
       for (const spec of await cssSpecifiers(path, source, ctx)) {
+        if (twActive && /^tailwindcss($|\/)/.test(spec)) continue;
         const { id: childId } = await resolveCssSpec(spec, id, ctx);
         if (childId && !seen.has(childId)) queue.push(childId);
       }

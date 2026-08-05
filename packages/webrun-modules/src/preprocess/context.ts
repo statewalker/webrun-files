@@ -17,6 +17,49 @@ const MODULE_EXT = /\.(?:m|c)?[jt]sx?$/;
 export const isModuleFile = (path: string): boolean => MODULE_EXT.test(path);
 export const isCssFile = (path: string): boolean => /\.css$/.test(path);
 
+/** Fine-grained input classification driving the transform registry. `css` and
+ *  `tailwind-css` share the coarse `css` bucket (see `coarseBucket`); a registry
+ *  that registers only `css` handles both via fallback. */
+export type InputType = "module" | "css" | "tailwind-css";
+
+/** One registered transform: what it consumes (`inType`), what it emits
+ *  (`outType`), and the per-file `run` (loads/resolves/transforms/caches). */
+export interface RegisteredTransform {
+  inType: InputType;
+  outType: "js" | "css";
+  run(
+    id: string,
+    source: string,
+    ctx: PreprocessContext,
+  ): Promise<{ code: string; emittedId: string }>;
+}
+
+/** Registry of transforms keyed by `InputType`. `get` throws on a missing key;
+ *  `register` is last-wins. */
+export interface TransformRegistry {
+  has(t: InputType): boolean;
+  get(t: InputType): RegisteredTransform;
+  register(t: RegisteredTransform): void;
+}
+
+/** Classify a raw file by id + content. CSS content is sniffed for Tailwind
+ *  directives (`@tailwind`, or `@import "tailwindcss"`) → `tailwind-css`; plain
+ *  CSS → `css`; everything else → `module`. */
+export function detectInputType(id: string, source: string): InputType {
+  if (isCssFile(id)) {
+    return /^\s*@tailwind\b/m.test(source) || /^\s*@import\s+["']tailwindcss["']/m.test(source)
+      ? "tailwind-css"
+      : "css";
+  }
+  return "module";
+}
+
+/** The coarse fallback bucket for an `InputType`: `tailwind-css` degrades to
+ *  `css`; every other type is its own bucket. */
+export function coarseBucket(t: InputType): InputType {
+  return t === "tailwind-css" ? "css" : t;
+}
+
 /**
  * The URL-naming seam. Two-arg `servedUrl(targetId, importerId)` is computed in
  * urlPath-space (`relativeUrl(urlPath(importerId), urlPath(targetId))`); the policy
@@ -61,6 +104,10 @@ export interface PreprocessContext {
   /** In-flight dedupe so parallel drivers can't double-load or tear a proxy. */
   inflight: Map<string, Promise<unknown>>;
   policy: UrlPolicy;
+  /** Input-type → transform registry consulted by `preprocessModule`. Drivers
+   *  attach the default (`newDefaultTransformRegistry()`); an unregistered
+   *  fine-grained type falls back to its `coarseBucket`. */
+  transforms?: TransformRegistry;
   /**
    * OPT-IN incremental gate. When set, `walkFrom` consults it for each reachable
    * module/CSS id BEFORE transforming: returning `true` means the emitted artifact
