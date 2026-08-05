@@ -6,11 +6,7 @@ import { newProjectBuild } from "./index.js";
 describe("newProjectBuild — F2 @import-chained CSS", () => {
   it("emits a real /~/b.css alongside the a.js injector, keeping the @import specifier", async () => {
     const project = new MemFilesApi();
-    await writeText(
-      project,
-      "/main.tsx",
-      `import "./a.css";\nexport const x = 1;`,
-    );
+    await writeText(project, "/main.tsx", `import "./a.css";\nexport const x = 1;`);
     await writeText(project, "/a.css", `@import "./b.css";\n.a { color: red; }`);
     await writeText(project, "/b.css", `.b { color: blue; }`);
     const cache = new MemFilesApi();
