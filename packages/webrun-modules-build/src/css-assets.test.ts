@@ -47,3 +47,29 @@ describe("newProjectBuild — F3 url() asset references", () => {
     expect([...out]).toEqual([...bytes]); // byte-identical copy, no transform
   });
 });
+
+/** A couple of ms so the scanner sees a distinct mtime after the removal. */
+const tick = () => new Promise((r) => setTimeout(r, 5));
+
+describe("newProjectBuild — Prune F2 .css orphan", () => {
+  it("removes the F2 raw /~/b.css alongside /~/b.js when the source is deleted", async () => {
+    const project = new MemFilesApi();
+    await writeText(project, "/main.tsx", `import "./a.css";\nexport const x = 1;`);
+    await writeText(project, "/a.css", `@import "./b.css";\n.a { color: red; }`);
+    await writeText(project, "/b.css", `.b { color: blue; }`);
+    const cache = new MemFilesApi();
+    const build = newProjectBuild({ project, cache });
+
+    await build.build();
+    expect(await cache.exists("/~/b.js")).toBe(true);
+    expect(await cache.exists("/~/b.css")).toBe(true);
+
+    await tick();
+    await project.remove("/b.css");
+    await build.build();
+
+    // Both the wrapped `.js` and the F2 raw `.css` are pruned — no orphan left.
+    expect(await cache.exists("/~/b.js")).toBe(false);
+    expect(await cache.exists("/~/b.css")).toBe(false);
+  });
+});

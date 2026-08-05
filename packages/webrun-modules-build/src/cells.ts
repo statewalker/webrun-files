@@ -1,5 +1,5 @@
 import type { RegisteredBuilder } from "@statewalker/webrun-builder";
-import { walkFrom } from "@statewalker/webrun-modules";
+import { urlPath, walkFrom } from "@statewalker/webrun-modules";
 import { emitBuildForms, isAsset } from "./emit-forms.js";
 import type { WebrunBuildHost } from "./host.js";
 
@@ -97,10 +97,18 @@ export function webrunBuilders(served: string[]): RegisteredBuilder<WebrunBuildH
           signal: "sources-removed",
           cell: PRUNE_CELL,
         })) {
-          const emitted = host.ctx.policy.emittedPath(toProjectId(u.uri));
+          const id = toProjectId(u.uri);
+          const emitted = host.ctx.policy.emittedPath(id);
           // Prune the emitted artifact and its sidecars (source-hash gate + the CSS
-          // class-map) so a removed source leaves no orphan behind.
-          for (const path of [emitted, `${emitted}.hash`, `${emitted}.exports.json`]) {
+          // class-map), plus the F2 raw `.css` emit (`/${urlPath(id)}`, which differs
+          // from `emitted` only for a `.css` source), so a removed source leaves no
+          // orphan behind. (A removed asset's own bytes are `emitted` already.)
+          for (const path of [
+            emitted,
+            `${emitted}.hash`,
+            `${emitted}.exports.json`,
+            `/${urlPath(id, host.ctx)}`,
+          ]) {
             if (await host.cache.exists(path)) await host.cache.remove(path);
           }
           await u.handled();
