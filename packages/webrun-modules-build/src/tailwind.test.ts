@@ -75,6 +75,21 @@ describe("newProjectBuild — Tailwind transform (build-only)", () => {
     expect(injector).toContain("bg-brand");
     expect(injector).toContain("#123456");
   });
+
+  it("resolves a sibling project @import (via ctx.files) and honors its @theme", async () => {
+    const project = new MemFilesApi();
+    await writeText(project, "/main.tsx", `import "./styles.css";\nexport const x = 1;`);
+    await writeText(project, "/styles.css", `@import "tailwindcss";\n@import "./tokens.css";`);
+    await writeText(project, "/tokens.css", `@theme { --color-accent: #abcdef; }`);
+    const cache = new MemFilesApi();
+
+    await newProjectBuild({ project, cache }).build();
+
+    // The sibling `./tokens.css` was read through ctx.files and its @theme applied —
+    // proof the project-relative resolver branch works end-to-end.
+    const injector = await readText(cache, "/~/styles.js");
+    expect(injector).toContain("#abcdef");
+  });
 });
 
 describe("newProjectBuild — Tailwind inputs-only cache key", () => {

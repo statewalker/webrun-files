@@ -85,11 +85,11 @@ export async function generateTailwindCss(
 }
 
 /**
- * Inputs-only cache key for the Tailwind transform. Because generation is generic
- * (independent of the project source — the build hashes the source bytes
- * separately), the key is just the pinned Tailwind version. Test seam: the
- * `TW_CACHE_VER` env var overrides the version so a test can invalidate the cache
- * without touching the entry bytes.
+ * The Tailwind-specific cache dimension folded into the build's `skipTransform`
+ * hash. The entry SOURCE — which now drives generation (`@theme`/customizations) —
+ * is hashed separately by that closure (`… + "\n" + source`), so this contributes
+ * only the pinned Tailwind VERSION: a Tailwind upgrade re-generates even when the
+ * entry bytes are unchanged. Test seam: `TW_CACHE_VER` overrides the version.
  */
 export function tailwindCacheKey(_source: string): string {
   return process.env.TW_CACHE_VER ?? TAILWIND_VERSION;
