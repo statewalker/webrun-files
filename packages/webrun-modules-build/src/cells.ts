@@ -1,19 +1,7 @@
 import type { RegisteredBuilder } from "@statewalker/webrun-builder";
-import { readText, tryReadText, writeText } from "@statewalker/webrun-files";
 import { walkFrom } from "@statewalker/webrun-modules";
 import { emitBuildForms } from "./emit-forms.js";
 import type { WebrunBuildHost } from "./host.js";
-
-/** FNV-1a (32-bit) content hash — a dependency-free digest for the source-hash
- *  sidecar that gates re-emit. Collision risk is negligible for change detection. */
-function hashSource(source: string): string {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < source.length; i++) {
-    h ^= source.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return (h >>> 0).toString(16);
-}
 
 export const CLASSIFY_CELL = "Classify";
 export const PREPROCESS_CELL = "Preprocess";
@@ -76,27 +64,24 @@ export function webrunBuilders(served: string[]): RegisteredBuilder<WebrunBuildH
         for (const signal of [MODULE_SIGNAL, CSS_SIGNAL, JSON_SIGNAL]) {
           for await (const u of host.engine.readUpdates({ signal, cell: PREPROCESS_CELL })) {
             const id = toProjectId(u.uri);
-            const emitted = host.ctx.policy.emittedPath(id);
-            const hashPath = `${emitted}.hash`;
-            // Content-hash gate: reuse the emitted artifact when the source is
-            // byte-identical to what produced it (a content-identical mtime touch
-            // re-triggers the scanner but must not re-transform).
-            const source = await readText(host.project, `/${u.uri}`);
-            const hash = hashSource(source);
-            const prev = await tryReadText(host.cache, hashPath);
-            if (prev !== hash || !(await host.cache.exists(emitted))) {
-              // Walk the entry's transitive closure: the entry + project deps → `.js`,
-              // and the `~deps` proxy bodies + resolved npm endpoints as side-effects
-              // into `host.cache`. All emitted via the ext-map policy; JSON/CSS deps
-              // are then rewritten into their static `serveJsonModule`/`cssModuleWrapper`
-              // `.js` forms.
-              const ids = await walkFrom(id, host.ctx);
-              await emitBuildForms(ids, host.ctx);
-              await writeText(host.cache, hashPath, hash);
-            }
-            yield { signal: SERVED_SIGNAL, uri: emitted, stamp: u.stamp };
+            // Walk the entry's transitive closure: the entry + project deps → `.js`,
+            // and the `~deps` proxy bodies + resolved npm endpoints as side-effects
+            // into `host.cache`. The per-id content-hash gate (`ctx.skipTransform`)
+            // re-transforms only changed nodes and records which ids it (re)emitted.
+            host.emitted.clear();
+            const ids = await walkFrom(id, host.ctx);
+            // Static emit forms: JSON is idempotent (re-derived from raw source), so
+            // always (re)form it; a CSS injector is re-wrapped ONLY for a freshly
+            // emitted node — the raw stylesheet `walkFrom` overwrites `emitted` with
+            // is only present when the transform actually ran (else it's already the
+            // wrapped `.js`, which must not be double-wrapped).
+            await emitBuildForms(
+              ids.filter((x) => x.endsWith(".json") || host.emitted.has(x)),
+              host.ctx,
+            );
+            yield { signal: SERVED_SIGNAL, uri: host.ctx.policy.emittedPath(id), stamp: u.stamp };
             await u.handled();
-            await host.engine.yieldControl();
+            if (!(await host.engine.yieldControl())) return false;
           }
         }
         return true;

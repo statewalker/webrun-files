@@ -22,8 +22,12 @@ export async function walkFrom(entryId: string, ctx: PreprocessContext): Promise
     // resolveSpec/preprocessModule — served from cache, never re-analyzed.
     if (id.includes("/~deps/") && (await ctx.cache.exists(ctx.policy.emittedPath(id)))) continue;
     if (isCssFile(id)) {
-      await preprocessModule(id, ctx); // ensures the file + its exports are cached
       const { path, source } = await loadRaw(id, ctx);
+      // Opt-in gate: skip re-transform when the artifact is already current, but
+      // still traverse children below so the closure is walked.
+      if (!(ctx.skipTransform && (await ctx.skipTransform(id, source)))) {
+        await preprocessModule(id, ctx); // ensures the file + its exports are cached
+      }
       // Reuse cssSpecifiers — the SAME helper preprocessModule uses — then
       // re-derive child ids via CSS's own direct resolver (never `resolveSpec`:
       // that one proxies bare externals through `~deps`, which CSS must not do).
@@ -54,7 +58,11 @@ export async function walkFrom(entryId: string, ctx: PreprocessContext): Promise
       if (childId && !seen.has(childId)) queue.push(childId); // the proxy
       if (endpointId && !seen.has(endpointId)) queue.push(endpointId); // the real endpoint
     }
-    await preprocessModule(id, ctx);
+    // Opt-in gate: children were queued above, so skipping the transform still
+    // leaves the closure fully walked.
+    if (!(ctx.skipTransform && (await ctx.skipTransform(id, source)))) {
+      await preprocessModule(id, ctx);
+    }
   }
   await writeText(ctx.cache, "/lock.json", JSON.stringify(ctx.lock));
   return [...seen];

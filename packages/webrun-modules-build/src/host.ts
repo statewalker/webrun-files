@@ -13,4 +13,8 @@ export interface WebrunBuildHost {
   cache: FilesApi;
   ctx: PreprocessContext;
   engine: BuildEngine<WebrunBuildHost>;
+  /** Ids the `ctx.skipTransform` gate freshly (re)emitted during the current
+   *  `walkFrom` — cleared before each walk, read after to drive the static CSS
+   *  emit forms only for nodes that actually changed (avoids re-wrapping). */
+  emitted: Set<string>;
 }

@@ -61,6 +61,15 @@ export interface PreprocessContext {
   /** In-flight dedupe so parallel drivers can't double-load or tear a proxy. */
   inflight: Map<string, Promise<unknown>>;
   policy: UrlPolicy;
+  /**
+   * OPT-IN incremental gate. When set, `walkFrom` consults it for each reachable
+   * module/CSS id BEFORE transforming: returning `true` means the emitted artifact
+   * for `id` is already current, so its transform + emit are skipped (its closure is
+   * still traversed). Absent (the request-time server) ⇒ every id is transformed,
+   * byte-identical to the pre-gate behaviour. The batch build supplies a
+   * content-hash hook so shared/interior nodes aren't re-transformed once per path.
+   */
+  skipTransform?(id: string, source: string): Promise<boolean>;
 }
 
 /** Project ids (`~/…`) are served verbatim; package ids get the `depsPath` prefix.

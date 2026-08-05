@@ -1,5 +1,6 @@
 import { BuildEngine, NULL_LOGGER } from "@statewalker/webrun-builder";
 import type { FilesApi } from "@statewalker/webrun-files";
+import { tryReadText, writeText } from "@statewalker/webrun-files";
 import {
   type CssTransform,
   defaultGlobals,
@@ -49,6 +50,17 @@ export interface ProjectBuild {
  * cells. The `host.engine` back-ref is wired post-construction so cells can drain
  * their own input.
  */
+/** FNV-1a (32-bit) content hash — a dependency-free digest for the per-id source
+ *  sidecar that gates re-emit. Collision risk is negligible for change detection. */
+function hashSource(source: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < source.length; i++) {
+    h ^= source.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16);
+}
+
 export function newProjectBuild(opts: ProjectBuildOptions): ProjectBuild {
   const { project, cache } = opts;
   const target = opts.target ?? "browser";
@@ -74,7 +86,23 @@ export function newProjectBuild(opts: ProjectBuildOptions): ProjectBuild {
   ctx.resolveEndpoint = makeDefaultEndpointResolver(ctx);
 
   const served: string[] = [];
-  const host = { project, cache, ctx } as WebrunBuildHost;
+  const emitted = new Set<string>();
+  // The opt-in incremental gate consulted by `walkFrom` for EVERY closure node
+  // (entry + interior + shared): reuse the emitted artifact when the source is
+  // byte-identical to the hash sidecar recorded beside it and the artifact still
+  // exists; otherwise record the fresh hash and let the transform re-run. This is
+  // the sole gate now — the per-entry cell gate is folded in here so all nodes are
+  // gated uniformly (a diamond's shared node transforms once, not once per path).
+  ctx.skipTransform = async (id, source) => {
+    const path = ctx.policy.emittedPath(id);
+    const hash = hashSource(source);
+    const prev = await tryReadText(cache, `${path}.hash`);
+    if (prev === hash && (await cache.exists(path))) return true;
+    await writeText(cache, `${path}.hash`, hash);
+    emitted.add(id);
+    return false;
+  };
+  const host = { project, cache, ctx, emitted } as WebrunBuildHost;
   const engine = new BuildEngine<WebrunBuildHost>({
     files: project,
     rootPath: "/",
