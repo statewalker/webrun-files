@@ -13,44 +13,58 @@ import {
 } from "./resolve.js";
 
 /** The per-file preprocess core: transform one module id and cache the emitted
- *  artifact, returning the emitted code + the discovered dependency ids (for a
- *  build driver to walk). Dispatches on file type — CSS gets the two-pass
- *  Lightning CSS treatment, JS/TS/JSX/TSX the ESM transform with `~deps` proxy
- *  rewrites + a globals prelude. Writes to `ctx.policy.emittedPath(id)` (the
- *  server's `/t/{target}/{id}`), matching the pre-lift write behaviour exactly. */
+ *  artifact, returning the emitted code. Dispatches on file type — CSS gets the
+ *  two-pass Lightning CSS treatment (`cssTransform`), JS/TS/JSX/TSX the ESM
+ *  transform with `~deps` proxy rewrites + a globals prelude (`jsTransform`).
+ *  Writes to `ctx.policy.emittedPath(id)` (the server's `/t/{target}/{id}`),
+ *  matching the pre-lift write behaviour exactly. */
 export async function preprocessModule(
   id: string,
   ctx: PreprocessContext,
-): Promise<{ code: string; emittedId: string; deps: string[] }> {
+): Promise<{ code: string; emittedId: string }> {
+  const { source } = await loadRaw(id, ctx);
+  if (isCssFile(id)) return cssTransform(id, source, ctx);
+  return jsTransform(id, source, ctx);
+}
+
+/** CSS branch: two Lightning CSS passes — pass 1 (via `cssSpecifiers`) captures
+ *  every @import/url() specifier; the specifiers are resolved asynchronously (the
+ *  seam's `rewrite` stays sync); pass 2 substitutes the resolved urls. Emits the
+ *  code + its exports sidecar. */
+export async function cssTransform(
+  id: string,
+  source: string,
+  ctx: PreprocessContext,
+): Promise<{ code: string; emittedId: string }> {
   const emittedId = ctx.policy.emittedPath(id);
-  if (isCssFile(id)) {
-    // Two Lightning CSS passes: pass 1 (via `cssSpecifiers`) captures every
-    // @import/url() specifier; the specifiers are resolved asynchronously (the
-    // seam's `rewrite` stays sync); pass 2 substitutes the resolved urls.
-    const { path, source } = await loadRaw(id, ctx);
-    const cssModules = /\.module\.css$/.test(id);
-    const rewrites = new Map<string, string>();
-    const deps: string[] = [];
-    for (const spec of await cssSpecifiers(path, source, ctx)) {
-      const { id: childId, url } = await resolveCssSpec(spec, id, ctx);
-      rewrites.set(spec, url);
-      if (childId) deps.push(childId);
-    }
-    const out = await ctx.css.transform({ path, source, cssModules }, (s) => rewrites.get(s) ?? s);
-    await writeText(ctx.cache, emittedId, out.code);
-    await writeText(ctx.cache, `${emittedId}.exports.json`, JSON.stringify(out.exports));
-    return { code: out.code, emittedId, deps };
+  const { path } = await loadRaw(id, ctx);
+  const cssModules = /\.module\.css$/.test(id);
+  const rewrites = new Map<string, string>();
+  for (const spec of await cssSpecifiers(path, source, ctx)) {
+    const { url } = await resolveCssSpec(spec, id, ctx);
+    rewrites.set(spec, url);
   }
-  const { path, source, format } = await loadRaw(id, ctx);
+  const out = await ctx.css.transform({ path, source, cssModules }, (s) => rewrites.get(s) ?? s);
+  await writeText(ctx.cache, emittedId, out.code);
+  await writeText(ctx.cache, `${emittedId}.exports.json`, JSON.stringify(out.exports));
+  return { code: out.code, emittedId };
+}
+
+/** JS branch: analyze → resolve each import to its served URL, prepend a globals
+ *  prelude for allowlisted free vars, run the ESM transform, emit. */
+export async function jsTransform(
+  id: string,
+  source: string,
+  ctx: PreprocessContext,
+): Promise<{ code: string; emittedId: string }> {
+  const emittedId = ctx.policy.emittedPath(id);
+  const { path, format } = await loadRaw(id, ctx);
   const { imports } = await analyze(source, format);
   const map = new Map<string, string>();
-  const deps: string[] = [];
   for (const spec of Object.keys(imports)) {
     if (spec === "") continue;
-    const { id: childId, url, endpointId } = await resolveSpec(spec, id, imports[spec], ctx);
+    const { url } = await resolveSpec(spec, id, imports[spec], ctx);
     map.set(spec, url);
-    if (childId) deps.push(childId);
-    if (endpointId) deps.push(endpointId);
   }
   // Globals: prepend an import from a co-located globals proxy for allowlisted
   // free vars (declared/imported names never appear in the `""` free-global set).
@@ -62,11 +76,10 @@ export async function preprocessModule(
     prelude = `import { ${usedGlobals.join(", ")} } from ${JSON.stringify(
       relativeUrl(urlPath(id, ctx), urlPath(gid, ctx)),
     )};\n`;
-    deps.push(gid);
   }
   const { code } = await ctx.transform.transform({ path, source, format }, (s) => map.get(s) ?? s);
   await writeText(ctx.cache, emittedId, prelude + code);
-  return { code: prelude + code, emittedId, deps };
+  return { code: prelude + code, emittedId };
 }
 
 /** Emit a JSON file as an ESM module body (`export default …`) — how a JS
