@@ -10,10 +10,11 @@ import { newEsmTransform } from "./transform-esm.js";
 
 export { analyze } from "./analyze.js";
 
-/** The default per-file transform: dispatch ESM/TS/JSX vs CJS by `file.format`. */
-export function newDefaultTransform(): Transform {
-  const esm = newEsmTransform();
-  const cjs = newCjsTransform();
+/** The default per-file transform: dispatch ESM/TS/JSX vs CJS by `file.format`.
+ *  `production` selects the JSX runtime (must match the globals' NODE_ENV). */
+export function newDefaultTransform(production = false): Transform {
+  const esm = newEsmTransform(production);
+  const cjs = newCjsTransform(production);
   return {
     transform(file: SourceFile, rewrite: (specifier: string) => string): Promise<TransformResult> {
       return file.format === "cjs" ? cjs.transform(file, rewrite) : esm.transform(file, rewrite);

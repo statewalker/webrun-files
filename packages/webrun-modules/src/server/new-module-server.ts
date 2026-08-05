@@ -52,9 +52,11 @@ export function newModuleServer(options: ModuleServerOptions): ModuleServer {
   const cache = options.cache;
   const project = options.project;
   const sources = options.sources ?? [npmRegistrySource()];
-  const transformer = options.transform ?? newDefaultTransform();
-  const cssTransformer = options.css ?? newDefaultCssTransform();
   const target = options.target ?? "browser";
+  // Browser globals shim NODE_ENV = "production" → compile JSX to the production
+  // runtime so react-dom (prod) and the JSX runtime agree (see `defaultGlobals`).
+  const transformer = options.transform ?? newDefaultTransform(target === "browser");
+  const cssTransformer = options.css ?? newDefaultCssTransform();
   const basePath = normalizeBase(options.basePath ?? "/");
   // Optional prefix (relative to `basePath`) for external package URLs, so npm
   // deps can be isolated under e.g. `/deps/` while authored project files stay at

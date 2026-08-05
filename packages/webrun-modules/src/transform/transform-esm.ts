@@ -20,13 +20,13 @@ function walkDynamicImports(node: any, cb: (arg: any) => void): void {
  * `[start,end)` (quotes included); we splice from the end so earlier offsets stay
  * valid, preserving the original quote character.
  */
-export function newEsmTransform(): Transform {
+export function newEsmTransform(production = false): Transform {
   return {
     async transform(
       file: SourceFile,
       rewrite: (specifier: string) => string,
     ): Promise<TransformResult> {
-      const js = toJs(file.source, file.format, file.path);
+      const js = toJs(file.source, file.format, file.path, production);
       const ast = parseEsmModule(js);
       const spans: { s: number; e: number; value: string }[] = [];
       for (const node of ast.body as any[]) {

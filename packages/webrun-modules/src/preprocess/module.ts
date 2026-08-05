@@ -62,7 +62,7 @@ export async function jsTransform(
 ): Promise<{ code: string; emittedId: string }> {
   const emittedId = ctx.policy.emittedPath(id);
   const { path, format } = await loadRaw(id, ctx);
-  const { imports } = await analyze(source, format);
+  const { imports } = await analyze(source, format, ctx.target === "browser");
   const map = new Map<string, string>();
   for (const spec of Object.keys(imports)) {
     if (spec === "") continue;

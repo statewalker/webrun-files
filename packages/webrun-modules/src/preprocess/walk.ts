@@ -52,7 +52,7 @@ export async function walkFrom(entryId: string, ctx: PreprocessContext): Promise
       continue;
     }
     const { source, format } = await loadRaw(id, ctx);
-    const { imports } = await analyze(source, format);
+    const { imports } = await analyze(source, format, ctx.target === "browser");
     for (const spec of Object.keys(imports)) {
       if (spec === "") {
         // Only allowlisted free globals get a proxy (matches preprocessModule);
