@@ -34,7 +34,11 @@ describe("newProjectBuild — interior-node gating (F1)", () => {
     transform.paths.length = 0; // measure the incremental delta only
     await tick();
     // Edit the ROOT importer; util.ts is byte-identical.
-    await writeText(project, "/main.tsx", `import { u } from "./util.ts";\nexport const x = u + "!";`);
+    await writeText(
+      project,
+      "/main.tsx",
+      `import { u } from "./util.ts";\nexport const x = u + "!";`,
+    );
     await build.build();
 
     // Only the root re-transforms; the unchanged interior import is gate-skipped.
