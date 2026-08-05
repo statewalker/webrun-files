@@ -14,7 +14,7 @@ export { analyze } from "./analyze.js";
  *  `production` selects the JSX runtime (must match the globals' NODE_ENV). */
 export function newDefaultTransform(production = false): Transform {
   const esm = newEsmTransform(production);
-  const cjs = newCjsTransform();
+  const cjs = newCjsTransform(production);
   return {
     transform(file: SourceFile, rewrite: (specifier: string) => string): Promise<TransformResult> {
       return file.format === "cjs" ? cjs.transform(file, rewrite) : esm.transform(file, rewrite);
