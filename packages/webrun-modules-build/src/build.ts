@@ -4,6 +4,7 @@ import { tryReadText, writeText } from "@statewalker/webrun-files";
 import {
   type CssTransform,
   defaultGlobals,
+  detectInputType,
   type EndpointResolver,
   type ModuleTarget,
   makeDefaultEndpointResolver,
@@ -17,7 +18,7 @@ import {
   type Transform,
   type UrlPolicy,
 } from "@statewalker/webrun-modules";
-import { newTailwindTransform } from "@statewalker/webrun-tailwind";
+import { newTailwindTransform, tailwindCacheKey } from "@statewalker/webrun-tailwind";
 import { webrunBuilders } from "./cells.js";
 import type { WebrunBuildHost } from "./host.js";
 import { makeExtMapPolicy } from "./url-policy.js";
@@ -107,7 +108,15 @@ export function newProjectBuild(opts: ProjectBuildOptions): ProjectBuild {
   // gated uniformly (a diamond's shared node transforms once, not once per path).
   ctx.skipTransform = async (id, source) => {
     const path = ctx.policy.emittedPath(id);
-    const hash = hashSource(source);
+    // A Tailwind input is generated generically (independent of the project
+    // markup), so fold the pinned Tailwind version into the gate key: a version
+    // bump re-generates even with byte-identical entry, while unchanged inputs stay
+    // cached. Every other input keys on its source bytes alone (unchanged).
+    const effective =
+      detectInputType(id, source) === "tailwind-css"
+        ? `${tailwindCacheKey(source)}\n${source}`
+        : source;
+    const hash = hashSource(effective);
     const prev = await tryReadText(cache, `${path}.hash`);
     if (prev === hash && (await cache.exists(path))) return true;
     await writeText(cache, `${path}.hash`, hash);
