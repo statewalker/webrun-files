@@ -226,6 +226,18 @@ browser or Node with no runtime CDN dependency and no install step: packages are
 downloaded, resolved, and transformed on request, then served from a `FilesApi`
 cache as same-origin ESM.
 
+## Cross-repo dependencies
+
+**This repository depends on no other repository.** It is a foundation of the
+StateWalker dependency graph — everything below it may be built without it.
+
+**Depended on by:** [`sandclaw`](https://github.com/statewalker/sandclaw) (`@statewalker/webrun-files`, `@statewalker/webrun-files-browser`, `@statewalker/webrun-files-node`); [`statewalker-workbench`](https://github.com/statewalker/statewalker-workbench) (`@statewalker/webrun-files`, `@statewalker/webrun-files-browser`, `@statewalker/webrun-files-composite`, `@statewalker/webrun-files-mem`, `@statewalker/webrun-files-node`); [`webrun-transform`](https://github.com/statewalker/webrun-transform) (`@statewalker/webrun-files`, `@statewalker/webrun-files-mem`); [`webrun-vcs`](https://github.com/statewalker/webrun-vcs) (`@statewalker/webrun-files`, `@statewalker/webrun-files-browser`, `@statewalker/webrun-files-mem`, `@statewalker/webrun-files-node`); [`webrun-wire`](https://github.com/statewalker/webrun-wire) (`@statewalker/webrun-files`, `@statewalker/webrun-files-mem`).
+
+Cross-repo dependencies are declared `workspace:*` rather than `catalog:`. This is
+deliberate: turbo derives its task graph from `workspace:` specifiers and does **not**
+resolve `catalog:`, so a `catalog:` cross-repo dependency is invisible to the scheduler
+and its consumer can be built before it.
+
 ## Development
 
 The repository uses pnpm for package management. After cloning:
