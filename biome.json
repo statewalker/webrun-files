@@ -33,5 +33,6 @@
       "enabled": true,
       "indentWidth": 2
     }
-  }
+  },
+  "root": false
 }
