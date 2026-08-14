@@ -1,32 +1,51 @@
 /**
- * Tests for S3FilesApi implementation using MinIO testcontainer
+ * Integration tests for S3FilesApi against a real S3-compatible server.
+ *
+ * These require Docker and are NOT part of `pnpm test`. Run them with:
+ *
+ *     pnpm test:integration
+ *
+ * The server is RustFS (`rustfs/rustfs`), the same image the workspace uses
+ * for local S3 storage, started per run via testcontainers.
  */
 
 import { CreateBucketCommand, S3Client } from "@aws-sdk/client-s3";
 import { readFile } from "@statewalker/webrun-files";
 import { createFilesApiTests } from "@statewalker/webrun-files-tests";
-import { MinioContainer, type StartedMinioContainer } from "@testcontainers/minio";
+import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { S3FilesApi } from "../src/s3-files-api.js";
 
-describe("S3FilesApi with MinIO", () => {
-  let minioContainer: StartedMinioContainer;
+const RUSTFS_IMAGE = process.env.RUSTFS_IMAGE ?? "rustfs/rustfs:latest";
+const ACCESS_KEY = "rustfsadmin";
+const SECRET_KEY = "rustfsadmin";
+const API_PORT = 9000;
+
+describe("S3FilesApi with RustFS", () => {
+  let container: StartedTestContainer;
   let s3Client: S3Client;
   const bucketName = "test-bucket";
   let testCounter = 0;
 
   beforeAll(async () => {
-    // Start MinIO container
-    minioContainer = await new MinioContainer().withExposedPorts(9000).start();
+    container = await new GenericContainer(RUSTFS_IMAGE)
+      .withExposedPorts(API_PORT)
+      .withEnvironment({
+        RUSTFS_ACCESS_KEY: ACCESS_KEY,
+        RUSTFS_SECRET_KEY: SECRET_KEY,
+        // Keep the server's own data inside the container; nothing is persisted.
+        RUSTFS_VOLUMES: "/data",
+      })
+      // The image has no HTTP health endpoint that is stable across versions, so
+      // wait for the API port to accept connections.
+      .withWaitStrategy(Wait.forListeningPorts())
+      .withStartupTimeout(120_000)
+      .start();
 
-    // Create S3 client configured for MinIO
     s3Client = new S3Client({
-      endpoint: minioContainer.getConnectionUrl(),
+      endpoint: `http://${container.getHost()}:${container.getMappedPort(API_PORT)}`,
       region: "us-east-1",
-      credentials: {
-        accessKeyId: minioContainer.getUsername(),
-        secretAccessKey: minioContainer.getPassword(),
-      },
+      credentials: { accessKeyId: ACCESS_KEY, secretAccessKey: SECRET_KEY },
       forcePathStyle: true,
     });
 
@@ -39,9 +58,8 @@ describe("S3FilesApi with MinIO", () => {
   }, 120000); // 2 minute timeout for container startup
 
   afterAll(async () => {
-    // Cleanup
     s3Client?.destroy();
-    await minioContainer?.stop();
+    await container?.stop();
   });
 
   createFilesApiTests("S3FilesApi", async () => {

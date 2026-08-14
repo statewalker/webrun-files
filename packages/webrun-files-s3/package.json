@@ -30,9 +30,10 @@
   ],
   "scripts": {
     "build": "rimraf dist && rolldown -c && tsc --emitDeclarationOnly --declaration",
-    "test": "vitest run",
     "lint": "biome lint src tests",
-    "prepublishOnly": "pnpm run build"
+    "prepublishOnly": "pnpm run build",
+    "test": "vitest run --passWithNoTests",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "@statewalker/webrun-files": "workspace:*"
@@ -43,7 +44,6 @@
   "devDependencies": {
     "@aws-sdk/client-s3": "catalog:",
     "@statewalker/webrun-files-tests": "workspace:*",
-    "@testcontainers/minio": "catalog:",
     "@types/node": "catalog:",
     "rimraf": "catalog:",
     "rolldown": "catalog:",
