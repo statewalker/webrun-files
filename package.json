@@ -15,8 +15,8 @@
     "url": "git+ssh://git@github.com/statewalker/webrun-files.git"
   },
   "scripts": {
-    "build": "turbo run build",
-    "test": "turbo run test",
+    "build": "pnpm -r run build",
+    "test": "pnpm -r run test",
     "lint": "biome check --write .",
     "lint:check": "biome check .",
     "lint:fix": "biome check --write --unsafe .",
