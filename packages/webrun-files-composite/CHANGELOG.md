@@ -1,5 +1,15 @@
 # @statewalker/webrun-files-composite
 
+## 0.8.1
+
+### Patch Changes
+
+- Republish with a resolved dependency range. 0.8.0 shipped to npm carrying
+  `"@statewalker/webrun-files": "workspace:*"` in its published manifest, which no consumer
+  outside this repo can resolve — the package was installable by nobody. `pnpm publish`
+  rewrites `workspace:` specifiers to the real version; publishing with plain `npm publish`
+  does not, which is how it escaped.
+
 ## 0.8.0
 
 ### Minor Changes
