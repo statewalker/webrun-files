@@ -130,21 +130,43 @@ if (await files.exists('/config.json')) {
 
 ### Getting Metadata
 
+`FileStats` is a discriminated union on `kind`. A file always reports a `size`
+and a `lastModified`; a directory reports neither, because a directory has no
+size and a modification time for one is unavailable on stores where a directory
+is only a key prefix. Narrow on `kind` and the fields for that kind are then
+known to be present:
+
 ```typescript
 const info = await files.stats('/photo.jpg');
-if (info) {
-  console.log(`Size: ${info.size} bytes`);
+if (info?.kind === 'file') {
+  console.log(`Size: ${info.size} bytes`);          // number, never undefined
   console.log(`Modified: ${new Date(info.lastModified)}`);
-  console.log(`Type: ${info.kind}`); // "file" or "directory"
+} else if (info?.kind === 'directory') {
+  console.log('a directory');                        // nothing else to report
 }
+```
+
+A zero-byte file is the file variant with `size: 0`, so test the `kind` rather
+than the truthiness of `size`:
+
+```typescript
+// WRONG - reads an empty file as though it had no size
+if (info.size) { /* ... */ }
+
+// RIGHT
+if (info.kind === 'file') { /* info.size may legitimately be 0 */ }
 ```
 
 ### Listing Directories
 
+`FileInfo` is the same union plus `name` and `path`, so a listing narrows per
+entry exactly as `stats()` does:
+
 ```typescript
 // List direct children
 for await (const entry of files.list('/documents')) {
-  console.log(`${entry.name} (${entry.kind})`);
+  const size = entry.kind === 'file' ? `${entry.size} bytes` : '';
+  console.log(`${entry.name} (${entry.kind}) ${size}`);
 }
 
 // List recursively
@@ -166,14 +188,28 @@ await files.remove('/old-stuff'); // Recursively deletes directories
 
 ```typescript
 import type {
-  FilesApi,      // Core interface for backends
-  FileInfo,      // Metadata from list() - includes name, path, kind, size, lastModified
-  FileStats,     // Metadata from stats() - kind, size, lastModified
-  FileKind,      // "file" | "directory"
-  ReadOptions,   // { start?: number, length?: number, signal?: AbortSignal }
-  ListOptions,   // { recursive?: boolean }
+  FilesApi,             // Core interface for backends
+  FileStats,            // Metadata from stats(): FileEntryStats | DirectoryEntryStats
+  FileEntryStats,       // { kind: "file", size: number, lastModified: number }
+  DirectoryEntryStats,  // { kind: "directory" }
+  FileInfo,             // Metadata from list(): FileEntryInfo | DirectoryEntryInfo
+  FileEntryInfo,        // FileEntryStats & { name, path }
+  DirectoryEntryInfo,   // DirectoryEntryStats & { name, path }
+  FileEntryLocation,    // { name: string, path: string }
+  FileKind,             // "file" | "directory"
+  ReadOptions,          // { start?: number, length?: number, signal?: AbortSignal }
+  ListOptions,          // { recursive?: boolean }
 } from '@statewalker/webrun-files';
 ```
+
+### Implementing a backend
+
+An implementation must return **exactly** one variant: a file with both numbers
+present, a directory with nothing but its `kind`. An implementation that knows a
+directory's modification time drops it rather than offering a value that would
+be present on one backend and missing on the next. The parametrized suite in
+`@statewalker/webrun-files-tests` checks this at runtime, and
+`createFilesApiTests` runs it for you.
 
 ## License
 

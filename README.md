@@ -69,7 +69,7 @@ interface FilesApi {
   // List directory contents
   list(path: string, options?: { recursive?: boolean }): AsyncIterable<FileInfo>;
 
-  // Get file/directory metadata
+  // Get file/directory metadata (a discriminated union - see below)
   stats(path: string): Promise<FileStats | undefined>;
 
   // Check if path exists
@@ -85,6 +85,25 @@ interface FilesApi {
   copy(source: string, target: string): Promise<boolean>;
 }
 ```
+
+### Metadata is a discriminated union
+
+`stats()` and `list()` return a union discriminated on `kind`, not one shape
+with optional fields:
+
+```typescript
+type FileStats =
+  | { kind: "file"; size: number; lastModified: number }
+  | { kind: "directory" };
+
+type FileInfo = FileStats & { name: string; path: string };
+```
+
+A file always reports both numbers. A directory reports neither: it has no
+size, and a modification time for one exists on some stores and not on others,
+so no caller may rely on it. Narrow on `kind` and the fields for that kind are
+known to be present. Note that a zero-byte file is the file variant with
+`size: 0` - check the `kind`, never the truthiness of `size`.
 
 ## Packages
 

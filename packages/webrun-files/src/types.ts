@@ -33,26 +33,72 @@ export interface ListOptions {
 }
 
 /**
- * File or directory metadata returned by stats().
- * Simplified type without path information.
+ * Metadata of a regular file.
+ *
+ * `size` and `lastModified` are REQUIRED. Every storage that can hold a file
+ * can say how large it is and when it last changed; an implementation that
+ * cannot is claiming less than it must, and the omission must surface as a
+ * failure rather than as an `undefined` a consumer has to defend against.
  */
-export interface FileStats {
-  kind: FileKind;
-  size?: number;
-  lastModified?: number;
+export interface FileEntryStats {
+  kind: "file";
+  /** Length in bytes. A zero-byte file is `0`, never `undefined`. */
+  size: number;
+  /** Modification time as milliseconds since the epoch. */
+  lastModified: number;
 }
 
 /**
- * File or directory information returned by list().
- * Includes name and path for directory traversal.
+ * Metadata of a directory.
+ *
+ * Deliberately carries nothing else. A directory has no size, and a
+ * modification time is available on some storages (memory, a local
+ * filesystem) and unavailable on others (an object store, where a directory
+ * is a common prefix that exists only as an artefact of key naming). Neither
+ * value may be relied upon, so neither is part of the contract: an
+ * implementation that happens to know one drops it here instead of leaking a
+ * value consumers would have to treat as optional anyway.
  */
-export interface FileInfo {
+export interface DirectoryEntryStats {
+  kind: "directory";
+}
+
+/**
+ * File or directory metadata returned by `stats()`.
+ *
+ * A DISCRIMINATED UNION on `kind`, not a single shape with optional fields.
+ * The optionality this replaces never expressed what a given implementation
+ * could report — it expressed a property of the entry kind, collapsed into
+ * one type because `kind` was an ordinary field. Narrow on `kind` and the
+ * fields that exist for that kind are then known to be present:
+ *
+ * @example
+ * const stats = await api.stats("/some/path");
+ * if (stats?.kind === "file") {
+ *   console.log(stats.size, stats.lastModified); // both `number`
+ * }
+ */
+export type FileStats = FileEntryStats | DirectoryEntryStats;
+
+/** Name and path carried by every entry a `list()` yields. */
+export interface FileEntryLocation {
   name: string;
   path: string;
-  kind: FileKind;
-  size?: number;
-  lastModified?: number;
 }
+
+/** A file yielded by `list()`. */
+export interface FileEntryInfo extends FileEntryStats, FileEntryLocation {}
+
+/** A directory yielded by `list()`. */
+export interface DirectoryEntryInfo extends DirectoryEntryStats, FileEntryLocation {}
+
+/**
+ * File or directory information returned by `list()`.
+ *
+ * The same union as {@link FileStats}, plus `name` and `path`, so a listing
+ * consumer narrows per entry exactly as a `stats()` consumer does.
+ */
+export type FileInfo = FileEntryInfo | DirectoryEntryInfo;
 
 /**
  * Cross-platform filesystem abstraction interface.

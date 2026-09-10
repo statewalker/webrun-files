@@ -136,22 +136,10 @@ export class MemFilesApi implements FilesApi {
       if (slashIndex === -1) {
         // Direct child - mark as seen to avoid duplicate yields
         seen.add(entryPath);
-        yield {
-          name: basename(entryPath),
-          path: entryPath,
-          kind: entryValue.kind,
-          size: entryValue.content?.length,
-          lastModified: entryValue.lastModified,
-        };
+        yield this.toInfo(basename(entryPath), entryPath, entryValue);
       } else if (options?.recursive) {
         // Recursive listing - yield all descendants
-        yield {
-          name: basename(entryPath),
-          path: entryPath,
-          kind: entryValue.kind,
-          size: entryValue.content?.length,
-          lastModified: entryValue.lastModified,
-        };
+        yield this.toInfo(basename(entryPath), entryPath, entryValue);
       } else {
         // Non-recursive: yield only immediate subdirectories once
         const dirName = relativePath.slice(0, slashIndex);
@@ -160,12 +148,10 @@ export class MemFilesApi implements FilesApi {
           seen.add(dirPath);
           const dirEntry = this.entries.get(dirPath);
           if (dirEntry) {
-            yield {
-              name: dirName,
-              path: dirPath,
-              kind: "directory",
-              lastModified: dirEntry.lastModified,
-            };
+            // A directory carries no `lastModified`, though this store tracks
+            // one: the union says what a consumer may rely on, and no consumer
+            // may rely on a directory time.
+            yield { name: dirName, path: dirPath, kind: "directory" };
           }
         }
       }
@@ -180,20 +166,33 @@ export class MemFilesApi implements FilesApi {
       const prefix = normalizedPath === "/" ? "/" : `${normalizedPath}/`;
       for (const key of this.entries.keys()) {
         if (key.startsWith(prefix)) {
-          return {
-            kind: "directory",
-            lastModified: 0,
-          };
+          return { kind: "directory" };
         }
       }
       return undefined;
     }
 
+    return MemFilesApi.toStats(entry);
+  }
+
+  /**
+   * Project a stored entry onto the variant of {@link FileStats} its kind
+   * defines. A file always has both a size and a time here, because content is
+   * stored with it; a directory reports neither, even though this store
+   * happens to know when one was created.
+   */
+  private static toStats(entry: Entry): FileStats {
+    if (entry.kind === "directory") return { kind: "directory" };
     return {
-      kind: entry.kind,
-      size: entry.content?.length,
+      kind: "file",
+      size: entry.content?.length ?? 0,
       lastModified: entry.lastModified,
     };
+  }
+
+  /** {@link toStats} plus the name and path a listing entry carries. */
+  private toInfo(name: string, path: string, entry: Entry): FileInfo {
+    return { ...MemFilesApi.toStats(entry), name, path };
   }
 
   async exists(path: string): Promise<boolean> {

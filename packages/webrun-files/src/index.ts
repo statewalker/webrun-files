@@ -33,6 +33,11 @@ export {
 } from "./path-utils.js";
 // Core types
 export type {
+  DirectoryEntryInfo,
+  DirectoryEntryStats,
+  FileEntryInfo,
+  FileEntryLocation,
+  FileEntryStats,
   FileInfo,
   FileKind,
   FileStats,

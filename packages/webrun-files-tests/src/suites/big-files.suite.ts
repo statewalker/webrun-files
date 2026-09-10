@@ -7,7 +7,7 @@
 
 import type { FilesApi } from "@statewalker/webrun-files";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { collectStream, patternContent } from "../test-utils.js";
+import { asFileStats, collectStream, patternContent } from "../test-utils.js";
 
 /**
  * Context provided by the files API factory
@@ -110,7 +110,7 @@ export function createBigFilesApiTests(
             // Verify file exists with correct size
             const stats = await ctx.api.stats(path);
             expect(stats).toBeDefined();
-            expect(stats?.size).toBe(size);
+            expect(asFileStats(stats).size).toBe(size);
 
             // Read the entire file back
             const result = await collectStream(ctx.api.read(path));
@@ -165,7 +165,7 @@ export function createBigFilesApiTests(
 
             // Verify size
             const stats = await ctx.api.stats(path);
-            expect(stats?.size).toBe(size);
+            expect(asFileStats(stats).size).toBe(size);
 
             // Read back and verify
             const result = await collectStream(ctx.api.read(path));
@@ -386,7 +386,7 @@ export function createBigFilesApiTests(
 
             // Verify new size
             const stats = await ctx.api.stats(path);
-            expect(stats?.size).toBe(size + 1024);
+            expect(asFileStats(stats).size).toBe(size + 1024);
 
             // Read and verify the content
             const result = await collectStream(ctx.api.read(path));
@@ -430,7 +430,7 @@ export function createBigFilesApiTests(
 
             // Verify new size
             const stats = await ctx.api.stats(path);
-            expect(stats?.size).toBe(1024);
+            expect(asFileStats(stats).size).toBe(1024);
 
             // Verify new content
             const result = await collectStream(ctx.api.read(path));
@@ -471,8 +471,8 @@ export function createBigFilesApiTests(
             // Verify both exist with correct size
             const srcStats = await ctx.api.stats(srcPath);
             const destStats = await ctx.api.stats(destPath);
-            expect(srcStats?.size).toBe(size);
-            expect(destStats?.size).toBe(size);
+            expect(asFileStats(srcStats).size).toBe(size);
+            expect(asFileStats(destStats).size).toBe(size);
 
             // Verify dest content
             const destContent = await collectStream(ctx.api.read(destPath));
@@ -498,7 +498,7 @@ export function createBigFilesApiTests(
             // Verify source gone, dest exists
             expect(await ctx.api.exists(srcPath)).toBe(false);
             const destStats = await ctx.api.stats(destPath);
-            expect(destStats?.size).toBe(size);
+            expect(asFileStats(destStats).size).toBe(size);
 
             // Verify dest content
             const destContent = await collectStream(ctx.api.read(destPath));

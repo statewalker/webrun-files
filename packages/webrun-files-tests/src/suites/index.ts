@@ -8,6 +8,7 @@ export {
   type BigFilesTestOptions,
   createBigFilesApiTests,
 } from "./big-files.suite.js";
+export { createFileStatsConformanceTests } from "./file-stats.suite.js";
 export {
   createFilesApiTests,
   type FilesApiFactory,

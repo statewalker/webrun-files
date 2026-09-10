@@ -142,6 +142,17 @@ S3 doesn't have real directories, but this implementation simulates them using:
 - **ListObjectsV2** with `Delimiter="/"` to get "subdirectories" via `CommonPrefixes`
 - Files are returned from `Contents`
 
+Because `FileStats` is a discriminated union, this implementation has to commit
+to two things a store without real directories could otherwise leave vague:
+
+- A **common prefix is the directory variant** - `{ kind: "directory" }` and
+  nothing more. There is no size or modification time to report for something
+  that exists only as an artefact of key naming.
+- A **zero-byte key ending in `/` is a directory, not a file**. That is the
+  marker `mkdir()` writes so an empty directory is visible, and it is skipped
+  when reading `Contents`. Every other key is a file, and a genuinely empty
+  object is the file variant with `size: 0`.
+
 ```typescript
 // List /docs with prefix "my-app"
 // S3 request: ListObjectsV2(Prefix="my-app/docs/", Delimiter="/")

@@ -305,11 +305,13 @@ export class S3FilesApi implements FilesApi {
 
           const dirPath = this.keyToPath(dirKey);
 
+          // A common prefix IS the directory variant: it exists only as an
+          // artefact of key naming, so there is nothing to report about it
+          // beyond its being a directory.
           yield {
             kind: "directory",
             name: basename(dirPath),
             path: dirPath,
-            lastModified: 0,
           };
         }
       }
@@ -319,6 +321,11 @@ export class S3FilesApi implements FilesApi {
           if (!obj.Key) continue;
           if (obj.Key === normalizedPrefix) continue;
           if (`${obj.Key}/` === normalizedPrefix) continue;
+          // A key ending in "/" is the zero-byte marker `mkdir` writes to make
+          // an empty directory visible. It is NOT a file with `size: 0` — it
+          // is how this store spells a directory, and it surfaces through
+          // `CommonPrefixes` above. Every other key is a file, and a genuinely
+          // empty object is the file variant with `size: 0`.
           if (obj.Key.endsWith("/")) continue;
 
           const filePath = this.keyToPath(obj.Key);
@@ -342,10 +349,7 @@ export class S3FilesApi implements FilesApi {
     const key = this.resolveKey(path);
 
     if (normalized === "/") {
-      return {
-        kind: "directory",
-        lastModified: 0,
-      };
+      return { kind: "directory" };
     }
 
     // Try as file first
@@ -383,10 +387,7 @@ export class S3FilesApi implements FilesApi {
       (listResponse.Contents && listResponse.Contents.length > 0) ||
       (listResponse.CommonPrefixes && listResponse.CommonPrefixes.length > 0)
     ) {
-      return {
-        kind: "directory",
-        lastModified: 0,
-      };
+      return { kind: "directory" };
     }
 
     return undefined;

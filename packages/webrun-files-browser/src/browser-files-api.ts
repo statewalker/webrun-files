@@ -147,22 +147,29 @@ export class BrowserFilesApi implements FilesApi {
       const entryPath = joinPath(normalized, name);
       const isDirectory = handle.kind === "directory";
 
-      const info: FileInfo = {
-        kind: isDirectory ? "directory" : "file",
-        name,
-        path: entryPath,
-        lastModified: 0,
-      };
-
-      if (!isDirectory) {
+      let info: FileInfo;
+      if (isDirectory) {
+        info = { kind: "directory", name, path: entryPath };
+      } else {
+        // A file must report both a size and a time, so the `File` behind the
+        // handle has to be obtained before the entry can be yielded at all.
+        // `getFile()` rejects when the entry was removed between the directory
+        // read and this call, or when permission was revoked mid-iteration;
+        // either way there is no file left to describe, and skipping it is
+        // the same answer a listing taken a moment later would have given.
+        let file: File;
         try {
-          const fileHandle = handle as FileSystemFileHandle;
-          const file = await fileHandle.getFile();
-          info.size = file.size;
-          info.lastModified = file.lastModified;
+          file = await (handle as FileSystemFileHandle).getFile();
         } catch {
-          // Ignore errors getting file metadata
+          continue;
         }
+        info = {
+          kind: "file",
+          name,
+          path: entryPath,
+          size: file.size,
+          lastModified: file.lastModified,
+        };
       }
 
       yield info;
@@ -177,10 +184,7 @@ export class BrowserFilesApi implements FilesApi {
     const normalized = normalizePath(path);
 
     if (normalized === "/") {
-      return {
-        kind: "directory",
-        lastModified: 0,
-      };
+      return { kind: "directory" };
     }
 
     // Try as file first
@@ -201,10 +205,7 @@ export class BrowserFilesApi implements FilesApi {
     // Try as directory
     const dirHandle = await this.getDirectoryHandle(normalized);
     if (dirHandle) {
-      return {
-        kind: "directory",
-        lastModified: 0,
-      };
+      return { kind: "directory" };
     }
 
     return undefined;

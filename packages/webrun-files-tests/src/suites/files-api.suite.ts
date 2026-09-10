@@ -8,6 +8,7 @@
 import type { FilesApi } from "@statewalker/webrun-files";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { collectGenerator, collectStream, fromBytes, randomBytes, toBytes } from "../test-utils.js";
+import { createFileStatsConformanceTests } from "./file-stats.suite.js";
 
 /**
  * Options for configuring the test suite
@@ -61,6 +62,11 @@ export type FilesApiFactory = () => Promise<FilesApiTestContext>;
  * @param factory Factory function to create API instances
  */
 export function createFilesApiTests(name: string, factory: FilesApiFactory): void {
+  // Every implementation that claims the interface also claims the shape of
+  // what `stats()` and `list()` return, so the discriminant conformance case
+  // runs as a sibling suite rather than as something each caller opts into.
+  createFileStatsConformanceTests(name, factory);
+
   describe(`FilesApi [${name}]`, () => {
     let ctx: FilesApiTestContext;
 
@@ -217,9 +223,13 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
 
         const stats = await ctx.api.stats("/info.txt");
         expect(stats).toBeDefined();
+        // Narrowing on `kind` is what makes `size` and `lastModified`
+        // available at all: they belong to the file variant of `FileStats`,
+        // not to a shape shared with directories.
         expect(stats?.kind).toBe("file");
-        expect(stats?.size).toBe(12);
-        expect(stats?.lastModified).toBeGreaterThan(0);
+        if (stats?.kind !== "file") throw new Error("expected the file variant");
+        expect(stats.size).toBe(12);
+        expect(stats.lastModified).toBeGreaterThan(0);
       });
 
       it("should return directory stats", async () => {
@@ -240,7 +250,8 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
         await ctx.api.write("/size.txt", [toBytes("short")]);
 
         const stats = await ctx.api.stats("/size.txt");
-        expect(stats?.size).toBe(5);
+        if (stats?.kind !== "file") throw new Error("expected the file variant");
+        expect(stats.size).toBe(5);
       });
 
       it("should handle root directory", async () => {

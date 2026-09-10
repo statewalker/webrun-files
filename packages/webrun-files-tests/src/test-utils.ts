@@ -2,6 +2,27 @@
  * Test utilities for IFilesApi implementations
  */
 
+import type { FileEntryStats, FileInfo, FileStats } from "@statewalker/webrun-files";
+
+/**
+ * Narrow a `stats()` result to the file variant, failing loudly when it is
+ * anything else.
+ *
+ * `size` and `lastModified` live on the file variant of `FileStats` alone, so
+ * a test that wants either has to say which variant it expects. Doing that
+ * through this helper keeps the failure legible: "expected a file, got a
+ * directory" rather than a comparison against `undefined`.
+ */
+export function asFileStats(stats: FileStats | FileInfo | undefined): FileEntryStats {
+  if (stats === undefined) {
+    throw new Error("expected the file variant of FileStats, got undefined");
+  }
+  if (stats.kind !== "file") {
+    throw new Error(`expected the file variant of FileStats, got a ${stats.kind}`);
+  }
+  return stats;
+}
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 

@@ -127,13 +127,15 @@ export class NodeFilesApi implements FilesApi {
           continue;
         }
 
-        const info: FileInfo = {
-          name: entry.name,
-          path: entryPath,
-          kind: entry.isDirectory() ? "directory" : "file",
-          size: stat.size,
-          lastModified: stat.mtimeMs,
-        };
+        const info: FileInfo = entry.isDirectory()
+          ? { name: entry.name, path: entryPath, kind: "directory" }
+          : {
+              name: entry.name,
+              path: entryPath,
+              kind: "file",
+              size: stat.size,
+              lastModified: stat.mtimeMs,
+            };
 
         yield info;
 
@@ -152,8 +154,13 @@ export class NodeFilesApi implements FilesApi {
 
     try {
       const stat = await fs.stat(realPath);
+      // A directory reports neither size nor time. `stat` supplies both, but
+      // the size is the inode's own bookkeeping rather than anything about the
+      // contents, and neither is available on every storage, so neither is
+      // part of what a consumer may rely on.
+      if (stat.isDirectory()) return { kind: "directory" };
       return {
-        kind: stat.isDirectory() ? "directory" : "file",
+        kind: "file",
         size: stat.size,
         lastModified: stat.mtimeMs,
       };
