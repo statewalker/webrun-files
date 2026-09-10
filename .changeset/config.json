@@ -2,7 +2,16 @@
   "$schema": "https://unpkg.com/@changesets/config@3.1.2/schema.json",
   "changelog": "@changesets/cli/changelog",
   "commit": false,
-  "fixed": [],
+  "fixed": [
+    [
+      "@statewalker/webrun-files",
+      "@statewalker/webrun-files-mem",
+      "@statewalker/webrun-files-node",
+      "@statewalker/webrun-files-browser",
+      "@statewalker/webrun-files-s3",
+      "@statewalker/webrun-files-composite"
+    ]
+  ],
   "linked": [],
   "access": "restricted",
   "baseBranch": "main",
