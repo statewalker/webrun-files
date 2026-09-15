@@ -37,7 +37,9 @@ export function fakeDoSql(db: DatabaseSync) {
     exec(query: string, ...bindings: unknown[]) {
       const stmt = db.prepare(query);
       const params = toNodeParams(bindings);
-      const rows = stmt.columns().length > 0 ? stmt.all(...params) : (stmt.run(...params), []);
+      let rows: unknown[] = [];
+      if (stmt.columns().length > 0) rows = stmt.all(...params);
+      else stmt.run(...params);
       const out = mapBlobs(rows, (b) => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength));
       return { toArray: () => out };
     },

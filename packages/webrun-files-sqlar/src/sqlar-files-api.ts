@@ -95,7 +95,7 @@ export class SqlarFilesApi implements FilesApi {
   async mkdir(path: string): Promise<void> {
     const name = toName(path);
     for (const dir of ancestorsAndSelf(name)) {
-      if (!(await this.#has(dir))) await this.#put(dir, DIR_MODE, 0, null);
+      if (!(await this.#row(dir))) await this.#put(dir, DIR_MODE, 0, null);
     }
   }
 
@@ -184,7 +184,13 @@ export class SqlarFilesApi implements FilesApi {
     const from = toName(source);
     const to = toName(target);
     const range = selfAndDescendants(from);
-    const rows = await this.#sql.all<StoredRow & { data: unknown }>(
+    const rows = await this.#sql.all<{
+      name: string;
+      mode: number;
+      sz: number;
+      dtype: string;
+      data: unknown;
+    }>(
       `SELECT name, mode, sz, typeof(data) AS dtype, data FROM sqlar WHERE ${range.where}`,
       ...range.params,
     );
@@ -210,7 +216,7 @@ export class SqlarFilesApi implements FilesApi {
     if (data.byteLength > sz) {
       throw new Error(`sqlar: ${name} has length(data)=${data.byteLength} > sz=${sz}`);
     }
-    let inflated: Uint8Array | undefined;
+    let inflated: Uint8Array;
     try {
       inflated = await this.#codec.inflate(data);
     } catch (cause) {
@@ -259,11 +265,6 @@ export class SqlarFilesApi implements FilesApi {
       `SELECT 1 FROM sqlar WHERE ${range.where} LIMIT 1`,
       ...range.params,
     );
-    return rows.length > 0;
-  }
-
-  async #has(name: string): Promise<boolean> {
-    const rows = await this.#sql.all("SELECT 1 FROM sqlar WHERE name = ?", name);
     return rows.length > 0;
   }
 
@@ -366,8 +367,9 @@ function resolveTarget(linkName: string, target: string): string {
 /** A selected `data` value, ready to bind again: NULL, TEXT or a byte blob. */
 function storedData(dtype: string, data: unknown): Uint8Array | string | null {
   if (dtype === "null") return null;
-  if (dtype === "text")
+  if (dtype === "text") {
     return typeof data === "string" ? data : new TextDecoder().decode(toBytes(data));
+  }
   return toBytes(data);
 }
 
