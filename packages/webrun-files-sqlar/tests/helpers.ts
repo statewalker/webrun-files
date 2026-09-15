@@ -1,10 +1,10 @@
 import { DatabaseSync } from "node:sqlite";
-import { NodeSqlDriver, SqlarFilesApi } from "../src/index.js";
+import { type Codec, NodeSqlDriver, SqlarFilesApi } from "../src/index.js";
 
 /** A fresh in-memory archive over node:sqlite, with the raw handle for inspection. */
-export async function newArchive(opts: { codec?: unknown; db?: DatabaseSync } = {}) {
+export async function newArchive(opts: { codec?: Codec; db?: DatabaseSync } = {}) {
   const db = opts.db ?? new DatabaseSync(":memory:");
-  const files = new SqlarFilesApi(new NodeSqlDriver(db), { codec: opts.codec } as never);
+  const files = new SqlarFilesApi(new NodeSqlDriver(db), { codec: opts.codec });
   await files.init();
   return { db, files };
 }

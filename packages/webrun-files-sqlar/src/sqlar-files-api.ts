@@ -6,6 +6,7 @@ import type {
   ReadOptions,
 } from "@statewalker/webrun-files";
 import { normalizePath } from "@statewalker/webrun-files";
+import { type Codec, defaultCodec } from "./codec.js";
 import type { SqlDriver } from "./sql.types.js";
 
 /**
@@ -25,14 +26,19 @@ const SCHEMA = `CREATE TABLE IF NOT EXISTS sqlar(
 const FILE_MODE = 0o100644;
 const DIR_MODE = 0o040755;
 
-export type SqlarFilesApiOptions = {};
+export interface SqlarFilesApiOptions {
+  /** Defaults to {@link defaultCodec}. */
+  codec?: Codec;
+}
 
 /** A FilesApi whose whole state is one SQLite Archive table. */
 export class SqlarFilesApi implements FilesApi {
   readonly #sql: SqlDriver;
+  readonly #codec: Codec;
 
-  constructor(sql: SqlDriver, _opts: SqlarFilesApiOptions = {}) {
+  constructor(sql: SqlDriver, opts: SqlarFilesApiOptions = {}) {
     this.#sql = sql;
+    this.#codec = opts.codec ?? defaultCodec();
   }
 
   /** Creates the table if it is missing. Await it before any other call. */
@@ -51,7 +57,8 @@ export class SqlarFilesApi implements FilesApi {
     const row = rows[0];
     if (!row || kindOf(row) !== "file") return;
 
-    const content = toBytes(row.data);
+    const content = await this.#content(row.name, row.sz, toBytes(row.data));
+    options.signal?.throwIfAborted();
     const start = options.start ?? 0;
     const end = options.length === undefined ? content.byteLength : start + options.length;
     const chunk = content.subarray(start, Math.min(end, content.byteLength));
@@ -65,7 +72,14 @@ export class SqlarFilesApi implements FilesApi {
     const name = toName(path);
     const bytes = await concat(content);
     await this.mkdir(parentName(name));
-    await this.#put(name, FILE_MODE, bytes.byteLength, bytes);
+
+    let data: Uint8Array = bytes;
+    if (bytes.byteLength >= this.#codec.minSize) {
+      const deflated = await this.#codec.deflate(bytes);
+      // Strictly shorter only: equal length is the plaintext marker.
+      if (deflated.byteLength < bytes.byteLength) data = deflated;
+    }
+    await this.#put(name, FILE_MODE, bytes.byteLength, data);
   }
 
   /** `sz = 0` with `data IS NULL` is the format's only marker for a directory. */
@@ -164,6 +178,26 @@ export class SqlarFilesApi implements FilesApi {
     if (!(await this.copy(source, target))) return false;
     await this.remove(source);
     return true;
+  }
+
+  /** `length(data) = sz` is plaintext, `< sz` is compressed, `> sz` is corrupt. */
+  async #content(name: string, sz: number, data: Uint8Array): Promise<Uint8Array> {
+    if (data.byteLength === sz) return data;
+    if (data.byteLength > sz) {
+      throw new Error(`sqlar: ${name} has length(data)=${data.byteLength} > sz=${sz}`);
+    }
+    let inflated: Uint8Array | undefined;
+    try {
+      inflated = await this.#codec.inflate(data);
+    } catch (cause) {
+      // Codec errors name neither the file nor, for DecompressionStream, anything at all.
+      const reason = cause instanceof Error && cause.message ? cause.message : String(cause);
+      throw new Error(`sqlar: ${name} cannot be inflated: ${reason}`, { cause });
+    }
+    if (inflated.byteLength !== sz) {
+      throw new Error(`sqlar: ${name} inflated ${inflated.byteLength} bytes, sz ${sz}`);
+    }
+    return inflated;
   }
 
   async #row(name: string): Promise<StoredRow | undefined> {
