@@ -9,6 +9,7 @@ import type { FilesApi } from "@statewalker/webrun-files";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { collectGenerator, collectStream, fromBytes, randomBytes, toBytes } from "../test-utils.js";
 import { createFileStatsConformanceTests } from "./file-stats.suite.js";
+import { createListOrderTests } from "./list-order.suite.js";
 
 /**
  * Options for configuring the test suite
@@ -66,6 +67,7 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
   // what `stats()` and `list()` return, so the discriminant conformance case
   // runs as a sibling suite rather than as something each caller opts into.
   createFileStatsConformanceTests(name, factory);
+  createListOrderTests(name, factory);
 
   describe(`FilesApi [${name}]`, () => {
     let ctx: FilesApiTestContext;

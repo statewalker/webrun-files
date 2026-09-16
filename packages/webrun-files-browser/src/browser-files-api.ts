@@ -12,7 +12,13 @@ import type {
   ListOptions,
   ReadOptions,
 } from "@statewalker/webrun-files";
-import { basename, dirname, joinPath, normalizePath } from "@statewalker/webrun-files";
+import {
+  basename,
+  dirname,
+  joinPath,
+  listInPathOrder,
+  normalizePath,
+} from "@statewalker/webrun-files";
 
 /** Chrome 110+ exposes move() on FileSystemHandle; not yet in TS DOM types. */
 interface MovableHandle extends FileSystemHandle {
@@ -136,48 +142,43 @@ export class BrowserFilesApi implements FilesApi {
     await this.getDirectoryHandle(normalized, { create: true });
   }
 
+  /** Directory handles enumerate in no defined order, so the tree is walked in `comparePaths` order. */
   async *list(path: string, options?: ListOptions): AsyncIterable<FileInfo> {
-    const normalized = normalizePath(path);
-    const dirHandle = await this.getDirectoryHandle(normalized);
-    if (!dirHandle) return;
+    yield* listInPathOrder(normalizePath(path), (dir) => this.readChildren(dir), options);
+  }
 
-    const recursive = options?.recursive ?? false;
-
+  /** A directory's direct entries, in handle order; none if it does not exist. */
+  private async readChildren(dir: string): Promise<FileInfo[]> {
+    const dirHandle = await this.getDirectoryHandle(dir);
+    if (!dirHandle) return [];
+    const infos: FileInfo[] = [];
     for await (const [name, handle] of dirHandle.entries()) {
-      const entryPath = joinPath(normalized, name);
-      const isDirectory = handle.kind === "directory";
-
-      let info: FileInfo;
-      if (isDirectory) {
-        info = { kind: "directory", name, path: entryPath };
-      } else {
-        // A file must report both a size and a time, so the `File` behind the
-        // handle has to be obtained before the entry can be yielded at all.
-        // `getFile()` rejects when the entry was removed between the directory
-        // read and this call, or when permission was revoked mid-iteration;
-        // either way there is no file left to describe, and skipping it is
-        // the same answer a listing taken a moment later would have given.
-        let file: File;
-        try {
-          file = await (handle as FileSystemFileHandle).getFile();
-        } catch {
-          continue;
-        }
-        info = {
-          kind: "file",
-          name,
-          path: entryPath,
-          size: file.size,
-          lastModified: file.lastModified,
-        };
+      const entryPath = joinPath(dir, name);
+      if (handle.kind === "directory") {
+        infos.push({ kind: "directory", name, path: entryPath });
+        continue;
       }
-
-      yield info;
-
-      if (recursive && isDirectory) {
-        yield* this.list(entryPath, options);
+      // A file must report both a size and a time, so the `File` behind the
+      // handle has to be obtained before the entry can be listed at all.
+      // `getFile()` rejects when the entry was removed between the directory
+      // read and this call, or when permission was revoked mid-iteration;
+      // either way there is no file left to describe, and skipping it is
+      // the same answer a listing taken a moment later would have given.
+      let file: File;
+      try {
+        file = await (handle as FileSystemFileHandle).getFile();
+      } catch {
+        continue;
       }
+      infos.push({
+        kind: "file",
+        name,
+        path: entryPath,
+        size: file.size,
+        lastModified: file.lastModified,
+      });
     }
+    return infos;
   }
 
   async stats(path: string): Promise<FileStats | undefined> {

@@ -5,7 +5,7 @@ import type {
   ListOptions,
   ReadOptions,
 } from "@statewalker/webrun-files";
-import { normalizePath } from "@statewalker/webrun-files";
+import { listInPathOrder, normalizePath } from "@statewalker/webrun-files";
 
 /**
  * Read-only union of several `FilesApi` layers. A path is resolved
@@ -51,19 +51,11 @@ class OverlayFilesApi implements FilesApi {
     return false;
   }
 
+  /** Merged children, walked in `comparePaths` order. */
   async *list(path: string, options?: ListOptions): AsyncIterable<FileInfo> {
-    yield* this.listDir(normalizePath(path), options?.recursive ?? false);
-  }
-
-  private async *listDir(dir: string, recursive: boolean): AsyncIterable<FileInfo> {
-    const stats = await this.stats(dir);
-    if (stats?.kind !== "directory") return;
-    for (const entry of await this.mergeChildren(dir)) {
-      yield entry;
-      if (recursive && entry.kind === "directory") {
-        yield* this.listDir(entry.path, true);
-      }
-    }
+    const dir = normalizePath(path);
+    if ((await this.stats(dir))?.kind !== "directory") return;
+    yield* listInPathOrder(dir, (d) => this.mergeChildren(d), options);
   }
 
   /** Direct children of `dir`, deduped by name with the topmost layer winning. */

@@ -30,13 +30,15 @@
   ],
   "scripts": {
     "build": "rimraf dist && rolldown -c && tsc --emitDeclarationOnly --declaration",
-    "lint": "biome lint src"
+    "lint": "biome lint src",
+    "test": "vitest run"
   },
   "devDependencies": {
     "@types/node": "catalog:",
     "rimraf": "catalog:",
     "rolldown": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   },
   "sideEffects": false,
   "publishConfig": {

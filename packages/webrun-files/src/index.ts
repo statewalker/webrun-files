@@ -25,6 +25,8 @@ export {
   tryReadText,
   writeText,
 } from "./file-utils.js";
+// Listing order
+export { comparePaths, listInPathOrder, mergeInPathOrder } from "./list-order.js";
 // Path utilities
 export {
   basename,

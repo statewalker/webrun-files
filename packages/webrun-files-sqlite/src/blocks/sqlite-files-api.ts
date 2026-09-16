@@ -320,7 +320,9 @@ export class SqliteFilesApi implements FilesApi {
     const range = descendants(base);
     const prefixLength = base === "/" ? 1 : base.length + 1;
     const directOnly = options.recursive ? "" : "AND instr(substr(p.path, ?), '/') = 0";
-    let cursor = "";
+    // The unique index orders paths by UTF-8 bytes, which is `comparePaths` order,
+    // so resuming after a path is the keyset cursor's starting point.
+    let cursor = options.after ?? "";
     for (;;) {
       const params: unknown[] = [...range.params, cursor];
       if (!options.recursive) params.push(prefixLength + 1);

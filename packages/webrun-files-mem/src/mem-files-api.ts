@@ -5,7 +5,7 @@ import type {
   ListOptions,
   ReadOptions,
 } from "@statewalker/webrun-files";
-import { basename, normalizePath } from "@statewalker/webrun-files";
+import { basename, comparePaths, normalizePath } from "@statewalker/webrun-files";
 
 interface Entry {
   kind: "file" | "directory";
@@ -115,6 +115,10 @@ export class MemFilesApi implements FilesApi {
     }
   }
 
+  /**
+   * The map keeps insertion order, so the matching entries are collected and
+   * sorted by `comparePaths` before `after` is applied.
+   */
   async *list(path: string, options?: ListOptions): AsyncIterable<FileInfo> {
     const normalizedPath = normalizePath(path);
     const entry = this.entries.get(normalizedPath);
@@ -123,38 +127,33 @@ export class MemFilesApi implements FilesApi {
     }
 
     const prefix = normalizedPath === "/" ? "/" : `${normalizedPath}/`;
-    const seen = new Set<string>();
+    const found = new Map<string, FileInfo>();
 
     for (const [entryPath, entryValue] of this.entries) {
       if (!entryPath.startsWith(prefix) || entryPath === normalizedPath) {
         continue;
       }
-
       const relativePath = entryPath.slice(prefix.length);
       const slashIndex = relativePath.indexOf("/");
 
-      if (slashIndex === -1) {
-        // Direct child - mark as seen to avoid duplicate yields
-        seen.add(entryPath);
-        yield this.toInfo(basename(entryPath), entryPath, entryValue);
-      } else if (options?.recursive) {
-        // Recursive listing - yield all descendants
-        yield this.toInfo(basename(entryPath), entryPath, entryValue);
+      if (slashIndex === -1 || options?.recursive) {
+        found.set(entryPath, this.toInfo(basename(entryPath), entryPath, entryValue));
       } else {
-        // Non-recursive: yield only immediate subdirectories once
-        const dirName = relativePath.slice(0, slashIndex);
-        const dirPath = prefix + dirName;
-        if (!seen.has(dirPath)) {
-          seen.add(dirPath);
-          const dirEntry = this.entries.get(dirPath);
-          if (dirEntry) {
-            // A directory carries no `lastModified`, though this store tracks
-            // one: the union says what a consumer may rely on, and no consumer
-            // may rely on a directory time.
-            yield { name: dirName, path: dirPath, kind: "directory" };
-          }
+        // Non-recursive: the immediate subdirectory this deeper entry lives in.
+        const dirPath = prefix + relativePath.slice(0, slashIndex);
+        if (!found.has(dirPath) && this.entries.has(dirPath)) {
+          // A directory carries no `lastModified`, though this store tracks
+          // one: the union says what a consumer may rely on, and no consumer
+          // may rely on a directory time.
+          found.set(dirPath, { name: basename(dirPath), path: dirPath, kind: "directory" });
         }
       }
+    }
+
+    const after = options?.after;
+    const sorted = [...found.values()].sort((a, b) => comparePaths(a.path, b.path));
+    for (const info of sorted) {
+      if (after === undefined || comparePaths(info.path, after) > 0) yield info;
     }
   }
 

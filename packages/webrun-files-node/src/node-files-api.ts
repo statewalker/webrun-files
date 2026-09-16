@@ -1,4 +1,4 @@
-import type { Stats } from "node:fs";
+import type { Dirent, Stats } from "node:fs";
 import * as fs from "node:fs/promises";
 import type {
   FileInfo,
@@ -7,7 +7,7 @@ import type {
   ListOptions,
   ReadOptions,
 } from "@statewalker/webrun-files";
-import { dirname, joinPath, normalizePath } from "@statewalker/webrun-files";
+import { dirname, joinPath, listInPathOrder, normalizePath } from "@statewalker/webrun-files";
 
 export interface NodeFilesApiOptions {
   /**
@@ -109,25 +109,31 @@ export class NodeFilesApi implements FilesApi {
     await fs.mkdir(realPath, { recursive: true });
   }
 
+  /** `readdir` order is unspecified, so the tree is walked in `comparePaths` order. */
   async *list(path: string, options?: ListOptions): AsyncIterable<FileInfo> {
-    const realPath = this.resolvePath(path);
-    const normalizedPath = normalizePath(path);
+    yield* listInPathOrder(normalizePath(path), (dir) => this.readChildren(dir), options);
+  }
 
+  /** A directory's direct entries, in `readdir` order; none if it cannot be read. */
+  private async readChildren(dir: string): Promise<FileInfo[]> {
+    let entries: Dirent[];
     try {
-      const entries = await fs.readdir(realPath, { withFileTypes: true });
-
-      for (const entry of entries) {
-        const entryPath = joinPath(normalizedPath, entry.name);
-        const fullPath = this.resolvePath(entryPath);
-
-        let stat: Stats;
-        try {
-          stat = await fs.stat(fullPath);
-        } catch {
-          continue;
-        }
-
-        const info: FileInfo = entry.isDirectory()
+      entries = await fs.readdir(this.resolvePath(dir), { withFileTypes: true });
+    } catch {
+      // Directory doesn't exist or can't be read
+      return [];
+    }
+    const infos: FileInfo[] = [];
+    for (const entry of entries) {
+      const entryPath = joinPath(dir, entry.name);
+      let stat: Stats;
+      try {
+        stat = await fs.stat(this.resolvePath(entryPath));
+      } catch {
+        continue;
+      }
+      infos.push(
+        entry.isDirectory()
           ? { name: entry.name, path: entryPath, kind: "directory" }
           : {
               name: entry.name,
@@ -135,18 +141,10 @@ export class NodeFilesApi implements FilesApi {
               kind: "file",
               size: stat.size,
               lastModified: stat.mtimeMs,
-            };
-
-        yield info;
-
-        if (options?.recursive && entry.isDirectory()) {
-          yield* this.list(entryPath, options);
-        }
-      }
-    } catch {
-      // Directory doesn't exist or can't be read
-      return;
+            },
+      );
     }
+    return infos;
   }
 
   async stats(path: string): Promise<FileStats | undefined> {

@@ -5,7 +5,13 @@ import type {
   ListOptions,
   ReadOptions,
 } from "@statewalker/webrun-files";
-import { basename, dirname, joinPath, normalizePath } from "@statewalker/webrun-files";
+import {
+  basename,
+  dirname,
+  joinPath,
+  listInPathOrder,
+  normalizePath,
+} from "@statewalker/webrun-files";
 
 /** Options for {@link cow}. */
 export interface CowOptions {
@@ -142,19 +148,11 @@ class CowFilesApi implements FilesApi {
     return (await this.resolveLayer(path)) !== "absent";
   }
 
+  /** Merged children, walked in `comparePaths` order. */
   async *list(path: string, options?: ListOptions): AsyncIterable<FileInfo> {
-    yield* this.listDir(normalizePath(path), options?.recursive ?? false);
-  }
-
-  private async *listDir(dir: string, recursive: boolean): AsyncIterable<FileInfo> {
-    const stats = await this.stats(dir);
-    if (stats?.kind !== "directory") return;
-    for (const entry of await this.mergeChildren(dir)) {
-      yield entry;
-      if (recursive && entry.kind === "directory") {
-        yield* this.listDir(entry.path, true);
-      }
-    }
+    const dir = normalizePath(path);
+    if ((await this.stats(dir))?.kind !== "directory") return;
+    yield* listInPathOrder(dir, (d) => this.mergeChildren(d), options);
   }
 
   /** Direct children of `dir`: writable entries win, base entries fill in. */

@@ -5,7 +5,7 @@ import type {
   ListOptions,
   ReadOptions,
 } from "@statewalker/webrun-files";
-import { joinPath, normalizePath } from "@statewalker/webrun-files";
+import { comparePaths, joinPath, mergeInPathOrder, normalizePath } from "@statewalker/webrun-files";
 
 interface MountEntry {
   prefix: string;
@@ -141,50 +141,102 @@ export class CompositeFilesApi implements FilesApi {
     return api.mkdir(resolvedPath);
   }
 
+  /**
+   * Merges, in `comparePaths` order: a synthetic directory entry for each
+   * mount inside `path`; the owning backend's listing with those mounts'
+   * subtrees removed; and, when recursive, each inner mount's own listing
+   * with its nested mounts removed. Each backend's listing is already ordered
+   * and remapping a subtree's prefix keeps that order, so a k-way merge is
+   * enough. `after` is translated into each backend's namespace, and a mount
+   * whose whole subtree lies at or before it is not listed.
+   */
   async *list(path: string, options?: ListOptions): AsyncIterable<FileInfo> {
     const normalized = normalizePath(path);
-    const { api, resolvedPath } = this.resolve(path);
+    const recursive = options?.recursive ?? false;
+    const after = options?.after;
+    const owner = this.ownerOf(normalized);
+    const { resolvedPath } = this.resolve(normalized);
 
-    const childMounts = this.childMountPrefixes(normalized);
-    const yieldedNames = new Set<string>();
+    const inner = this.mounts.filter(
+      (m) => m.prefix !== "/" && isStrictlyInside(m.prefix, normalized),
+    );
+    const listed = recursive
+      ? inner
+      : this.childMountPrefixes(normalized).map(
+          (prefix) => inner.find((m) => m.prefix === prefix) as MountEntry,
+        );
 
-    if (options?.recursive) {
-      // Yield entries from the primary mount
-      for await (const entry of api.list(resolvedPath, options)) {
-        // Remap path back to composite namespace
-        const compositePath = this.remapPath(normalized, resolvedPath, entry.path);
-        // Skip if this path falls under a child mount
-        if (this.isUnderChildMount(compositePath, childMounts)) continue;
-        yieldedNames.add(entry.name);
-        yield { ...entry, path: compositePath };
-      }
-      // Recursively yield from child mounts
-      for (const mountPrefix of childMounts) {
-        const mount = this.mounts.find((m) => m.prefix === mountPrefix);
-        if (!mount) continue;
-        const mountName = mountPrefix.split("/").pop() ?? "";
-        // Yield the mount directory entry itself
-        yield { name: mountName, path: mountPrefix, kind: "directory" };
-        for await (const entry of mount.api.list(mount.basePath, { recursive: true })) {
-          const localPath = this.stripBasePath(entry.path, mount.basePath);
-          yield { ...entry, path: `${mountPrefix}${localPath === "/" ? "" : localPath}` };
-        }
-      }
-    } else {
-      // Non-recursive: yield direct children from the primary mount
-      for await (const entry of api.list(resolvedPath)) {
-        const compositePath = this.remapPath(normalized, resolvedPath, entry.path);
-        yieldedNames.add(entry.name);
-        yield { ...entry, path: compositePath };
-      }
-      // Add synthetic directory entries for child mounts not already present
-      for (const mountPrefix of childMounts) {
-        const mountName = mountPrefix.split("/").pop() ?? "";
-        if (!yieldedNames.has(mountName)) {
-          yield { name: mountName, path: mountPrefix, kind: "directory" };
-        }
+    const streams: AsyncIterable<FileInfo>[] = [];
+    // Synthetic mount points come first, so they win over a same-named backend
+    // entry. Mounts are kept longest-prefix first, so this stream is sorted.
+    streams.push(
+      fromArray(
+        listed
+          .map((m) => ({
+            kind: "directory" as const,
+            name: m.prefix.slice(m.prefix.lastIndexOf("/") + 1),
+            path: m.prefix,
+          }))
+          .sort((x, y) => comparePaths(x.path, y.path)),
+      ),
+    );
+    streams.push(
+      this.remappedList(
+        owner.api,
+        resolvedPath,
+        normalized,
+        recursive,
+        after,
+        inner.map((m) => m.prefix),
+      ),
+    );
+    if (recursive) {
+      for (const m of inner) {
+        const nested = inner
+          .filter((n) => isStrictlyInside(n.prefix, m.prefix))
+          .map((n) => n.prefix);
+        streams.push(this.remappedList(m.api, m.basePath, m.prefix, true, after, nested));
       }
     }
+
+    for await (const entry of mergeInPathOrder(streams)) {
+      if (after === undefined || comparePaths(entry.path, after) > 0) yield entry;
+    }
+  }
+
+  /**
+   * One backend's listing of `backendDir`, with paths moved to `compositeDir`
+   * and entries at or under any of `excluded` dropped.
+   */
+  private async *remappedList(
+    api: FilesApi,
+    backendDir: string,
+    compositeDir: string,
+    recursive: boolean,
+    after: string | undefined,
+    excluded: string[],
+  ): AsyncIterable<FileInfo> {
+    const translated = translateAfter(after, compositeDir, backendDir);
+    if (translated === SKIP) return;
+    for await (const entry of api.list(backendDir, { recursive, after: translated })) {
+      const compositePath = this.remapPath(compositeDir, backendDir, entry.path);
+      if (this.isUnderChildMount(compositePath, excluded)) continue;
+      yield { ...entry, path: compositePath };
+    }
+  }
+
+  /** The mount that owns `normalized` — the longest matching prefix, else the root. */
+  private ownerOf(normalized: string): MountEntry {
+    for (const mount of this.mounts) {
+      if (
+        mount.prefix === "/" ||
+        normalized === mount.prefix ||
+        normalized.startsWith(`${mount.prefix}/`)
+      ) {
+        return mount;
+      }
+    }
+    return this.mounts[this.mounts.length - 1];
   }
 
   async stats(path: string): Promise<FileStats | undefined> {
@@ -246,13 +298,6 @@ export class CompositeFilesApi implements FilesApi {
 
   // --- Helpers ---
 
-  private stripBasePath(path: string, basePath: string): string {
-    if (basePath === "/") return path;
-    if (path === basePath) return "/";
-    if (path.startsWith(`${basePath}/`)) return path.slice(basePath.length);
-    return path;
-  }
-
   private async crossCopy(
     srcApi: FilesApi,
     srcPath: string,
@@ -304,4 +349,35 @@ export class CompositeFilesApi implements FilesApi {
     }
     return false;
   }
+}
+
+const SKIP = Symbol("skip");
+
+/**
+ * `after`, given in the `from` subtree's namespace, in the `to` subtree's
+ * namespace — or {@link SKIP} when the whole `from` subtree lies at or before
+ * it. Raw prefix replacement, never normalisation: normalising `"/a/"` to
+ * `"/a"` would change which entries sort after it. Under-pruning is harmless
+ * (the caller filters again); over-pruning is what this must never do.
+ */
+function translateAfter(
+  after: string | undefined,
+  from: string,
+  to: string,
+): string | undefined | typeof SKIP {
+  if (after === undefined) return undefined;
+  const fromPrefix = from === "/" ? "" : from;
+  const toPrefix = to === "/" ? "" : to;
+  if (after.startsWith(`${fromPrefix}/`)) return `${toPrefix}${after.slice(fromPrefix.length)}`;
+  // Every descendant of `from` lies between `from + "/"` and `from + "0"`.
+  if (comparePaths(after, `${fromPrefix}/`) < 0) return undefined;
+  return SKIP;
+}
+
+function isStrictlyInside(path: string, ancestor: string): boolean {
+  return ancestor === "/" ? path !== "/" : path.startsWith(`${ancestor}/`);
+}
+
+async function* fromArray<T>(items: T[]): AsyncIterable<T> {
+  yield* items;
 }

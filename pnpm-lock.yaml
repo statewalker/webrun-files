@@ -89,6 +89,9 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.10(@types/node@26.3.0)(@vitest/coverage-v8@4.1.10)(vite@7.2.6(@types/node@26.3.0)(tsx@4.23.12)(yaml@2.8.2))
 
   packages/webrun-files-browser:
     dependencies:
