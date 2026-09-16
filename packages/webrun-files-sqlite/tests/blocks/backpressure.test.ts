@@ -47,8 +47,7 @@ for (const [label, compression] of variants) {
       let worst = 0;
       const { files } = await newFiles({
         compression,
-        minBlockSize: 16 * KiB,
-        maxBlockSize: MAX_BLOCK,
+        blockSize: MAX_BLOCK,
         wrap: (d) =>
           watching(d, { onInsert: (shift) => (worst = Math.max(worst, pulled - shift)) }),
       });
@@ -67,8 +66,7 @@ for (const [label, compression] of variants) {
     it("read fetches a block only once everything before it was consumed", async () => {
       const writer = await newFiles({
         compression,
-        minBlockSize: 16 * KiB,
-        maxBlockSize: MAX_BLOCK,
+        blockSize: MAX_BLOCK,
       });
       await writer.files.write("/f", positionContent(SIZE, [MiB]));
       let consumed = 0;
@@ -109,8 +107,7 @@ for (const [label, compression] of variants) {
       let fetches = 0;
       const { files } = await newFiles({
         compression,
-        minBlockSize: 16 * KiB,
-        maxBlockSize: MAX_BLOCK,
+        blockSize: MAX_BLOCK,
         wrap: (d) => watching(d, { onFetch: () => fetches++ }),
       });
       await files.write("/f", positionContent(SIZE, [MiB]));
@@ -125,8 +122,7 @@ describe("abort", () => {
   it("stops a read at the next block once the signal aborts", async () => {
     const { files } = await newFiles({
       compression: null,
-      minBlockSize: 16 * KiB,
-      maxBlockSize: MAX_BLOCK,
+      blockSize: MAX_BLOCK,
     });
     await files.write("/f", positionContent(SIZE, [MiB]));
     const controller = new AbortController();

@@ -50,6 +50,7 @@ export interface FileRow {
   fid: number;
   size: number | null;
   compression: string;
+  block_size: number;
   hash: string | null;
 }
 

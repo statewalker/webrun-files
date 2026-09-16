@@ -11,7 +11,7 @@ const drivers: [string, (db: DatabaseSync) => SqlDriver][] = [
 for (const [label, driverFor] of drivers) {
   createFilesApiTests(`SqliteFilesApi (${label} driver)`, async () => {
     const db = new DatabaseSync(":memory:");
-    const files = new SqliteFilesApi(driverFor(db), { minBlockSize: 256, maxBlockSize: 4096 });
+    const files = new SqliteFilesApi(driverFor(db), { blockSize: 4096 });
     await files.init();
     return { api: files, cleanup: async () => db.close() };
   });

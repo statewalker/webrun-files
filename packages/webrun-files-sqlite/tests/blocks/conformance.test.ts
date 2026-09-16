@@ -16,8 +16,7 @@ createFilesApiTests("SqliteFilesApi (node:sqlite, default web deflate)", async (
 createFilesApiTests("SqliteFilesApi (node:sqlite, pako deflate, small blocks)", async () => {
   const { db, files } = await newFiles({
     compression: pakoDeflateCodec(pako),
-    minBlockSize: 64,
-    maxBlockSize: 1024,
+    blockSize: 1000,
   });
   return { api: files, cleanup: async () => db.close() };
 });

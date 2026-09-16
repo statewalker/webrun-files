@@ -40,15 +40,16 @@ In a Durable Object: `new SqliteFilesApi(new DoSqlDriver(this.ctx.storage.sql))`
 ### How content is stored
 
 - `fs_paths(pid, path UNIQUE, fid, mtime)` — a path points at a content, or is a directory (`fid` NULL).
-- `fs_files(fid, size, compression, hash)` — an immutable content: its uncompressed size, `"none"`
-  or `"deflate"`, and the SHA-256 of its bytes.
-- `fs_blocks(fid, shift, block)`, keyed by `(fid, shift)` — the content cut by uncompressed size
-  into blocks of 64 KiB, 128 KiB, 256 KiB, 512 KiB, then 1 MiB each; `shift` is the block's offset
-  in the uncompressed content. Each block of a `deflate` content is its own zlib stream, so a range
-  read inflates only the blocks it touches.
+- `fs_files(fid, size, compression, block_size, hash)` — an immutable content: its uncompressed
+  size, `"none"` or `"deflate"`, the block size it was written with, and the SHA-256 of its bytes.
+- `fs_blocks(fid, shift, block)`, keyed by `(fid, shift)` — the content cut into blocks of
+  `block_size` uncompressed bytes (only the last one shorter); `shift` is the block's offset in the
+  uncompressed content, always a multiple of `block_size`. Each block of a `deflate` content is its
+  own zlib stream, so a range read fetches and inflates exactly the blocks the range touches, found
+  by key.
 
 `copy` adds path rows pointing at the same content; a write whose bytes match an existing content
-(same SHA-256, size and compression) shares it too. A content and its blocks are deleted when the
+(same SHA-256, size, compression and block size) shares it too. A content and its blocks are deleted when the
 last path pointing at it is removed or overwritten.
 
 ### Streaming
@@ -64,14 +65,16 @@ bounds. An `AbortSignal` passed to `read` is checked before every block.
 | --- | --- | --- |
 | `compression` | `webDeflateCodec()` where `CompressionStream` exists, else none | `null` stores uncompressed; `pakoDeflateCodec(pako)` for runtimes without Compression Streams |
 | `tablePrefix` | `"fs_"` | several file systems in one database |
-| `minBlockSize` / `maxBlockSize` | 64 KiB / 1 MiB | `maxBlockSize` is capped at 1.5 MiB to stay under the 2 MB row limit |
+| `blockSize` | 1 MiB | uncompressed bytes per block for new writes, 1 to 1.5 MiB (the cap keeps a deflated block under the 2 MB row limit). Larger means fewer rows — better where statements are costly, as on D1; smaller means cheaper small range reads. Each content records its own size, so changing this never affects existing files. |
 
 ### Semantics worth knowing
 
 - `copy` and `move` replace the target's subtree rather than merging into it, and throw when one
   path contains the other.
 - A write is invisible until complete: a failing source leaves the previous content in place.
-- A read whose content is removed underneath it throws `changed during read`.
+- A read whose content is removed underneath it throws `changed during read`. A block whose
+  uncompressed length is not what its position implies throws `block at <shift> holds … bytes`,
+  before any wrong byte reaches the reader.
 - No transactions (Durable Objects and D1 reject `BEGIN`); every multi-step operation is ordered so
   concurrent calls cannot delete content still in use. A process killed mid-write can leave an
   unreferenced content behind.

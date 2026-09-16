@@ -12,8 +12,7 @@ import { ByteReader, collectBlock } from "./byte-reader.js";
 import { Sha256 } from "./sha256.js";
 import { type StreamCodec, webDeflateCodec } from "./stream-codec.js";
 
-const KiB = 1024;
-const MiB = 1024 * KiB;
+const MiB = 1024 * 1024;
 /** Rows on Durable Objects and D1 are capped at 2 MB; leave room for deflate's worst case. */
 const MAX_BLOCK_SIZE_LIMIT = 1.5 * MiB;
 const LIST_PAGE = 256;
@@ -26,10 +25,12 @@ export interface SqliteFilesApiOptions {
    * {@link webDeflateCodec} where Compression Streams exist, uncompressed elsewhere.
    */
   compression?: StreamCodec | null;
-  /** Uncompressed size of the first block. Defaults to 64 KiB. */
-  minBlockSize?: number;
-  /** Uncompressed size blocks double up to. Defaults to 1 MiB; at most 1.5 MiB. */
-  maxBlockSize?: number;
+  /**
+   * Uncompressed bytes per block for new writes; only a file's last block is
+   * shorter. An integer from 1 to 1.5 MiB, default 1 MiB. Each content records
+   * the size it was written with, so changing this never affects existing files.
+   */
+  blockSize?: number;
 }
 
 interface EntryRow {
@@ -37,6 +38,7 @@ interface EntryRow {
   mtime: number;
   size: number | null;
   compression: string | null;
+  block_size: number | null;
 }
 
 interface ListRow extends EntryRow {
@@ -52,8 +54,7 @@ interface ListRow extends EntryRow {
 export class SqliteFilesApi implements FilesApi {
   readonly #sql: SqlDriver;
   readonly #codec: StreamCodec | null;
-  readonly #minBlock: number;
-  readonly #maxBlock: number;
+  readonly #blockSize: number;
   readonly #paths: string;
   readonly #files: string;
   readonly #blocks: string;
@@ -64,17 +65,14 @@ export class SqliteFilesApi implements FilesApi {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(prefix)) {
       throw new Error(`SqliteFilesApi: tablePrefix must be a plain SQL identifier, got ${prefix}`);
     }
-    this.#minBlock = opts.minBlockSize ?? 64 * KiB;
-    this.#maxBlock = opts.maxBlockSize ?? MiB;
-    if (!(Number.isInteger(this.#minBlock) && this.#minBlock > 0)) {
-      throw new Error(`SqliteFilesApi: minBlockSize must be a positive integer`);
-    }
+    this.#blockSize = opts.blockSize ?? MiB;
     if (
-      !(Number.isInteger(this.#maxBlock) && this.#maxBlock >= this.#minBlock) ||
-      this.#maxBlock > MAX_BLOCK_SIZE_LIMIT
+      !Number.isInteger(this.#blockSize) ||
+      this.#blockSize < 1 ||
+      this.#blockSize > MAX_BLOCK_SIZE_LIMIT
     ) {
       throw new Error(
-        `SqliteFilesApi: maxBlockSize must be an integer between minBlockSize and ${MAX_BLOCK_SIZE_LIMIT}`,
+        `SqliteFilesApi: blockSize must be an integer from 1 to ${MAX_BLOCK_SIZE_LIMIT}, got ${this.#blockSize}`,
       );
     }
     this.#sql = sql;
@@ -92,6 +90,7 @@ export class SqliteFilesApi implements FilesApi {
         fid INTEGER PRIMARY KEY,
         size INTEGER,
         compression TEXT NOT NULL,
+        block_size INTEGER NOT NULL,
         hash TEXT
       )`,
       `CREATE TABLE IF NOT EXISTS ${this.#blocks}(
@@ -127,29 +126,38 @@ export class SqliteFilesApi implements FilesApi {
     );
     if (start >= end) return;
 
-    const fid = entry.fid;
+    const { fid, size } = entry;
+    const blockSize = entry.block_size ?? this.#blockSize;
     const decoder = this.#decoder(name, entry.compression ?? "none");
-    let block = await this.#firstBlock(fid, start);
-    let position = block?.shift ?? 0;
 
-    while (position < end) {
-      if (!block || block.shift !== position) {
-        throw new Error(`sqlite-files: ${name} changed during read`);
-      }
+    // Fixed-size blocks: the block holding `start` is found by arithmetic, and
+    // every block's uncompressed length is known before it is read.
+    for (let shift = start - (start % blockSize); shift < end; shift += blockSize) {
       options.signal?.throwIfAborted();
+      const block = await this.#block(fid, shift);
+      if (!block) throw new Error(`sqlite-files: ${name} changed during read`);
+      const expected = Math.min(blockSize, size - shift);
       const bytes = toBytes(block.block);
+
       const chunks = decoder ? decoder.decompress(once(bytes)) : once(bytes);
-      let offset = position;
+      let offset = shift;
+      let stoppedEarly = false;
       for await (const chunk of chunks) {
+        if (offset + chunk.length - shift > expected) {
+          throw corruptBlock(name, shift, `at least ${offset + chunk.length - shift}`, expected);
+        }
         const from = Math.max(0, start - offset);
         const to = Math.min(chunk.length, end - offset);
         offset += chunk.length;
         if (to > from) yield chunk.subarray(from, to);
-        if (offset >= end) break;
+        if (offset >= end) {
+          stoppedEarly = true;
+          break;
+        }
       }
-      if (offset === position) throw new Error(`sqlite-files: ${name} has an empty block`);
-      position = offset;
-      if (position < end) block = await this.#nextBlock(fid, block.shift);
+      if (!stoppedEarly && offset - shift !== expected) {
+        throw corruptBlock(name, shift, offset - shift, expected);
+      }
     }
   }
 
@@ -162,18 +170,20 @@ export class SqliteFilesApi implements FilesApi {
     const name = normalizePath(path);
     const compression = this.#codec?.name ?? "none";
     const created = await this.#sql.all<{ fid: number }>(
-      `INSERT INTO ${this.#files}(size, compression, hash) VALUES (NULL, ?, NULL) RETURNING fid`,
+      `INSERT INTO ${this.#files}(size, compression, block_size, hash)
+       VALUES (NULL, ?, ?, NULL) RETURNING fid`,
       compression,
+      this.#blockSize,
     );
     const fid = created[0].fid;
 
+    const limit = this.#blockSize;
     const reader = new ByteReader(content);
     const hash = new Sha256();
     let size = 0;
     let digest: string;
     try {
-      for (let index = 0; ; index++) {
-        const limit = Math.min(this.#minBlock * 2 ** Math.min(index, 30), this.#maxBlock);
+      for (;;) {
         const first = await reader.read(limit);
         if (!first) break;
         let raw = 0;
@@ -216,7 +226,7 @@ export class SqliteFilesApi implements FilesApi {
     const shared = await this.#sql.all<{ fid: number }>(
       `INSERT INTO ${this.#paths}(path, fid, mtime)
          SELECT ?, fid, ? FROM ${this.#files}
-         WHERE hash = ? AND size = ? AND compression = ? AND fid <> ?
+         WHERE hash = ? AND size = ? AND compression = ? AND block_size = ? AND fid <> ?
          ORDER BY fid LIMIT 1
        ON CONFLICT(path) DO UPDATE SET fid = excluded.fid, mtime = excluded.mtime
        RETURNING fid`,
@@ -225,6 +235,7 @@ export class SqliteFilesApi implements FilesApi {
       digest,
       size,
       compression,
+      this.#blockSize,
       fid,
     );
     if (shared.length > 0) {
@@ -278,7 +289,7 @@ export class SqliteFilesApi implements FilesApi {
       const params: unknown[] = [...range.params, cursor];
       if (!options.recursive) params.push(prefixLength + 1);
       const rows = await this.#sql.all<ListRow>(
-        `SELECT p.path, p.fid, p.mtime, f.size, f.compression
+        `SELECT p.path, p.fid, p.mtime, f.size, f.compression, f.block_size
          FROM ${this.#paths} p LEFT JOIN ${this.#files} f ON f.fid = p.fid
          WHERE ${range.where} AND p.path > ? ${directOnly}
          ORDER BY p.path LIMIT ${LIST_PAGE}`,
@@ -362,7 +373,7 @@ export class SqliteFilesApi implements FilesApi {
 
   async #entry(name: string): Promise<EntryRow | undefined> {
     const rows = await this.#sql.all<EntryRow>(
-      `SELECT p.fid, p.mtime, f.size, f.compression
+      `SELECT p.fid, p.mtime, f.size, f.compression, f.block_size
        FROM ${this.#paths} p LEFT JOIN ${this.#files} f ON f.fid = p.fid
        WHERE p.path = ?`,
       name,
@@ -382,18 +393,9 @@ export class SqliteFilesApi implements FilesApi {
     );
   }
 
-  async #firstBlock(fid: number, start: number) {
+  async #block(fid: number, shift: number) {
     const rows = await this.#sql.all<{ shift: number; block: unknown }>(
-      `SELECT shift, block FROM ${this.#blocks} WHERE fid = ? AND shift <= ? ORDER BY shift DESC LIMIT 1`,
-      fid,
-      start,
-    );
-    return rows[0];
-  }
-
-  async #nextBlock(fid: number, shift: number) {
-    const rows = await this.#sql.all<{ shift: number; block: unknown }>(
-      `SELECT shift, block FROM ${this.#blocks} WHERE fid = ? AND shift > ? ORDER BY shift LIMIT 1`,
+      `SELECT shift, block FROM ${this.#blocks} WHERE fid = ? AND shift = ?`,
       fid,
       shift,
     );
@@ -425,6 +427,12 @@ export class SqliteFilesApi implements FilesApi {
     await this.#sql.run(`DELETE FROM ${this.#files} WHERE fid = ?`, fid);
     await this.#sql.run(`DELETE FROM ${this.#blocks} WHERE fid = ?`, fid);
   }
+}
+
+function corruptBlock(name: string, shift: number, holds: number | string, expected: number) {
+  return new Error(
+    `sqlite-files: ${name} block at ${shift} holds ${holds} bytes, expected ${expected}`,
+  );
 }
 
 function availableWebCodec(): StreamCodec | null {

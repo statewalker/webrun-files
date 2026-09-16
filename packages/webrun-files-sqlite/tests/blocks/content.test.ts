@@ -7,7 +7,7 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 const text = async (files: { read(p: string): AsyncIterable<Uint8Array> }, p: string) =>
   dec.decode(await collectStream(files.read(p)));
-const small = { compression: null, minBlockSize: 16, maxBlockSize: 64 } as const;
+const small = { compression: null, blockSize: 64 } as const;
 
 describe("sharing", () => {
   it("copy points the target at the same content, without copying blocks", async () => {
@@ -48,7 +48,7 @@ describe("sharing", () => {
     await files.write("/b", positionContent(300, [100]));
     expect(pathRow(db, "/b")?.fid).toBe(pathRow(db, "/a")?.fid);
     expect(count(db, "fs_files")).toBe(1);
-    expect(count(db, "fs_blocks")).toBe(6); // 16 + 32 + 64 + 64 + 64 + 60
+    expect(count(db, "fs_blocks")).toBe(5); // 4 × 64 + 44
   });
 
   it("does not share contents stored with different compression", async () => {
@@ -60,6 +60,21 @@ describe("sharing", () => {
     await plain.files.write("/a", positionContent(300));
     await packed.files.write("/b", positionContent(300));
     expect(pathRow(db, "/b")?.fid).not.toBe(pathRow(db, "/a")?.fid);
+  });
+});
+
+describe("sharing across block sizes", () => {
+  it("shares identical content only between contents of the same block size", async () => {
+    const { db } = await newFiles(small);
+    const a = await newFiles({ db, compression: null, blockSize: 64 });
+    const b = await newFiles({ db, compression: null, blockSize: 100 });
+    const c = await newFiles({ db, compression: null, blockSize: 100 });
+    await a.files.write("/a", positionContent(300));
+    await b.files.write("/b", positionContent(300));
+    await c.files.write("/c", positionContent(300));
+    expect(pathRow(db, "/b")?.fid).not.toBe(pathRow(db, "/a")?.fid);
+    expect(pathRow(db, "/c")?.fid).toBe(pathRow(db, "/b")?.fid);
+    expect(count(db, "fs_files")).toBe(2);
   });
 });
 
@@ -132,7 +147,7 @@ describe("failures", () => {
       wrap: (driver) => ({
         all: (sql, ...params) => driver.all(sql, ...params),
         run: (sql, ...params) => {
-          if (sql.includes("INSERT INTO fs_blocks") && params[1] === 16)
+          if (sql.includes("INSERT INTO fs_blocks") && params[1] === 64)
             throw new Error("disk full");
           return driver.run(sql, ...params);
         },
@@ -180,7 +195,7 @@ describe("failures", () => {
 
 describe("compression choice", () => {
   it("defaults to deflate over Compression Streams", async () => {
-    const { db, files } = await newFiles({ minBlockSize: 1024 });
+    const { db, files } = await newFiles({ blockSize: 1024 });
     await files.write("/t.txt", [enc.encode("abc".repeat(10_000))]);
     const fid = pathRow(db, "/t.txt")?.fid as number;
     expect(fileRow(db, fid)?.compression).toBe("deflate");
