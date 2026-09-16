@@ -96,6 +96,8 @@ await files.readlink("/latest.js"); // "./v2/index.js"
 ## Limitations
 
 - A file is one blob: `write` buffers its content, `read` inflates it whole and yields one chunk.
+- On Durable Objects and D1 a row may not exceed 2 MB, so the *stored* (possibly compressed) size
+  of one file is capped there. Larger writes fail with the runtime's error.
 - Multi-row mutations (`copy`, `move`, `remove` of a tree) are not wrapped in a transaction.
 - Only the final path component is resolved through symlinks.
 
