@@ -32,7 +32,11 @@ console.log(content); // {"debug": true}
 
 // List files
 for await (const entry of files.list('/')) {
-  console.log(entry.name, entry.kind, entry.size);
+  if (entry.kind === 'file') {
+    console.log(entry.name, entry.kind, entry.size, entry.lastModified);
+  } else {
+    console.log(entry.name, entry.kind); // directories carry no size or time
+  }
 }
 ```
 
@@ -57,6 +61,9 @@ virtual path: "/users/alice.json"
 real path: "/var/app/data/users/alice.json"
 ```
 
+Paths are appended to `rootDir` without confinement: `..` segments are kept, not resolved, so a
+virtual path such as `/../etc/passwd` reaches outside `rootDir`. Do not pass untrusted paths.
+
 ## API Reference
 
 ### NodeFilesApi
@@ -65,7 +72,7 @@ real path: "/var/app/data/users/alice.json"
 interface NodeFilesApiOptions {
   /**
    * Root directory for file operations.
-   * All paths are resolved relative to this directory.
+   * Virtual paths are appended to this directory (see "Path Mapping" for `..`).
    * Defaults to current working directory if not specified.
    */
   rootDir?: string;
@@ -116,7 +123,8 @@ await writeText(files, '/deep/nested/path/file.txt', 'content');
 
 ### Recursive Operations
 
-Copy and remove work recursively on directories:
+Copy and remove work recursively on directories. `move()` is a single `fs.rename`: when the rename
+fails — for example across devices — it returns `false` rather than falling back to copying.
 
 ```typescript
 // Copy entire directory tree
@@ -133,6 +141,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NodeFilesApi } from '@statewalker/webrun-files-node';
+import { writeText } from '@statewalker/webrun-files';
 
 // Create a temp directory for testing
 const tempDir = await mkdtemp(join(tmpdir(), 'test-'));

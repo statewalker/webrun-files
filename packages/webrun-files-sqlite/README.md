@@ -1,7 +1,7 @@
 # @statewalker/webrun-files-sqlite
 
 Two `FilesApi` implementations over SQLite, sharing one small SQL port with drivers for
-`node:sqlite`, Durable Object storage (`ctx.storage.sql`) and Cloudflare D1.
+`node:sqlite`, Cloudflare Durable Object storage and Cloudflare D1.
 
 | | `SqliteFilesApi` | `SqlarFilesApi` |
 | --- | --- | --- |
@@ -20,6 +20,47 @@ SQLAR tools, in a runtime without a row limit (Node, Deno, Bun, a browser SQLite
 npm install @statewalker/webrun-files-sqlite @statewalker/webrun-files
 ```
 
+`pako` is not a dependency: pass the module to `pakoCodec` / `pakoDeflateCodec` if you use them.
+
+## Drivers
+
+Both implementations take a `SqlDriver`. The package imports none of the handles below — they are
+passed in — so it bundles for any runtime.
+
+```typescript
+import { D1SqlDriver, DoSqlDriver, NodeSqlDriver } from "@statewalker/webrun-files-sqlite";
+
+new NodeSqlDriver(new DatabaseSync("files.db")); // node:sqlite
+new DoSqlDriver(this.ctx.storage); // inside a Durable Object: ctx.storage, not ctx.storage.sql
+new D1SqlDriver(env.DB); // a D1 binding
+```
+
+Any other SQLite binding works by implementing the port:
+
+```typescript
+interface SqlStatement {
+  sql: string;
+  params?: unknown[];
+}
+
+interface SqlDriver {
+  /** Rows as objects keyed by column name. */
+  all<T>(sql: string, ...params: unknown[]): T[] | Promise<T[]>;
+  /** One statement, for its effect. */
+  run(sql: string, ...params: unknown[]): void | Promise<void>;
+  /**
+   * The statements in order, as one transaction: all apply or none do. Returns the number of rows
+   * each statement changed. No statement may depend on another's result.
+   */
+  transaction(statements: SqlStatement[]): number[] | Promise<number[]>;
+}
+```
+
+The built-in drivers implement `transaction` with `BEGIN IMMEDIATE … COMMIT` (node:sqlite),
+`ctx.storage.transactionSync` (Durable Objects, where `sql.exec` rejects `BEGIN`) and `batch()` (D1).
+Blobs come back as `Uint8Array`, `ArrayBuffer` or `number[]` depending on the runtime; both
+implementations accept all three.
+
 ## SqliteFilesApi
 
 ```typescript
@@ -29,14 +70,13 @@ import { NodeSqlDriver, SqliteFilesApi } from "@statewalker/webrun-files-sqlite"
 const files = new SqliteFilesApi(new NodeSqlDriver(new DatabaseSync("files.db")));
 await files.init(); // creates fs_paths, fs_files and fs_blocks if missing
 
-await files.write("/video.mp4", response.body); // any (async) iterable of Uint8Array
+await files.write("/video.mp4", response.body); // any Iterable or AsyncIterable of Uint8Array
 for await (const chunk of files.read("/video.mp4", { start: 10_000_000, length: 65_536 })) {
   // only the block holding this range is fetched and inflated
 }
 ```
 
-In a Durable Object: `new SqliteFilesApi(new DoSqlDriver(this.ctx.storage))` — the driver takes
-`ctx.storage`, not `ctx.storage.sql`, because transactions go through `transactionSync`.
+`init()` creates the tables and indexes if they are missing; await it before any other call.
 
 ### How content is stored
 
@@ -73,7 +113,8 @@ bounds. An `AbortSignal` passed to `read` is checked before every block.
 
 - `copy` and `move` replace the target's subtree rather than merging into it, and throw when one
   path contains the other.
-- A write is invisible until complete: a failing source leaves the previous content in place.
+- A write is invisible until complete: if it fails for any reason, the path keeps its previous
+  content and the partly written content is deleted.
 - A read whose content is removed underneath it throws `changed during read`. A block whose
   uncompressed length is not what its position implies throws `block at <shift> holds … bytes`,
   before any wrong byte reaches the reader.
@@ -111,26 +152,7 @@ await writeText(files, "/docs/index.md", "# Hello");
 console.log(await readText(files, "/docs/index.md"));
 ```
 
-### Durable Objects and D1
-
-```typescript
-import { D1SqlDriver, DoSqlDriver, SqlarFilesApi } from "@statewalker/webrun-files-sqlite";
-
-// Inside a Durable Object
-const files = new SqlarFilesApi(new DoSqlDriver(this.ctx.storage));
-
-// With a D1 binding
-const shared = new SqlarFilesApi(new D1SqlDriver(env.DB));
-```
-
-Any other SQLite binding works through the `SqlDriver` port:
-
-```typescript
-interface SqlDriver {
-  all<T>(sql: string, ...params: unknown[]): T[] | Promise<T[]>;
-  run(sql: string, ...params: unknown[]): void | Promise<void>;
-}
-```
+It takes the same drivers (see *Drivers*), subject to the row limit below.
 
 ### Compression codecs
 

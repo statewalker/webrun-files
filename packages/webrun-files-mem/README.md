@@ -36,7 +36,11 @@ console.log(content); // {"debug": true}
 
 // List files
 for await (const entry of files.list('/')) {
-  console.log(entry.name, entry.kind, entry.size);
+  if (entry.kind === 'file') {
+    console.log(entry.name, entry.kind, entry.size, entry.lastModified);
+  } else {
+    console.log(entry.name, entry.kind); // directories carry no size or time
+  }
 }
 ```
 
@@ -46,6 +50,7 @@ Pre-populate the filesystem when creating it:
 
 ```typescript
 import { MemFilesApi } from '@statewalker/webrun-files-mem';
+import { readText } from '@statewalker/webrun-files';
 
 const files = new MemFilesApi({
   initialFiles: {

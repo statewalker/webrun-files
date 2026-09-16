@@ -50,6 +50,10 @@ interface ListRow extends EntryRow {
  * a content is a sequence of bounded, optionally compressed blocks. Reads and
  * writes stream one block at a time, so no file is ever held whole and no row
  * outgrows the 2 MB limit of Durable Objects and D1.
+ *
+ * Streaming happens outside transactions; every step that changes what a path
+ * shows is one transaction, so an interruption leaves at most an unreferenced
+ * content, which {@link sweep} removes.
  */
 export class SqliteFilesApi implements FilesApi {
   readonly #sql: SqlDriver;
