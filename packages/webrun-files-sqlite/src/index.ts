@@ -1,3 +1,5 @@
+export { SqliteFilesApi, type SqliteFilesApiOptions } from "./blocks/sqlite-files-api.js";
+export type { StreamCodec } from "./blocks/stream-codec.js";
 export {
   type Codec,
   defaultCodec,

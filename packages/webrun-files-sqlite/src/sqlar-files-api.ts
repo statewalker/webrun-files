@@ -6,6 +6,7 @@ import type {
   ReadOptions,
 } from "@statewalker/webrun-files";
 import { normalizePath } from "@statewalker/webrun-files";
+import { toBytes } from "./bytes.js";
 import { type Codec, defaultCodec } from "./codec.js";
 import type { SqlDriver } from "./sql.types.js";
 
@@ -394,13 +395,4 @@ async function concat(content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>)
     at += chunk.byteLength;
   }
   return out;
-}
-
-/** Blobs arrive as Uint8Array (node:sqlite), ArrayBuffer (Durable Objects) or number[] (D1). */
-function toBytes(value: unknown): Uint8Array {
-  if (value instanceof Uint8Array) return value;
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  if (Array.isArray(value)) return Uint8Array.from(value);
-  if (typeof value === "string") return new TextEncoder().encode(value);
-  return new Uint8Array(0);
 }
