@@ -310,6 +310,12 @@ both directly and over a real `@hono/node-server` connection. It takes well unde
 minute per package, and the `webrun-files-sqlite` run peaks at about 2.5 GB of memory (its
 `SqlarFilesApi` holds whole files by design).
 
+The HTTP package's browser tests run separately, in Chromium and Firefox through Playwright:
+
+```bash
+pnpm --filter @statewalker/webrun-files-http test:e2e
+```
+
 The S3 backend's tests need Docker and run separately, against a RustFS container:
 
 ```bash

@@ -36,3 +36,7 @@ coverage/
 # Test data
 test-data/
 tmp/
+
+# Playwright output
+test-results/
+playwright-report/

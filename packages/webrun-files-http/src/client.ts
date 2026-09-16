@@ -135,6 +135,13 @@ class HttpFilesApi implements FilesApi {
     content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
   ): Promise<void> {
     if (this.#upload === "stream") {
+      // A runtime without request streams does not fail such a request: Firefox
+      // sends the text "[object ReadableStream]" as the body, and it is stored.
+      if (!supportsRequestStreams()) {
+        throw new Error(
+          `webrun-files-http: this runtime cannot stream request bodies; use upload "chunked" or "auto" (${path})`,
+        );
+      }
       const init: RequestInit & { duplex: "half" } = {
         method: "PUT",
         body: toStream(content),
@@ -295,7 +302,15 @@ function detectUploadMode(): "stream" | "chunked" {
     Bun?: unknown;
   };
   const serverRuntime = Boolean(g.process?.versions?.node || g.Deno || g.Bun);
-  if (!serverRuntime) return "chunked";
+  return serverRuntime && supportsRequestStreams() ? "stream" : "chunked";
+}
+
+/**
+ * The request-stream feature test: a runtime that supports stream bodies reads
+ * the `duplex` option and does not treat the stream as text (which would set a
+ * `Content-Type`).
+ */
+function supportsRequestStreams(): boolean {
   try {
     let duplexRead = false;
     const hasContentType = new Request("http://feature.test/", {
@@ -306,9 +321,9 @@ function detectUploadMode(): "stream" | "chunked" {
         return "half";
       },
     } as RequestInit).headers.has("Content-Type");
-    return duplexRead && !hasContentType ? "stream" : "chunked";
+    return duplexRead && !hasContentType;
   } catch {
-    return "chunked";
+    return false;
   }
 }
 

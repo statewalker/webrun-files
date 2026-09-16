@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Files over HTTP</title>
+    <style>
+      body { font: 14px system-ui, sans-serif; margin: 1.5rem; max-width: 60rem; }
+      fieldset { margin-bottom: 1rem; }
+      label { display: inline-block; margin: 0.2rem 0.8rem 0.2rem 0; }
+      input[type="text"], input[type="number"] { width: 18rem; }
+      textarea { width: 100%; height: 4rem; }
+      button { margin: 0.2rem 0.3rem 0.2rem 0; }
+      pre { background: #f4f4f4; padding: 0.75rem; overflow: auto; max-height: 20rem; }
+    </style>
+  </head>
+  <body>
+    <h1>Files over HTTP</h1>
+    <p>Status: <strong id="status">loading</strong> — <span id="mode"></span></p>
+
+    <fieldset>
+      <legend>Path</legend>
+      <label>Path <input type="text" name="path" value="/welcome.txt" /></label>
+      <label>Target (copy / move) <input type="text" name="target" value="/copy.txt" /></label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Content</legend>
+      <textarea name="content">Hello from the browser</textarea>
+      <button type="button" data-action="write-text">Write text</button>
+      <button type="button" data-action="read">Read</button>
+      <label>Start <input type="number" name="start" value="0" /></label>
+      <label>Length <input type="number" name="length" value="10" /></label>
+      <button type="button" data-action="read-range">Read range</button>
+    </fieldset>
+
+    <fieldset>
+      <legend>Generated binary content</legend>
+      <label>Size (bytes) <input type="number" name="size" value="200000" /></label>
+      <button type="button" data-action="write-generated">Write generated</button>
+      <button type="button" data-action="verify-generated">Verify generated</button>
+    </fieldset>
+
+    <fieldset>
+      <legend>Operations</legend>
+      <button type="button" data-action="stats">Stats</button>
+      <button type="button" data-action="exists">Exists</button>
+      <button type="button" data-action="mkdir">Mkdir</button>
+      <button type="button" data-action="copy">Copy</button>
+      <button type="button" data-action="move">Move</button>
+      <button type="button" data-action="remove">Remove</button>
+    </fieldset>
+
+    <fieldset>
+      <legend>List</legend>
+      <label><input type="checkbox" name="recursive" /> Recursive</label>
+      <label>After <input type="text" name="after" value="" /></label>
+      <button type="button" data-action="list">List</button>
+    </fieldset>
+
+    <h2>Result</h2>
+    <pre id="output"></pre>
+    <h2>Requests</h2>
+    <pre id="requests"></pre>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

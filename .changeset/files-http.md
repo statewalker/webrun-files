@@ -7,4 +7,6 @@ New package `@statewalker/webrun-files-http`: `newServerStub` serves any `FilesA
 `fetch`. Each call is its own request (`GET` with `Range`, `HEAD`, `PUT`, `MKCOL`/`COPY`/`MOVE`/
 `DELETE` with a `POST ?op=` fallback, paged listings with `after`). Reads and uploads stream, with
 chunked S3-style uploads, staged in a separate `FilesApi`, for browsers. `onRequest`/`onResponse`
-hooks and a per-request file system handle auth, CORS and tenancy.
+hooks and a per-request file system handle auth, CORS and tenancy. Verified in Chromium and Firefox
+with Playwright; an explicit `upload: "stream"` throws where request streams are unsupported instead
+of letting Firefox send `[object ReadableStream]` as the file.
