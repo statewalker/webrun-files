@@ -1,7 +1,7 @@
 /** Paths share immutable contents; a content lives as long as a path points at it. */
 import { collectGenerator, collectStream, positionContent } from "@statewalker/webrun-files-tests";
-import { describe, expect, it } from "vitest";
-import { count, newFiles, pathRow } from "./helpers.js";
+import { describe, expect, it, vi } from "vitest";
+import { count, fileRow, newFiles, pathRow } from "./helpers.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -162,14 +162,45 @@ describe("failures", () => {
     ).rejects.toThrow(/\/a changed during read/);
   });
 
-  it("names the path when no codec can read a compressed content", async () => {
+  it("names the path and compression when no codec can read a content", async () => {
+    const { db } = await newFiles(small);
+    const pako = await import("pako");
+    const { pakoDeflateCodec } = await import("../../src/index.js");
+    const writer = await newFiles({ ...small, db, compression: pakoDeflateCodec(pako) });
+    await writer.files.write("/z", positionContent(300));
+    vi.stubGlobal("CompressionStream", undefined);
+    try {
+      const reader = await newFiles({ ...small, db, compression: null });
+      await expect(collectStream(reader.files.read("/z"))).rejects.toThrow(/\/z.*deflate/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("compression choice", () => {
+  it("defaults to deflate over Compression Streams", async () => {
+    const { db, files } = await newFiles({ minBlockSize: 1024 });
+    await files.write("/t.txt", [enc.encode("abc".repeat(10_000))]);
+    const fid = pathRow(db, "/t.txt")?.fid as number;
+    expect(fileRow(db, fid)?.compression).toBe("deflate");
+    expect(await text(files, "/t.txt")).toBe("abc".repeat(10_000));
+  });
+
+  it("stores content uncompressed with compression: null", async () => {
+    const { db, files } = await newFiles({ compression: null });
+    await files.write("/t.txt", [enc.encode("abc")]);
+    expect(fileRow(db, pathRow(db, "/t.txt")?.fid as number)?.compression).toBe("none");
+  });
+
+  it("reads deflate content through Compression Streams whatever codec it writes with", async () => {
     const { db } = await newFiles(small);
     const pako = await import("pako");
     const { pakoDeflateCodec } = await import("../../src/index.js");
     const writer = await newFiles({ ...small, db, compression: pakoDeflateCodec(pako) });
     await writer.files.write("/z", positionContent(300));
     const reader = await newFiles({ ...small, db, compression: null });
-    await expect(collectStream(reader.files.read("/z"))).rejects.toThrow(/\/z.*deflate/);
+    expect((await collectStream(reader.files.read("/z"))).length).toBe(300);
   });
 });
 

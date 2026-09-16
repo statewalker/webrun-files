@@ -10,7 +10,7 @@ import { toBytes } from "../bytes.js";
 import type { SqlDriver } from "../sql.types.js";
 import { ByteReader, collectBlock } from "./byte-reader.js";
 import { Sha256 } from "./sha256.js";
-import type { StreamCodec } from "./stream-codec.js";
+import { type StreamCodec, webDeflateCodec } from "./stream-codec.js";
 
 const KiB = 1024;
 const MiB = 1024 * KiB;
@@ -21,7 +21,10 @@ const LIST_PAGE = 256;
 export interface SqliteFilesApiOptions {
   /** Prefix of the three table names. Defaults to "fs_". */
   tablePrefix?: string;
-  /** Codec for new writes; `null` stores content uncompressed. */
+  /**
+   * Codec for new writes; `null` stores content uncompressed. Defaults to
+   * {@link webDeflateCodec} where Compression Streams exist, uncompressed elsewhere.
+   */
   compression?: StreamCodec | null;
   /** Uncompressed size of the first block. Defaults to 64 KiB. */
   minBlockSize?: number;
@@ -75,7 +78,7 @@ export class SqliteFilesApi implements FilesApi {
       );
     }
     this.#sql = sql;
-    this.#codec = opts.compression === undefined ? null : opts.compression;
+    this.#codec = opts.compression === undefined ? availableWebCodec() : opts.compression;
     this.#prefix = prefix;
     this.#paths = `${prefix}paths`;
     this.#files = `${prefix}files`;
@@ -370,6 +373,10 @@ export class SqliteFilesApi implements FilesApi {
   #decoder(name: string, compression: string): StreamCodec | null {
     if (compression === "none") return null;
     if (this.#codec?.name === compression) return this.#codec;
+    if (compression === "deflate") {
+      const web = availableWebCodec();
+      if (web) return web;
+    }
     throw new Error(
       `sqlite-files: ${name} is compressed with ${compression}, and no codec reads it`,
     );
@@ -418,6 +425,10 @@ export class SqliteFilesApi implements FilesApi {
     await this.#sql.run(`DELETE FROM ${this.#files} WHERE fid = ?`, fid);
     await this.#sql.run(`DELETE FROM ${this.#blocks} WHERE fid = ?`, fid);
   }
+}
+
+function availableWebCodec(): StreamCodec | null {
+  return typeof CompressionStream === "undefined" ? null : webDeflateCodec();
 }
 
 function toStats(row: EntryRow): FileStats | undefined {

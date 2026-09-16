@@ -94,3 +94,23 @@ describe("range reads across blocks", () => {
     }
   });
 });
+
+describe("compressed blocks", () => {
+  it("stores each block as an independent zlib stream of its uncompressed slice", async () => {
+    const { inflateSync } = await import("node:zlib");
+    const { db, files } = await newFiles({ minBlockSize: 1000, maxBlockSize: 4000 });
+    const bytes = new TextEncoder().encode("block storage streams bytes. ".repeat(1000));
+    await files.write("/t.txt", [bytes]);
+    const fid = pathRow(db, "/t.txt")?.fid as number;
+    expect(fileRow(db, fid)?.compression).toBe("deflate");
+    const blocks = blocksOf(db, fid);
+    expect(blocks.map((b) => b.shift)).toEqual([
+      0, 1000, 3000, 7000, 11_000, 15_000, 19_000, 23_000, 27_000,
+    ]);
+    for (const [i, b] of blocks.entries()) {
+      const end = blocks[i + 1]?.shift ?? bytes.length;
+      expect(b.len).toBeLessThan(end - b.shift);
+      expect(new Uint8Array(inflateSync(b.block))).toEqual(bytes.subarray(b.shift, end));
+    }
+  });
+});
