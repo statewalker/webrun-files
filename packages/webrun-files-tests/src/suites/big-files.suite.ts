@@ -74,9 +74,13 @@ export function createBigFilesApiTests(
       await ctx?.cleanup?.();
     }, timeout);
 
-    it("reports the exact size", async () => {
-      expect(asFileStats(await ctx.api.stats(path)).size).toBe(size);
-    }, timeout);
+    it(
+      "reports the exact size",
+      async () => {
+        expect(asFileStats(await ctx.api.stats(path)).size).toBe(size);
+      },
+      timeout,
+    );
 
     it(
       "reads the whole file back, byte for byte",
@@ -86,45 +90,73 @@ export function createBigFilesApiTests(
       timeout,
     );
 
-    it("reads the first 100 bytes", async () => {
-      expect(await expectStreamAt(ctx.api.read(path, { length: 100 }), 0)).toBe(100);
-    }, timeout);
+    it(
+      "reads the first 100 bytes",
+      async () => {
+        expect(await expectStreamAt(ctx.api.read(path, { length: 100 }), 0)).toBe(100);
+      },
+      timeout,
+    );
 
-    it("reads ranges straddling each MiB boundary", async () => {
-      for (let boundary = MiB; boundary <= Math.min(8 * MiB, size - 32); boundary += MiB) {
-        const start = boundary - 32;
-        expect(await expectStreamAt(ctx.api.read(path, { start, length: 64 }), start)).toBe(64);
-      }
-    }, timeout);
+    it(
+      "reads ranges straddling each MiB boundary",
+      async () => {
+        for (let boundary = MiB; boundary <= Math.min(8 * MiB, size - 32); boundary += MiB) {
+          const start = boundary - 32;
+          expect(await expectStreamAt(ctx.api.read(path, { start, length: 64 }), start)).toBe(64);
+        }
+      },
+      timeout,
+    );
 
-    it("reads 1 MiB from the middle", async () => {
-      const start = Math.floor(size / 2) - 12_345;
-      const length = Math.min(MiB, size - start);
-      expect(await expectStreamAt(ctx.api.read(path, { start, length }), start)).toBe(length);
-    }, timeout);
+    it(
+      "reads 1 MiB from the middle",
+      async () => {
+        const start = Math.floor(size / 2) - 12_345;
+        const length = Math.min(MiB, size - start);
+        expect(await expectStreamAt(ctx.api.read(path, { start, length }), start)).toBe(length);
+      },
+      timeout,
+    );
 
-    it("reads the last 1000 bytes", async () => {
-      const start = size - 1000;
-      expect(await expectStreamAt(ctx.api.read(path, { start }), start)).toBe(1000);
-    }, timeout);
+    it(
+      "reads the last 1000 bytes",
+      async () => {
+        const start = size - 1000;
+        expect(await expectStreamAt(ctx.api.read(path, { start }), start)).toBe(1000);
+      },
+      timeout,
+    );
 
-    it("clamps a length that runs past the end", async () => {
-      const start = size - 10;
-      expect(await expectStreamAt(ctx.api.read(path, { start, length: MiB }), start)).toBe(10);
-    }, timeout);
+    it(
+      "clamps a length that runs past the end",
+      async () => {
+        const start = size - 10;
+        expect(await expectStreamAt(ctx.api.read(path, { start, length: MiB }), start)).toBe(10);
+      },
+      timeout,
+    );
 
-    it("reads nothing from a start past the end", async () => {
-      expect((await collectStream(ctx.api.read(path, { start: size + 1 }))).length).toBe(0);
-    }, timeout);
+    it(
+      "reads nothing from a start past the end",
+      async () => {
+        expect((await collectStream(ctx.api.read(path, { start: size + 1 }))).length).toBe(0);
+      },
+      timeout,
+    );
 
-    it("stops early without error, and the file still reads", async () => {
-      for await (const chunk of ctx.api.read(path)) {
-        expect(chunk.length).toBeGreaterThan(0);
-        break;
-      }
-      const start = size - 64;
-      expect(await expectStreamAt(ctx.api.read(path, { start }), start)).toBe(64);
-    }, timeout);
+    it(
+      "stops early without error, and the file still reads",
+      async () => {
+        for await (const chunk of ctx.api.read(path)) {
+          expect(chunk.length).toBeGreaterThan(0);
+          break;
+        }
+        const start = size - 64;
+        expect(await expectStreamAt(ctx.api.read(path, { start }), start)).toBe(64);
+      },
+      timeout,
+    );
 
     it(
       "copies the file, and removing the copy keeps the original",

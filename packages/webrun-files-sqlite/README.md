@@ -1,16 +1,18 @@
 # @statewalker/webrun-files-sqlite
 
-A `FilesApi` whose whole state is one table in the [SQLite Archive](https://sqlite.org/sqlar.html)
-(SQLAR) format.
+Two `FilesApi` implementations over SQLite, sharing one small SQL port with drivers for
+`node:sqlite`, Durable Object storage (`ctx.storage.sql`) and Cloudflare D1.
 
-## Overview
+| | `SqliteFilesApi` | `SqlarFilesApi` |
+| --- | --- | --- |
+| Storage | paths → contents → blocks of ≤ 1 MiB | one row per file, [SQLite Archive](https://sqlite.org/sqlar.html) format |
+| File size | unbounded; streamed block by block | one blob, read and written whole |
+| Durable Objects / D1 | yes — every row stays under the 2 MB limit | only files whose stored row is under 2 MB |
+| Readable by `sqlite3 -A` | no | yes |
+| Identical content | stored once, shared by every path | stored per path |
 
-- **One portable file.** The archive is an ordinary SQLite database, readable by `sqlite3 -A`,
-  `sqlar` and `sqlarfs`.
-- **Any SQLite.** A two-method SQL port with drivers for `node:sqlite`, Durable Object storage
-  (`ctx.storage.sql`) and Cloudflare D1. Handles are injected; the package imports none of them.
-- **Compressed.** Content is stored as zlib-wrapped Deflate when that makes it smaller, plaintext
-  otherwise, exactly as the format specifies.
+Use `SqliteFilesApi` by default, and `SqlarFilesApi` where the archive must be portable to other
+SQLAR tools, in a runtime without a row limit (Node, Deno, Bun, a browser SQLite).
 
 ## Installation
 
@@ -18,7 +20,63 @@ A `FilesApi` whose whole state is one table in the [SQLite Archive](https://sqli
 npm install @statewalker/webrun-files-sqlite @statewalker/webrun-files
 ```
 
-## Usage
+## SqliteFilesApi
+
+```typescript
+import { DatabaseSync } from "node:sqlite";
+import { NodeSqlDriver, SqliteFilesApi } from "@statewalker/webrun-files-sqlite";
+
+const files = new SqliteFilesApi(new NodeSqlDriver(new DatabaseSync("files.db")));
+await files.init(); // creates fs_paths, fs_files and fs_blocks if missing
+
+await files.write("/video.mp4", response.body); // any (async) iterable of Uint8Array
+for await (const chunk of files.read("/video.mp4", { start: 10_000_000, length: 65_536 })) {
+  // only the block holding this range is fetched and inflated
+}
+```
+
+In a Durable Object: `new SqliteFilesApi(new DoSqlDriver(this.ctx.storage.sql))`.
+
+### How content is stored
+
+- `fs_paths(pid, path UNIQUE, fid, mtime)` — a path points at a content, or is a directory (`fid` NULL).
+- `fs_files(fid, size, compression, hash)` — an immutable content: its uncompressed size, `"none"`
+  or `"deflate"`, and the SHA-256 of its bytes.
+- `fs_blocks(fid, shift, block)`, keyed by `(fid, shift)` — the content cut by uncompressed size
+  into blocks of 64 KiB, 128 KiB, 256 KiB, 512 KiB, then 1 MiB each; `shift` is the block's offset
+  in the uncompressed content. Each block of a `deflate` content is its own zlib stream, so a range
+  read inflates only the blocks it touches.
+
+`copy` adds path rows pointing at the same content; a write whose bytes match an existing content
+(same SHA-256, size and compression) shares it too. A content and its blocks are deleted when the
+last path pointing at it is removed or overwritten.
+
+### Streaming
+
+`write` pulls the source only while it builds the current block and stores each block before
+pulling for the next; `read` fetches a block only when its consumer asks for bytes beyond the
+previous one. Memory is bounded by one block plus one source chunk, and the tests measure both
+bounds. An `AbortSignal` passed to `read` is checked before every block.
+
+### Options
+
+| Option | Default | |
+| --- | --- | --- |
+| `compression` | `webDeflateCodec()` where `CompressionStream` exists, else none | `null` stores uncompressed; `pakoDeflateCodec(pako)` for runtimes without Compression Streams |
+| `tablePrefix` | `"fs_"` | several file systems in one database |
+| `minBlockSize` / `maxBlockSize` | 64 KiB / 1 MiB | `maxBlockSize` is capped at 1.5 MiB to stay under the 2 MB row limit |
+
+### Semantics worth knowing
+
+- `copy` and `move` replace the target's subtree rather than merging into it, and throw when one
+  path contains the other.
+- A write is invisible until complete: a failing source leaves the previous content in place.
+- A read whose content is removed underneath it throws `changed during read`.
+- No transactions (Durable Objects and D1 reject `BEGIN`); every multi-step operation is ordered so
+  concurrent calls cannot delete content still in use. A process killed mid-write can leave an
+  unreferenced content behind.
+
+## SqlarFilesApi
 
 ```typescript
 import { DatabaseSync } from "node:sqlite";
@@ -69,7 +127,7 @@ const files = new SqlarFilesApi(driver, { codec: pakoCodec(pako) });
 All codecs read and write the same zlib format, so an archive written with one is read by another.
 Inputs shorter than `minSize` (64 bytes by default) are stored without attempting compression.
 
-## How entries are stored
+### How entries are stored
 
 | Entry | `name` | `sz` | `data` |
 | --- | --- | --- | --- |
@@ -82,7 +140,7 @@ Inputs shorter than `minSize` (64 bytes by default) are stored without attemptin
 tools without directory rows still behave as trees: a path that is only a prefix of other names is a
 directory.
 
-### Symlinks
+#### Symlinks
 
 `FileKind` has no symlink, so `stats`, `exists`, `read` and `list` follow links the way POSIX
 `stat()` does. A dangling link, or a chain of more than 8, behaves as a missing path. `remove`,
@@ -93,11 +151,11 @@ await files.symlink("/latest.js", "./v2/index.js");
 await files.readlink("/latest.js"); // "./v2/index.js"
 ```
 
-## Limitations
+### Limitations
 
 - A file is one blob: `write` buffers its content, `read` inflates it whole and yields one chunk.
 - On Durable Objects and D1 a row may not exceed 2 MB, so the *stored* (possibly compressed) size
-  of one file is capped there. Larger writes fail with the runtime's error.
+  of one file is capped there. Use `SqliteFilesApi` in those runtimes.
 - Multi-row mutations (`copy`, `move`, `remove` of a tree) are not wrapped in a transaction.
 - Only the final path component is resolved through symlinks.
 
