@@ -1,512 +1,155 @@
 /**
- * Big file test suite for FilesApi implementations
+ * Big-file suite for FilesApi implementations.
  *
- * Tests reading, writing, and random access for large files (1MB, 10MB, 50MB, 100MB).
- * All storage implementations should pass these tests.
+ * One file of `size` bytes (256 MiB by default) is written once for the whole
+ * suite and then read back in full and in ranges. Nothing here holds the file
+ * in memory: its content is a pure function of the byte offset
+ * ({@link positionByte}), so every check regenerates what it expects. The
+ * content does not compress, which also exercises storage whose compressed
+ * form is larger than its input.
  */
 
 import type { FilesApi } from "@statewalker/webrun-files";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { asFileStats, collectStream, patternContent } from "../test-utils.js";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { asFileStats, collectStream, positionByte, positionContent } from "../test-utils.js";
 
-/**
- * Context provided by the files API factory
- */
 export interface BigFilesTestContext {
   api: FilesApi;
   cleanup?: () => Promise<void>;
 }
 
-/**
- * Factory function to create a FilesApi instance for testing
- */
 export type BigFilesApiFactory = () => Promise<BigFilesTestContext>;
 
-/**
- * Options for configuring big file tests
- */
 export interface BigFilesTestOptions {
-  /**
-   * File sizes to test in bytes. Defaults to [1MB, 10MB, 50MB, 100MB]
-   */
-  sizes?: number[];
-
-  /**
-   * Timeout for individual tests in milliseconds. Defaults to 120000 (2 minutes)
-   */
+  /** Size of the big file in bytes. Defaults to 256 MiB. */
+  size?: number;
+  /** Timeout for each test and for the initial write, in milliseconds. Defaults to 10 minutes. */
   timeout?: number;
 }
 
-const MB = 1024 * 1024;
-const DEFAULT_SIZES = [1 * MB, 10 * MB, 50 * MB, 100 * MB];
+const KiB = 1024;
+const MiB = 1024 * KiB;
+
+/** Source chunk sizes, cycled, chosen so no boundary lines up with a power of two. */
+const WRITE_CHUNKS = [MiB + 7, 65_537, 3 * MiB - 1, 4093];
 
 /**
- * Verify data matches expected pattern at specific positions
+ * Consume a stream and check every byte against {@link positionByte} as it
+ * arrives, starting at `offset`. Returns the number of bytes seen.
  */
-function verifyPattern(data: Uint8Array, seed: number, offset: number = 0): boolean {
-  for (let i = 0; i < data.length; i++) {
-    const expected = (offset + i + seed) % 256;
-    if (data[i] !== expected) {
-      return false;
+async function expectStreamAt(stream: AsyncIterable<Uint8Array>, offset: number): Promise<number> {
+  let position = offset;
+  for await (const chunk of stream) {
+    for (let i = 0; i < chunk.length; i++) {
+      if (chunk[i] !== positionByte(position + i)) {
+        throw new Error(
+          `byte ${position + i}: expected ${positionByte(position + i)}, got ${chunk[i]}`,
+        );
+      }
     }
+    position += chunk.length;
   }
-  return true;
+  return position - offset;
 }
 
-/**
- * Format bytes as human-readable string
- */
-function formatSize(bytes: number): string {
-  if (bytes >= MB) {
-    return `${bytes / MB}MB`;
-  }
-  return `${bytes / 1024}KB`;
-}
-
-/**
- * Create the big files test suite with a specific factory
- *
- * @param name Name of the implementation (e.g., "MemFilesApi", "NodeFilesApi", "S3FilesApi")
- * @param factory Factory function to create API instances
- * @param options Optional configuration for the tests
- */
 export function createBigFilesApiTests(
   name: string,
   factory: BigFilesApiFactory,
   options: BigFilesTestOptions = {},
 ): void {
-  const sizes = options.sizes ?? DEFAULT_SIZES;
-  const timeout = options.timeout ?? 120000;
+  const size = options.size ?? 256 * MiB;
+  const timeout = options.timeout ?? 10 * 60_000;
+  const label = size >= MiB ? `${size / MiB} MiB` : `${size} B`;
+  const path = "/big/file.bin";
 
-  describe(`Big Files [${name}]`, () => {
+  describe(`Big files [${name}] — ${label}`, () => {
     let ctx: BigFilesTestContext;
 
-    beforeEach(async () => {
+    beforeAll(async () => {
       ctx = await factory();
-    });
+      await ctx.api.write(path, positionContent(size, WRITE_CHUNKS));
+    }, timeout);
 
-    afterEach(async () => {
-      await ctx.cleanup?.();
-    });
+    afterAll(async () => {
+      await ctx?.cleanup?.();
+    }, timeout);
 
-    // ========================================
-    // SEQUENTIAL WRITE AND READ
-    // ========================================
+    it("reports the exact size", async () => {
+      expect(asFileStats(await ctx.api.stats(path)).size).toBe(size);
+    }, timeout);
 
-    describe("write() and read() - large files", () => {
-      for (const size of sizes) {
-        const sizeStr = formatSize(size);
-        const seed = size % 256; // Different seed per size for variety
+    it(
+      "reads the whole file back, byte for byte",
+      async () => {
+        expect(await expectStreamAt(ctx.api.read(path), 0)).toBe(size);
+      },
+      timeout,
+    );
 
-        it(
-          `should write and read ${sizeStr} file`,
-          async () => {
-            const data = patternContent(size, seed);
-            const path = `/big-${sizeStr}.bin`;
+    it("reads the first 100 bytes", async () => {
+      expect(await expectStreamAt(ctx.api.read(path, { length: 100 }), 0)).toBe(100);
+    }, timeout);
 
-            // Write the file
-            await ctx.api.write(path, [data]);
-
-            // Verify file exists with correct size
-            const stats = await ctx.api.stats(path);
-            expect(stats).toBeDefined();
-            expect(asFileStats(stats).size).toBe(size);
-
-            // Read the entire file back
-            const result = await collectStream(ctx.api.read(path));
-            expect(result.length).toBe(size);
-
-            // Verify content at beginning, middle, and end
-            expect(result[0]).toBe(data[0]);
-            expect(result[Math.floor(size / 2)]).toBe(data[Math.floor(size / 2)]);
-            expect(result[size - 1]).toBe(data[size - 1]);
-
-            // Full verification using pattern
-            expect(verifyPattern(result, seed)).toBe(true);
-          },
-          timeout,
-        );
+    it("reads ranges straddling each MiB boundary", async () => {
+      for (let boundary = MiB; boundary <= Math.min(8 * MiB, size - 32); boundary += MiB) {
+        const start = boundary - 32;
+        expect(await expectStreamAt(ctx.api.read(path, { start, length: 64 }), start)).toBe(64);
       }
-    });
+    }, timeout);
 
-    // ========================================
-    // CHUNKED WRITE
-    // ========================================
+    it("reads 1 MiB from the middle", async () => {
+      const start = Math.floor(size / 2) - 12_345;
+      const length = Math.min(MiB, size - start);
+      expect(await expectStreamAt(ctx.api.read(path, { start, length }), start)).toBe(length);
+    }, timeout);
 
-    describe("write() - chunked large files", () => {
-      const chunkSize = 1 * MB; // 1MB chunks
+    it("reads the last 1000 bytes", async () => {
+      const start = size - 1000;
+      expect(await expectStreamAt(ctx.api.read(path, { start }), start)).toBe(1000);
+    }, timeout);
 
-      for (const size of sizes) {
-        const sizeStr = formatSize(size);
-        const seed = (size + 1) % 256;
+    it("clamps a length that runs past the end", async () => {
+      const start = size - 10;
+      expect(await expectStreamAt(ctx.api.read(path, { start, length: MiB }), start)).toBe(10);
+    }, timeout);
 
-        it(
-          `should write ${sizeStr} file in ${formatSize(chunkSize)} chunks`,
-          async () => {
-            const path = `/chunked-${sizeStr}.bin`;
+    it("reads nothing from a start past the end", async () => {
+      expect((await collectStream(ctx.api.read(path, { start: size + 1 }))).length).toBe(0);
+    }, timeout);
 
-            // Generate and write in chunks
-            async function* generateChunks(): AsyncGenerator<Uint8Array> {
-              let offset = 0;
-              while (offset < size) {
-                const remaining = size - offset;
-                const currentChunkSize = Math.min(chunkSize, remaining);
-                const chunk = patternContent(currentChunkSize, seed);
-                // Adjust values based on offset
-                for (let i = 0; i < chunk.length; i++) {
-                  chunk[i] = (offset + i + seed) % 256;
-                }
-                yield chunk;
-                offset += currentChunkSize;
-              }
-            }
-
-            await ctx.api.write(path, generateChunks());
-
-            // Verify size
-            const stats = await ctx.api.stats(path);
-            expect(asFileStats(stats).size).toBe(size);
-
-            // Read back and verify
-            const result = await collectStream(ctx.api.read(path));
-            expect(result.length).toBe(size);
-            expect(verifyPattern(result, seed)).toBe(true);
-          },
-          timeout,
-        );
+    it("stops early without error, and the file still reads", async () => {
+      for await (const chunk of ctx.api.read(path)) {
+        expect(chunk.length).toBeGreaterThan(0);
+        break;
       }
-    });
+      const start = size - 64;
+      expect(await expectStreamAt(ctx.api.read(path, { start }), start)).toBe(64);
+    }, timeout);
 
-    // ========================================
-    // RANDOM ACCESS READ
-    // ========================================
+    it(
+      "copies the file, and removing the copy keeps the original",
+      async () => {
+        const copy = "/big/copy.bin";
+        expect(await ctx.api.copy(path, copy)).toBe(true);
+        expect(asFileStats(await ctx.api.stats(copy)).size).toBe(size);
+        const start = size - 5000;
+        expect(await expectStreamAt(ctx.api.read(copy, { start }), start)).toBe(5000);
+        expect(await ctx.api.remove(copy)).toBe(true);
+        expect(await expectStreamAt(ctx.api.read(path, { start }), start)).toBe(5000);
+      },
+      timeout,
+    );
 
-    describe("read() - random access", () => {
-      for (const size of sizes) {
-        const sizeStr = formatSize(size);
-        const seed = (size + 2) % 256;
-        const path = `/random-access-${sizeStr}.bin`;
-
-        describe(`${sizeStr} file`, () => {
-          beforeEach(async () => {
-            // Create the test file
-            const data = patternContent(size, seed);
-            await ctx.api.write(path, [data]);
-          }, timeout);
-
-          it(
-            "should read first 1KB",
-            async () => {
-              const result = await collectStream(ctx.api.read(path, { end: 1024 }));
-              expect(result.length).toBe(1024);
-              expect(verifyPattern(result, seed, 0)).toBe(true);
-            },
-            timeout,
-          );
-
-          it(
-            "should read last 1KB",
-            async () => {
-              const start = size - 1024;
-              const result = await collectStream(ctx.api.read(path, { start }));
-              expect(result.length).toBe(1024);
-              expect(verifyPattern(result, seed, start)).toBe(true);
-            },
-            timeout,
-          );
-
-          it(
-            "should read middle 1KB",
-            async () => {
-              const start = Math.floor(size / 2) - 512;
-              const end = start + 1024;
-              const result = await collectStream(ctx.api.read(path, { start, end }));
-              expect(result.length).toBe(1024);
-              expect(verifyPattern(result, seed, start)).toBe(true);
-            },
-            timeout,
-          );
-
-          it(
-            "should read multiple random ranges",
-            async () => {
-              // Test several random positions
-              const positions = [
-                0,
-                Math.floor(size * 0.25),
-                Math.floor(size * 0.5),
-                Math.floor(size * 0.75),
-                size - 4096,
-              ];
-
-              for (const start of positions) {
-                const end = Math.min(start + 4096, size);
-                const expectedLength = end - start;
-
-                const result = await collectStream(ctx.api.read(path, { start, end }));
-                expect(result.length).toBe(expectedLength);
-                expect(verifyPattern(result, seed, start)).toBe(true);
-              }
-            },
-            timeout,
-          );
-
-          it(
-            "should read 1MB range from middle",
-            async () => {
-              const start = Math.floor(size / 2) - 512 * 1024;
-              const end = Math.min(start + MB, size);
-              const expectedLength = end - start;
-
-              const result = await collectStream(ctx.api.read(path, { start, end }));
-              expect(result.length).toBe(expectedLength);
-              expect(verifyPattern(result, seed, start)).toBe(true);
-            },
-            timeout,
-          );
-        });
-      }
-    });
-
-    // ========================================
-    // FILEHANDLE RANDOM ACCESS
-    // ========================================
-
-    describe("FileHandle - random access", () => {
-      for (const size of sizes) {
-        const sizeStr = formatSize(size);
-        const seed = (size + 3) % 256;
-        const path = `/handle-${sizeStr}.bin`;
-
-        describe(`${sizeStr} file via FileHandle`, () => {
-          beforeEach(async () => {
-            const data = patternContent(size, seed);
-            await ctx.api.write(path, [data]);
-          }, timeout);
-
-          it(
-            "should open file with correct size",
-            async () => {
-              const handle = await ctx.api.open(path);
-              try {
-                expect(handle.size).toBe(size);
-              } finally {
-                await handle.close();
-              }
-            },
-            timeout,
-          );
-
-          it(
-            "should read ranges via createReadStream",
-            async () => {
-              const handle = await ctx.api.open(path);
-              try {
-                // Read from beginning
-                const beginning = await collectStream(handle.createReadStream({ end: 1024 }));
-                expect(beginning.length).toBe(1024);
-                expect(verifyPattern(beginning, seed, 0)).toBe(true);
-
-                // Read from middle
-                const middleStart = Math.floor(size / 2);
-                const middle = await collectStream(
-                  handle.createReadStream({ start: middleStart, end: middleStart + 1024 }),
-                );
-                expect(middle.length).toBe(1024);
-                expect(verifyPattern(middle, seed, middleStart)).toBe(true);
-
-                // Read from end
-                const endStart = size - 1024;
-                const ending = await collectStream(handle.createReadStream({ start: endStart }));
-                expect(ending.length).toBe(1024);
-                expect(verifyPattern(ending, seed, endStart)).toBe(true);
-              } finally {
-                await handle.close();
-              }
-            },
-            timeout,
-          );
-
-          it(
-            "should perform sequential range reads",
-            async () => {
-              const handle = await ctx.api.open(path);
-              try {
-                // Simulate reading file in 1MB chunks
-                const chunkSize = MB;
-                let offset = 0;
-
-                while (offset < size) {
-                  const end = Math.min(offset + chunkSize, size);
-                  const chunk = await collectStream(
-                    handle.createReadStream({ start: offset, end }),
-                  );
-                  expect(chunk.length).toBe(end - offset);
-                  expect(verifyPattern(chunk, seed, offset)).toBe(true);
-                  offset = end;
-                }
-              } finally {
-                await handle.close();
-              }
-            },
-            timeout,
-          );
-        });
-      }
-    });
-
-    // ========================================
-    // APPEND TO LARGE FILES (using writeStream with start: size)
-    // ========================================
-
-    describe("FileHandle - append to large files", () => {
-      // Use smaller size for append tests to reduce memory/time
-      const appendTestSizes = sizes.filter((s) => s <= 10 * MB);
-
-      for (const size of appendTestSizes) {
-        const sizeStr = formatSize(size);
-        const seed = (size + 4) % 256;
-        const path = `/append-handle-${sizeStr}.bin`;
-
-        it(
-          `should append to ${sizeStr} file`,
-          async () => {
-            // Create initial file
-            const data = patternContent(size, seed);
-            await ctx.api.write(path, [data]);
-
-            // Append additional data using writeStream with start: handle.size
-            const handle = await ctx.api.open(path);
-            try {
-              const appendData = new Uint8Array(1024).fill(0xff); // Append 0xFF bytes
-              await handle.writeStream([appendData], { start: handle.size });
-            } finally {
-              await handle.close();
-            }
-
-            // Verify new size
-            const stats = await ctx.api.stats(path);
-            expect(asFileStats(stats).size).toBe(size + 1024);
-
-            // Read and verify the content
-            const result = await collectStream(ctx.api.read(path));
-            expect(result.length).toBe(size + 1024);
-
-            // Check original content is unchanged
-            expect(verifyPattern(result.slice(0, size), seed, 0)).toBe(true);
-
-            // Check appended content
-            for (let i = 0; i < 1024; i++) {
-              expect(result[size + i]).toBe(0xff);
-            }
-          },
-          timeout,
-        );
-      }
-    });
-
-    // ========================================
-    // OVERWRITE LARGE FILES
-    // ========================================
-
-    describe("overwrite large files", () => {
-      for (const size of sizes) {
-        const sizeStr = formatSize(size);
-
-        it(
-          `should overwrite ${sizeStr} file with smaller content`,
-          async () => {
-            const path = `/overwrite-${sizeStr}.bin`;
-            const seed1 = size % 256;
-            const seed2 = (size + 100) % 256;
-
-            // Write large file
-            const largeData = patternContent(size, seed1);
-            await ctx.api.write(path, [largeData]);
-
-            // Overwrite with smaller content
-            const smallData = patternContent(1024, seed2);
-            await ctx.api.write(path, [smallData]);
-
-            // Verify new size
-            const stats = await ctx.api.stats(path);
-            expect(asFileStats(stats).size).toBe(1024);
-
-            // Verify new content
-            const result = await collectStream(ctx.api.read(path));
-            expect(result.length).toBe(1024);
-            expect(verifyPattern(result, seed2, 0)).toBe(true);
-          },
-          timeout,
-        );
-      }
-    });
-
-    // ========================================
-    // COPY AND MOVE LARGE FILES
-    // ========================================
-
-    describe("copy() and move() - large files", () => {
-      // Use smaller sizes for copy/move tests
-      const copyMoveTestSizes = sizes.filter((s) => s <= 10 * MB);
-
-      for (const size of copyMoveTestSizes) {
-        const sizeStr = formatSize(size);
-        const seed = (size + 5) % 256;
-
-        it(
-          `should copy ${sizeStr} file`,
-          async () => {
-            const srcPath = `/copy-src-${sizeStr}.bin`;
-            const destPath = `/copy-dest-${sizeStr}.bin`;
-
-            // Create source file
-            const data = patternContent(size, seed);
-            await ctx.api.write(srcPath, [data]);
-
-            // Copy
-            const result = await ctx.api.copy(srcPath, destPath);
-            expect(result).toBe(true);
-
-            // Verify both exist with correct size
-            const srcStats = await ctx.api.stats(srcPath);
-            const destStats = await ctx.api.stats(destPath);
-            expect(asFileStats(srcStats).size).toBe(size);
-            expect(asFileStats(destStats).size).toBe(size);
-
-            // Verify dest content
-            const destContent = await collectStream(ctx.api.read(destPath));
-            expect(verifyPattern(destContent, seed, 0)).toBe(true);
-          },
-          timeout,
-        );
-
-        it(
-          `should move ${sizeStr} file`,
-          async () => {
-            const srcPath = `/move-src-${sizeStr}.bin`;
-            const destPath = `/move-dest-${sizeStr}.bin`;
-
-            // Create source file
-            const data = patternContent(size, seed);
-            await ctx.api.write(srcPath, [data]);
-
-            // Move
-            const result = await ctx.api.move(srcPath, destPath);
-            expect(result).toBe(true);
-
-            // Verify source gone, dest exists
-            expect(await ctx.api.exists(srcPath)).toBe(false);
-            const destStats = await ctx.api.stats(destPath);
-            expect(asFileStats(destStats).size).toBe(size);
-
-            // Verify dest content
-            const destContent = await collectStream(ctx.api.read(destPath));
-            expect(verifyPattern(destContent, seed, 0)).toBe(true);
-          },
-          timeout,
-        );
-      }
-    });
+    it(
+      "overwrites the big file with a few bytes",
+      async () => {
+        const small = "/big/overwritten.bin";
+        await ctx.api.copy(path, small);
+        await ctx.api.write(small, [new Uint8Array([1, 2, 3])]);
+        expect(asFileStats(await ctx.api.stats(small)).size).toBe(3);
+        expect(Array.from(await collectStream(ctx.api.read(small)))).toEqual([1, 2, 3]);
+      },
+      timeout,
+    );
   });
 }

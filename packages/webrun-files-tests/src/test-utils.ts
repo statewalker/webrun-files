@@ -90,3 +90,35 @@ export async function collectGenerator<T>(gen: AsyncIterable<T>): Promise<T[]> {
   }
   return results;
 }
+
+/**
+ * The byte stored at `position` in the big-file suite's content: the low byte
+ * of a 32-bit integer hash of the offset. Cheap, random-access and not
+ * compressible, so expected content never has to be held in memory.
+ */
+export function positionByte(position: number): number {
+  let h = position >>> 0;
+  h = Math.imul(h ^ (h >>> 16), 0x7feb352d);
+  h = Math.imul(h ^ (h >>> 15), 0x846ca68b);
+  return (h ^ (h >>> 16)) & 0xff;
+}
+
+/**
+ * Lazily generate `size` bytes of {@link positionByte} content, in chunks
+ * whose sizes cycle through `chunkSizes`. Each chunk is created when pulled.
+ */
+export async function* positionContent(
+  size: number,
+  chunkSizes: number[] = [64 * 1024],
+  start = 0,
+): AsyncGenerator<Uint8Array> {
+  let position = start;
+  const end = start + size;
+  for (let i = 0; position < end; i++) {
+    const length = Math.min(chunkSizes[i % chunkSizes.length], end - position);
+    const chunk = new Uint8Array(length);
+    for (let j = 0; j < length; j++) chunk[j] = positionByte(position + j);
+    position += length;
+    yield chunk;
+  }
+}
