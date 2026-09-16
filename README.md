@@ -22,6 +22,7 @@ npm install @statewalker/webrun-files-node   # Node.js filesystem
 npm install @statewalker/webrun-files-browser # Browser File System Access API
 npm install @statewalker/webrun-files-s3        # AWS S3 / S3-compatible
 npm install @statewalker/webrun-files-sqlite    # SQLite: node:sqlite, Durable Objects, D1
+npm install @statewalker/webrun-files-http      # Serve / consume a FilesApi over HTTP (fetch)
 npm install @statewalker/webrun-files-composite # Mount multiple backends together
 ```
 
@@ -214,6 +215,28 @@ await files.init();
 const doFiles = new SqliteFilesApi(new DoSqlDriver(this.ctx.storage));
 ```
 
+### [@statewalker/webrun-files-http](./packages/webrun-files-http)
+
+Serves any `FilesApi` over HTTP and consumes it as a `FilesApi` again, with only `fetch` primitives
+on both sides. The server stub is a `(Request) => Promise<Response>` handler; the client stub takes
+any `fetch`, including the server stub itself.
+
+- Each call is its own request: `GET` with `Range`, `HEAD`, `PUT`, `MKCOL`/`COPY`/`MOVE`/`DELETE`
+  with a `POST ?op=` fallback, and paged listings resumed with `after`.
+- Reads and streamed uploads use real streams, with backpressure. Chunked, S3-style uploads cover
+  browsers that cannot stream request bodies; their parts are staged in a separate `FilesApi`.
+- `onRequest` / `onResponse` hooks and a per-request `fs` for authentication, CORS and tenancy.
+
+```typescript
+import { newClientStub, newServerStub } from '@statewalker/webrun-files-http';
+
+// Server: mount in Hono, Bun, Deno, a Worker…
+const handler = newServerStub({ fs: new NodeFilesApi({ rootDir: '/data' }), basePath: '/api/files' });
+
+// Client
+const files = await newClientStub({ baseUrl: 'https://example.com/api/files' });
+```
+
 ### [@statewalker/webrun-files-composite](./packages/webrun-files-composite)
 
 Composes multiple `FilesApi` instances into a unified virtual filesystem with mount points, base-path remapping, and access guards.
@@ -282,7 +305,8 @@ Build before testing: packages consume each other — including the shared suite
 `webrun-files-tests` — through their built `dist/`, so a change in one package's `src/` is invisible
 to the others until it is rebuilt.
 
-`pnpm test` includes the 256 MiB big-file suite for every in-process backend. It takes well under a
+`pnpm test` includes the 256 MiB big-file suite for every in-process backend, and for the HTTP stubs
+both directly and over a real `@hono/node-server` connection. It takes well under a
 minute per package, and the `webrun-files-sqlite` run peaks at about 2.5 GB of memory (its
 `SqlarFilesApi` holds whole files by design).
 
