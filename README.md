@@ -1,6 +1,6 @@
 # webrun-files
 
-A minimalistic cross-platform files API for JavaScript and TypeScript applications. This library provides a unified interface for file system operations that works seamlessly across Node.js, browser, and cloud environments.
+A minimalistic cross-platform files API for JavaScript and TypeScript applications. This library provides a unified interface for file system operations that works seamlessly across Node.js, browser, cloud, and SQLite (including Cloudflare Durable Objects and D1) environments.
 
 ## Why This Library?
 
@@ -21,6 +21,7 @@ npm install @statewalker/webrun-files-mem    # In-memory (testing, browser)
 npm install @statewalker/webrun-files-node   # Node.js filesystem
 npm install @statewalker/webrun-files-browser # Browser File System Access API
 npm install @statewalker/webrun-files-s3        # AWS S3 / S3-compatible
+npm install @statewalker/webrun-files-sqlite    # SQLite: node:sqlite, Durable Objects, D1
 npm install @statewalker/webrun-files-composite # Mount multiple backends together
 ```
 
@@ -47,7 +48,8 @@ for await (const chunk of files.read('/hello.txt')) {
 
 // Check what's in a directory
 for await (const entry of files.list('/')) {
-  console.log(entry.name, entry.kind, entry.size);
+  // `size` exists on files only - narrow on `kind` first
+  console.log(entry.name, entry.kind, entry.kind === 'file' ? entry.size : '');
 }
 ```
 
@@ -57,8 +59,11 @@ All implementations provide these methods:
 
 ```typescript
 interface FilesApi {
-  // Read file content as async iterable of chunks
-  read(path: string, options?: { start?: number; length?: number }): AsyncIterable<Uint8Array>;
+  // Read file content as async iterable of chunks (a missing path yields nothing)
+  read(
+    path: string,
+    options?: { start?: number; length?: number; signal?: AbortSignal },
+  ): AsyncIterable<Uint8Array>;
 
   // Write content to file (creates parent directories)
   write(path: string, content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>): Promise<void>;
@@ -107,12 +112,9 @@ known to be present. Note that a zero-byte file is the file variant with
 
 ## Packages
 
-This repository is the **webrun runtime monorepo**. Alongside the `webrun-files`
-FS family (the `FilesApi` interface and its backends) it hosts the runtime layers
-built on top of them: a signal-driven dataflow graph, an incremental build engine,
-and an on-request module server.
-
-### Files (`FilesApi` and backends)
+This repository holds the `FilesApi` interface, its backends, a composition layer, and the shared
+test suites every backend runs. (The runtime layers once hosted here — dataflow, builder, module
+server — moved to `statewalker/webrun-transform`.)
 
 ### [@statewalker/webrun-files](./packages/webrun-files)
 
@@ -182,6 +184,28 @@ const files = new S3FilesApi({
 });
 ```
 
+### [@statewalker/webrun-files-sqlite](./packages/webrun-files-sqlite)
+
+Two SQLite-backed implementations over one small SQL driver interface, with drivers for `node:sqlite`,
+Cloudflare Durable Object storage and D1.
+
+- `SqliteFilesApi` streams content as fixed-size blocks (1 MiB by default, optionally deflated per
+  block), shares identical content between paths, makes every metadata change one transaction,
+  and stays within the 2 MB row limit of Durable Objects and D1. Files of any size.
+- `SqlarFilesApi` stores each file as one row of a [SQLite Archive](https://sqlite.org/sqlar.html),
+  readable by `sqlite3 -A`. Whole-file reads and writes; for runtimes without a row limit.
+
+```typescript
+import { DatabaseSync } from 'node:sqlite';
+import { DoSqlDriver, NodeSqlDriver, SqliteFilesApi } from '@statewalker/webrun-files-sqlite';
+
+const files = new SqliteFilesApi(new NodeSqlDriver(new DatabaseSync('files.db')));
+await files.init();
+
+// Inside a Durable Object
+const doFiles = new SqliteFilesApi(new DoSqlDriver(this.ctx.storage));
+```
+
 ### [@statewalker/webrun-files-composite](./packages/webrun-files-composite)
 
 Composes multiple `FilesApi` instances into a unified virtual filesystem with mount points, base-path remapping, and access guards.
@@ -207,43 +231,24 @@ Features: longest-prefix mount routing, cross-mount copy/move, mount-point prote
 
 ### [@statewalker/webrun-files-tests](./packages/webrun-files-tests)
 
-Comprehensive test suite for validating `FilesApi` implementations. If you're building your own storage backend, use this to verify correctness.
+The shared test suites every backend here runs (private to the monorepo). Use them to verify a
+custom backend:
 
 ```typescript
-import { createFilesApiTests } from '@statewalker/webrun-files-tests';
+import { createBigFilesApiTests, createFilesApiTests } from '@statewalker/webrun-files-tests';
 
 createFilesApiTests('MyCustomFilesApi', async () => ({
   api: new MyCustomFilesApi(),
   cleanup: async () => { /* cleanup code */ }
 }));
+
+// In a separate test file: one 256 MiB file, streamed in and verified on the fly
+createBigFilesApiTests('MyCustomFilesApi', async () => ({ api: new MyCustomFilesApi() }));
 ```
 
-The suite covers 50+ test cases including basic operations, edge cases, concurrent access, and error handling.
-
-### Runtime (built on `FilesApi`)
-
-#### [@statewalker/webrun-dataflow](./packages/webrun-dataflow)
-
-Signal-driven dataflow graph — forward impact propagation plus a filtered Kahn
-topological sort — with per-cell transaction and per-entry updates stores (and
-in-memory implementations). Turns "something upstream changed" into the minimum
-correct downstream cascade, in dependency order, resumable after failure. Zero
-runtime dependencies.
-
-#### [@statewalker/webrun-builder](./packages/webrun-builder)
-
-Generic, host-agnostic incremental build engine (`BuildEngine<THost>`). Schedules
-signal-driven builders over `@statewalker/webrun-dataflow`, drives file-backed
-update / transaction stores over a `FilesApi`, and detects source changes by
-scanning a project tree (with `.projectignore` support and `sources-removed`
-tombstones). A frontier/convergence scheduler with cooperative yield/checkpoint.
-
-#### [@statewalker/webrun-modules](./packages/webrun-modules)
-
-Runs authored TS/JS apps — and the arbitrary npm modules they import — in the
-browser or Node with no runtime CDN dependency and no install step: packages are
-downloaded, resolved, and transformed on request, then served from a `FilesApi`
-cache as same-origin ESM.
+`createFilesApiTests` registers 69 tests: every `FilesApi` method, path edge cases, concurrency,
+error handling, and runtime checks of the `FileStats` union. `createBigFilesApiTests` adds 11 tests
+of full and range reads, early stops, copy, remove and overwrite on a big file.
 
 ## Cross-repo dependencies
 
@@ -263,6 +268,20 @@ The repository uses pnpm for package management. After cloning:
 pnpm install
 pnpm build
 pnpm test
+```
+
+Build before testing: packages consume each other — including the shared suites in
+`webrun-files-tests` — through their built `dist/`, so a change in one package's `src/` is invisible
+to the others until it is rebuilt.
+
+`pnpm test` includes the 256 MiB big-file suite for every in-process backend. It takes well under a
+minute per package, and the `webrun-files-sqlite` run peaks at about 2.5 GB of memory (its
+`SqlarFilesApi` holds whole files by design).
+
+The S3 backend's tests need Docker and run separately, against a RustFS container:
+
+```bash
+pnpm --filter @statewalker/webrun-files-s3 test:integration
 ```
 
 ## License

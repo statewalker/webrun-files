@@ -1,76 +1,84 @@
 # @statewalker/webrun-files-tests
 
-Comprehensive test suites for validating `FilesApi` implementations. Use this package to ensure your custom storage backend correctly follows the interface contract.
+Shared test suites for `FilesApi` implementations. Every backend in this repository runs them; use
+them to check that a custom backend follows the interface contract.
 
-## Installation
-
-```bash
-pnpm add -D @statewalker/webrun-files-tests vitest
-```
-
-Requires Vitest as a peer dependency.
+This package is private to the monorepo (`"private": true`) and is consumed through
+`workspace:*`. Its suites are Vitest suites: `vitest` is a peer dependency.
 
 ## Test suites
 
-### `createFilesApiTests` — core interface tests
-
-Generates 56+ test cases covering every `FilesApi` method:
+### `createFilesApiTests` — the interface contract
 
 ```typescript
-import { createFilesApiTests } from '@statewalker/webrun-files-tests';
-import { MyCustomFilesApi } from './my-custom-files-api';
+import { createFilesApiTests } from "@statewalker/webrun-files-tests";
+import { MyCustomFilesApi } from "./my-custom-files-api";
 
-createFilesApiTests('MyCustomFilesApi', async () => {
+createFilesApiTests("MyCustomFilesApi", async () => {
   const api = new MyCustomFilesApi();
   return {
     api,
     cleanup: async () => {
       await api.clear();
-    }
+    },
   };
 });
 ```
 
-The factory runs before each test, giving every test a fresh, isolated API instance.
-
-**Test categories:**
+The factory runs before each test, so every test gets a fresh, isolated instance. One call
+registers 69 tests: 57 covering every `FilesApi` method, and the 12 of
+`createFileStatsConformanceTests` (below), which it always includes.
 
 | Category | Tests | What's covered |
 |----------|-------|----------------|
-| write() and read() | 8 | Small text, empty files, multiple chunks, async iterables, overwrite, nested dirs, binary/null bytes, large files, Unicode |
-| read() with options | 6 | Start position, length, ranges, edge cases (length=0, start beyond file) |
+| write() and read() | 9 | Small text, empty files, multiple chunks, async iterables, overwrite, nested dirs, binary/null bytes, a 1 MB file, Unicode |
+| read() with options | 6 | Start position, length, ranges, length 0, start beyond the file, length clamped to the file |
 | stats() | 5 | File stats, directory stats, non-existent paths, size after overwrite, root directory |
-| exists() | 4 | Existing files/directories, non-existent paths, post-removal verification |
-| list() | 7 | Direct children, recursive listing, metadata (kind, size, path), empty dirs, non-existent paths, root listing |
-| remove() | 4 | Files, directories (recursive), non-existent paths, sibling preservation |
-| copy() | 4 | Single files, directories (recursive), non-existent source, overwrite |
+| exists() | 4 | Existing files/directories, non-existent paths, after removal |
+| list() | 7 | Direct children, no duplicates, kind and path, recursive listing, non-existent directory, a file path, the root |
+| remove() | 4 | Files, directories (recursive), non-existent paths, siblings untouched |
+| copy() | 4 | Files, directories (recursive), non-existent source, overwrite |
 | move() | 3 | Files, directories, non-existent source |
 | mkdir() | 3 | Single directory, nested directories, idempotency |
 | Path handling | 6 | Double slashes, missing leading slash, trailing slashes, dot segments, special characters, long paths |
-| Concurrent ops | 3 | Parallel writes, reads, list operations |
-| Error handling | 3 | Reading/removing/stat on non-existent paths |
+| Concurrent operations | 3 | Parallel writes, reads and listings |
+| Error handling | 3 | Reading, removing and `stats()` on non-existent paths |
 
-### `createBigFilesApiTests` — large file tests
+### `createFileStatsConformanceTests` — the `FileStats` union
 
-Tests streaming, chunked writes, and random access for large files:
+`FileStats` is a discriminated union on `kind`. These 12 tests check at runtime that `stats()` and
+`list()` return exactly one variant: a file with numeric `size` and `lastModified` and nothing else,
+a directory with `kind` alone (no `size`, no `lastModified`), a zero-byte file as a file with
+`size: 0`, and `list()` agreeing with `stats()` on every entry. `createFilesApiTests` already runs
+them; call this directly only to run them on their own.
+
+### `createBigFilesApiTests` — big files, streamed
 
 ```typescript
-import { createBigFilesApiTests } from '@statewalker/webrun-files-tests';
+import { createBigFilesApiTests } from "@statewalker/webrun-files-tests";
 
-createBigFilesApiTests('MyCustomFilesApi', async () => ({
-  api: new MyCustomFilesApi(),
-}), {
-  sizes: [1_000_000, 10_000_000],  // 1MB and 10MB (default: 1MB, 10MB, 50MB, 100MB)
-  timeout: 120_000,                 // per-test timeout in ms (default: 120000)
+createBigFilesApiTests("MyCustomFilesApi", async () => ({ api: new MyCustomFilesApi() }), {
+  size: 256 * 1024 * 1024, // default: 256 MiB
+  timeout: 10 * 60_000, // per test and for the initial write; default: 10 minutes
 });
 ```
 
-**Test categories:**
-- Write and read large files with pattern verification
-- Chunked writes via async generators
-- Random-access range reads (first/last/middle 1KB, 1MB ranges)
-- Overwrite large files with smaller content
-- Copy and move large files
+One API instance and one file of `size` bytes are created for the whole suite (`beforeAll`), and
+`cleanup` runs once at the end. The suite never holds the file in memory: its content is
+`positionByte(offset)`, generated as it is written and checked as it is read. That content does not
+compress, so backends that compress are exercised with input that grows.
+
+The file is written in uneven chunks (1 MiB + 7 B, 65 537 B, 3 MiB − 1 B, 4 093 B, cycled) so chunk
+boundaries never line up with a backend's own. The 11 tests check:
+
+- the exact size from `stats()`;
+- a full read, byte for byte;
+- range reads: the first 100 bytes, 64 bytes across each MiB boundary for the first 8 MiB, 1 MiB
+  from the middle, the last 1 000 bytes, a length running past the end (clamped), and a start past
+  the end (nothing);
+- stopping a read after the first chunk, after which the file still reads;
+- `copy` of the big file, a range read of the copy, and `remove` of the copy leaving the original;
+- overwriting a copy of the big file with 3 bytes.
 
 ## Types
 
@@ -90,47 +98,51 @@ interface BigFilesTestContext {
 type BigFilesApiFactory = () => Promise<BigFilesTestContext>;
 
 interface BigFilesTestOptions {
-  sizes?: number[];    // File sizes in bytes (default: [1MB, 10MB, 50MB, 100MB])
-  timeout?: number;    // Per-test timeout in ms (default: 120000)
+  size?: number; // bytes; default 256 MiB
+  timeout?: number; // ms; default 10 minutes
 }
 ```
 
 ## Test utilities
 
-Helper functions for writing additional tests:
-
 ```typescript
 import {
-  encode,           // Convert string to Uint8Array
-  decode,           // Convert Uint8Array to string
-  toBytes,          // Alias for encode
-  fromBytes,        // Alias for decode
-  collectStream,    // Gather async Uint8Array stream into single Uint8Array
-  collectGenerator, // Collect async iterable into array
-  randomBytes,      // Generate random binary data
-  patternContent,   // Generate predictable byte pattern: (i + seed) % 256
-  allBytesContent,  // Generate Uint8Array with all 256 byte values (0–255)
-} from '@statewalker/webrun-files-tests';
+  asFileStats, // Narrow a stats()/list() result to the file variant, or throw a readable error
+  encode, // string → Uint8Array
+  decode, // Uint8Array → string
+  toBytes, // alias of encode
+  fromBytes, // alias of decode
+  collectStream, // async iterable of Uint8Array → one Uint8Array
+  collectGenerator, // async iterable → array
+  randomBytes, // random binary data
+  patternContent, // bytes (i + seed) % 256
+  allBytesContent, // the 256 byte values 0–255
+  positionByte, // the big-file content byte at an offset (a hash of the offset)
+  positionContent, // lazy async generator of positionByte content, in given chunk sizes
+} from "@statewalker/webrun-files-tests";
 ```
+
+`positionContent(size, chunkSizes = [64 KiB], start = 0)` yields `size` bytes starting at offset
+`start`, creating each chunk only when it is pulled — useful for streaming and backpressure tests.
 
 ## Examples
 
 ### Node.js backend
 
 ```typescript
-import { createFilesApiTests } from '@statewalker/webrun-files-tests';
-import { NodeFilesApi } from '@statewalker/webrun-files-node';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { NodeFilesApi } from "@statewalker/webrun-files-node";
+import { createFilesApiTests } from "@statewalker/webrun-files-tests";
 
-createFilesApiTests('NodeFilesApi', async () => {
-  const tempDir = await mkdtemp(join(tmpdir(), 'files-test-'));
+createFilesApiTests("NodeFilesApi", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "files-test-"));
   return {
-    api: new NodeFilesApi({ rootDir: tempDir }),
+    api: new NodeFilesApi({ rootDir }),
     cleanup: async () => {
-      await rm(tempDir, { recursive: true, force: true });
-    }
+      await rm(rootDir, { recursive: true, force: true });
+    },
   };
 });
 ```
@@ -138,13 +150,15 @@ createFilesApiTests('NodeFilesApi', async () => {
 ### In-memory backend
 
 ```typescript
-import { createFilesApiTests } from '@statewalker/webrun-files-tests';
-import { MemFilesApi } from '@statewalker/webrun-files-mem';
+import { MemFilesApi } from "@statewalker/webrun-files-mem";
+import { createBigFilesApiTests, createFilesApiTests } from "@statewalker/webrun-files-tests";
 
-createFilesApiTests('MemFilesApi', async () => ({
-  api: new MemFilesApi(),
-}));
+createFilesApiTests("MemFilesApi", async () => ({ api: new MemFilesApi() }));
+createBigFilesApiTests("MemFilesApi", async () => ({ api: new MemFilesApi() }));
 ```
+
+Keep `createBigFilesApiTests` in its own test file (this repository uses `tests/big-files.test.ts`):
+Vitest runs test files in parallel, and a 256 MiB suite competes for CPU and memory.
 
 ## License
 

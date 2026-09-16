@@ -115,7 +115,8 @@ class BrowserFilesApi implements FilesApi {
 ### Helper Functions
 
 ```typescript
-// Opens a directory picker and returns a BrowserFilesApi instance
+// Returns a BrowserFilesApi for the stored handle, or for one chosen in a directory picker;
+// throws if permission is denied or the directory is no longer accessible
 function openBrowserFilesApi(options?: OpenBrowserFilesApiOptions): Promise<BrowserFilesApi>;
 
 interface OpenBrowserFilesApiOptions {
@@ -143,7 +144,7 @@ function verifyPermission(
 
 ## Native Move Support
 
-The `move()` method attempts to use the browser's native [`FileSystemHandle.move()`](https://developer.mozilla.org/en-US/docs/Web/API/FileSystemHandle/move) when available (Chrome 110+, Edge 110+). This provides an atomic, in-place rename/move without copying file data. On older browsers or polyfills that lack native `move()`, the method falls back to copy-then-delete.
+The `move()` method attempts to use the browser's native [`FileSystemHandle.move()`](https://developer.mozilla.org/en-US/docs/Web/API/FileSystemHandle/move) when available (Chrome 110+, Edge 110+). This provides an atomic, in-place rename/move without copying file data. On older browsers or polyfills that lack native `move()`, or when the native call throws, the method falls back to copy-then-delete, which is not atomic.
 
 ## Browser Support
 
@@ -169,7 +170,7 @@ When working with persistent directory handles:
 ```typescript
 import { verifyPermission, isHandlerAccessible } from '@statewalker/webrun-files-browser';
 
-// Check if we have read-write permission
+// Check read-write permission, prompting the user if it is not already granted (needs a user gesture)
 const hasPermission = await verifyPermission(directoryHandle, true);
 
 // Check if the directory still exists and is accessible

@@ -11,7 +11,7 @@
 
 import { CreateBucketCommand, S3Client } from "@aws-sdk/client-s3";
 import { readFile } from "@statewalker/webrun-files";
-import { createFilesApiTests } from "@statewalker/webrun-files-tests";
+import { createBigFilesApiTests, createFilesApiTests } from "@statewalker/webrun-files-tests";
 import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { S3FilesApi } from "../src/s3-files-api.js";
@@ -60,6 +60,11 @@ describe("S3FilesApi with RustFS", () => {
   afterAll(async () => {
     s3Client?.destroy();
     await container?.stop();
+  });
+
+  createBigFilesApiTests("S3FilesApi", async () => {
+    const s3FilesApi = new S3FilesApi({ client: s3Client, bucket: bucketName, prefix: "big" });
+    return { api: s3FilesApi, cleanup: async () => void (await s3FilesApi.remove("/")) };
   });
 
   createFilesApiTests("S3FilesApi", async () => {

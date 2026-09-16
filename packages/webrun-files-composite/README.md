@@ -4,7 +4,7 @@
 
 A small toolkit of `FilesApi` decorators that lets you build a layered
 virtual filesystem on top of any existing `FilesApi` implementation. It
-ships three building blocks:
+ships three decorator classes and three layering helpers:
 
 - **`CompositeFilesApi`** — mounts multiple `FilesApi` backends at different
   composite-namespace prefixes (longest-prefix wins), with optional
@@ -13,6 +13,19 @@ ships three building blocks:
   per-operation policies that can deny access by throwing.
 - **`FilteredFilesApi`** — hides selected paths so that the wrapped API
   behaves as if they did not exist.
+- **`readOnly(api)`** — a read-only view: every mutating call (`write`,
+  `mkdir`, `remove`, `move`, `copy`) throws `"read-only: <path>"`.
+- **`overlay(top, ...lower)`** — a read-only union of layers: reads resolve
+  top → bottom, `list` merges and dedupes with the upper layer winning, and
+  every mutation throws.
+- **`cow(base, writable, opts?)`** — copy-on-write: all changes go to
+  `writable` and `base` is never mutated; deletions persist as whiteout
+  (`.wh.<name>`) and opaque (`.wh..opq`) marker files, whose names
+  `CowOptions` can change.
+
+`globToRegExp(glob, { extended?, globstar?, flags? })` is exported too, with
+the types `PathFilter`, `FileGuard`, `FileOperation`, `CowOptions` and
+`GlobToRegExpOptions`.
 
 ## Why it exists
 
@@ -26,7 +39,9 @@ This package keeps each backend pure and pushes composition / access /
 visibility into orthogonal decorators that can be stacked in any order. The
 three concerns are deliberately split across separate classes:
 
-- **mounting** is structural and never throws — `CompositeFilesApi`.
+- **mounting** is structural and never denies access — `CompositeFilesApi`.
+  (It throws only on invalid mount operations: mounting at `/`, removing a
+  mount point.)
 - **access control** must throw to stay safe by default — `GuardedFilesApi`.
 - **visibility** must silently lie to keep the consumer model simple —
   `FilteredFilesApi`.
@@ -152,15 +167,18 @@ const guarded = new GuardedFilesApi(fs, [
 ```
 
 Guards are evaluated in the order they were passed. The first denying
-guard throws `Error("<message>: <normalized-path>")`. A guard that lists
+guard throws `Error("<message>: <normalized-path>")`, where `message`
+defaults to `"Access denied"`. A guard that lists
 `"read"` also fires on the source side of `move`/`copy` and on every
 `exists` call; one that lists `"write"` fires on the target side of
 `move`/`copy`; one that lists `"list"` also fires on `stats`.
 
 ### Cross-mount move/copy
 
-`CompositeFilesApi` resolves `move` and `copy` across mounts by performing
-a recursive copy and (for `move`) deleting the source. Use guards/filters
+When source and target resolve to different backend instances,
+`CompositeFilesApi` performs a recursive copy and (for `move`) then removes the
+source; when both resolve to the same backend instance — even through two
+different mounts — the call is delegated to that backend's own `move`/`copy`. Use guards/filters
 to gate these flows by composite path:
 
 ```ts
@@ -190,7 +208,9 @@ filter to that mount only).
 
 ### CompositeFilesApi — path resolution
 
-1. Input paths are normalized (forward slashes, leading `/`, no trailing `/`).
+1. Input paths are normalized (leading `/`, no trailing `/`, repeated slashes
+   and `.` segments collapsed; `..` is kept as a segment, and backslashes are
+   not converted).
 2. The mount with the **longest matching prefix** wins. The implicit `/`
    mount set by the constructor is always last.
 3. The matched prefix is stripped and the mount's `fsPath` is prepended.

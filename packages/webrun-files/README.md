@@ -13,6 +13,7 @@ For actual filesystem implementations, install one of these packages:
 - `@statewalker/webrun-files-node` - Node.js filesystem
 - `@statewalker/webrun-files-browser` - Browser File System Access API
 - `@statewalker/webrun-files-s3` - AWS S3 / S3-compatible storage
+- `@statewalker/webrun-files-sqlite` - SQLite (node:sqlite, Cloudflare Durable Objects, D1)
 - `@statewalker/webrun-files-composite` - Mount multiple backends into a unified filesystem
 
 ## The FilesApi Interface
@@ -208,8 +209,9 @@ An implementation must return **exactly** one variant: a file with both numbers
 present, a directory with nothing but its `kind`. An implementation that knows a
 directory's modification time drops it rather than offering a value that would
 be present on one backend and missing on the next. The parametrized suite in
-`@statewalker/webrun-files-tests` checks this at runtime, and
-`createFilesApiTests` runs it for you.
+`@statewalker/webrun-files-tests` — a workspace package of this monorepo, not
+published to npm — checks this at runtime: `createFilesApiTests` runs it (as
+`createFileStatsConformanceTests`) for you.
 
 ## License
 

@@ -50,7 +50,7 @@ console.log(content); // "Hello, S3!"
 
 // List directory contents
 for await (const entry of files.list('/docs')) {
-  console.log(entry.name, entry.kind, entry.size);
+  console.log(entry.name, entry.kind, entry.kind === 'file' ? entry.size : '');
 }
 ```
 
@@ -142,14 +142,17 @@ S3 doesn't have real directories, but this implementation simulates them using:
 - **ListObjectsV2** with `Delimiter="/"` to get "subdirectories" via `CommonPrefixes`
 - Files are returned from `Contents`
 
+With `{ recursive: true }` the delimiter is omitted and only file entries are yielded: directories,
+including empty ones created by `mkdir()`, do not appear in a recursive listing.
+
 Because `FileStats` is a discriminated union, this implementation has to commit
 to two things a store without real directories could otherwise leave vague:
 
 - A **common prefix is the directory variant** - `{ kind: "directory" }` and
   nothing more. There is no size or modification time to report for something
   that exists only as an artefact of key naming.
-- A **zero-byte key ending in `/` is a directory, not a file**. That is the
-  marker `mkdir()` writes so an empty directory is visible, and it is skipped
+- **Any key ending in `/` is a directory, not a file** — such as the zero-byte
+  marker `mkdir()` writes so an empty directory is visible — and it is skipped
   when reading `Contents`. Every other key is a file, and a genuinely empty
   object is the file variant with `size: 0`.
 
@@ -221,30 +224,25 @@ This implementation works with any S3-compatible storage:
 
 ## Testing
 
-Tests use [testcontainers](https://github.com/testcontainers/testcontainers-node) with MinIO:
+The package has integration tests only. They need Docker and run against a real S3-compatible
+server, [RustFS](https://github.com/rustfs/rustfs), started through
+[testcontainers](https://github.com/testcontainers/testcontainers-node) as a `GenericContainer` of
+`rustfs/rustfs:latest` (override the image with `RUSTFS_IMAGE`). They run the shared
+`createFilesApiTests` and `createBigFilesApiTests` suites from `@statewalker/webrun-files-tests`.
+
+```bash
+pnpm test               # unit profile: excludes *.integration.test.ts, so no Docker needed (runs nothing today)
+pnpm test:integration   # Docker: RustFS container, all suites including the 256 MiB big-file suite
+```
+
+The client the tests build is the one to use against any S3-compatible server on a custom endpoint:
 
 ```typescript
-import { MinioContainer } from '@testcontainers/minio';
-import { S3Client, CreateBucketCommand } from '@aws-sdk/client-s3';
-import { S3FilesApi } from '@statewalker/webrun-files-s3';
-
-const minioContainer = await new MinioContainer().start();
-
 const s3Client = new S3Client({
-  endpoint: minioContainer.getConnectionUrl(),
+  endpoint: `http://${container.getHost()}:${container.getMappedPort(9000)}`,
   region: 'us-east-1',
-  credentials: {
-    accessKeyId: minioContainer.getUsername(),
-    secretAccessKey: minioContainer.getPassword(),
-  },
+  credentials: { accessKeyId: 'rustfsadmin', secretAccessKey: 'rustfsadmin' },
   forcePathStyle: true,
-});
-
-await s3Client.send(new CreateBucketCommand({ Bucket: 'test-bucket' }));
-
-const files = new S3FilesApi({
-  client: s3Client,
-  bucket: 'test-bucket',
 });
 ```
 
