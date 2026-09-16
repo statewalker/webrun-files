@@ -167,6 +167,7 @@ export class SqliteFilesApi implements FilesApi {
     const reader = new ByteReader(content);
     const hash = new Sha256();
     let size = 0;
+    let digest: string;
     try {
       for (let index = 0; ; index++) {
         const limit = Math.min(this.#minBlock * 2 ** Math.min(index, 30), this.#maxBlock);
@@ -193,10 +194,11 @@ export class SqliteFilesApi implements FilesApi {
         );
         size += raw;
       }
+      digest = hash.digestHex();
       await this.#sql.run(
         `UPDATE ${this.#files} SET size = ?, hash = ? WHERE fid = ?`,
         size,
-        hash.digestHex(),
+        digest,
         fid,
       );
     } catch (error) {
@@ -217,7 +219,7 @@ export class SqliteFilesApi implements FilesApi {
        RETURNING fid`,
       name,
       now,
-      hash.digestHex(),
+      digest,
       size,
       compression,
       fid,

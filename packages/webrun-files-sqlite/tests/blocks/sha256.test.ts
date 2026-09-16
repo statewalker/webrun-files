@@ -25,3 +25,12 @@ describe("Sha256", () => {
     expect(hash.digestHex()).toBe(reference(bytes));
   });
 });
+
+describe("Sha256 finalisation", () => {
+  it("refuses to digest twice, since the first digest consumed the state", () => {
+    const hash = new Sha256().update(new Uint8Array([1, 2, 3]));
+    hash.digestHex();
+    expect(() => hash.digestHex()).toThrow(/already/);
+    expect(() => hash.update(new Uint8Array([4]))).toThrow(/already/);
+  });
+});

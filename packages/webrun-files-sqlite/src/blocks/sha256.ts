@@ -22,8 +22,10 @@ export class Sha256 {
   readonly #words = new Uint32Array(80);
   #buffered = 0;
   #length = 0;
+  #finished = false;
 
   update(bytes: Uint8Array): this {
+    if (this.#finished) throw new Error("Sha256: already digested");
     this.#length += bytes.length;
     let at = 0;
     if (this.#buffered > 0) {
@@ -43,7 +45,9 @@ export class Sha256 {
     return this;
   }
 
+  /** Finalises the hash; the instance cannot be used afterwards. */
   digestHex(): string {
+    if (this.#finished) throw new Error("Sha256: already digested");
     const bitLength = this.#length * 8;
     const padding = new Uint8Array((this.#buffered < 56 ? 56 : 120) - this.#buffered + 8);
     padding[0] = 0x80;
@@ -51,6 +55,7 @@ export class Sha256 {
     view.setUint32(padding.length - 8, Math.floor(bitLength / 2 ** 32));
     view.setUint32(padding.length - 4, bitLength >>> 0);
     this.update(padding);
+    this.#finished = true;
     let hex = "";
     for (const word of this.#state) hex += word.toString(16).padStart(8, "0");
     return hex;
