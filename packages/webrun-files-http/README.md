@@ -103,7 +103,7 @@ parts) older than `olderThan` milliseconds. Call it on a schedule.
 | `setHeaders(req)` | — | Adjust every request (auth, signing). |
 | `fetch` | `globalThis.fetch` | Any `(Request) => Promise<Response>`, including a server stub. |
 | `methods` | `"http"` | `"http"` sends `MKCOL`/`COPY`/`MOVE`/`DELETE`; `"post"` sends `POST ?op=…` for proxies that block unusual verbs. |
-| `upload` | `"auto"` | `"stream"`, `"chunked"`, or `"auto"`: streaming in Node, Deno and Bun, chunked everywhere else. |
+| `upload` | `"auto"` | `"stream"`, `"chunked"`, or `"auto"`: streaming in Node, Deno and Bun, chunked everywhere else. An explicit `"stream"` throws where the runtime cannot stream request bodies. |
 | `partSize` | the server's `minPartSize` | Part size for chunked uploads. |
 | `pageSize` | the server's `maxPageSize` | Listing page size. |
 | `retries` | 2 | Retries of a failed listing page or upload part. |
@@ -176,6 +176,44 @@ forms unless `methods: { http, post }` disables one; a disabled form answers `40
 - To authorise by path, resolve `fs` per request and wrap it (for example in `GuardedFilesApi` from
   `@statewalker/webrun-files-composite`).
 
+## In the browser
+
+The client stub runs in browsers as is. `dist/esm/index.js` has no imports, so it loads with a plain
+`<script type="module">` or through any bundler. `upload: "auto"` chooses chunked uploads there.
+
+Don't force `upload: "stream"` in a browser:
+- **Chromium** refuses a streamed body over HTTP/1.1 ("Failed to fetch").
+- **Firefox** cannot send one at all, and silently sends the text `[object ReadableStream]` as the
+  body instead, which a server would store as the file.
+
+The client therefore checks for request-stream support before a streamed upload, and throws rather
+than send corrupt content.
+
+`e2e/` holds a test server, a page and Playwright tests that check this in real browsers:
+
+```bash
+pnpm e2e:serve   # build, then serve the page and the API on http://127.0.0.1:8080/
+pnpm test:e2e    # build, then run the Playwright tests in Chromium and Firefox
+```
+
+- **Test server** (`e2e/server.ts`): the server stub over an in-memory file system at `/api/files`,
+  the page at `/`, and the built bundle at `/lib/webrun-files-http.js`.
+- **Page** (`e2e/public/`): creates a client stub and drives every operation from forms, printing
+  results as JSON and logging each request. Query options `partSize`, `pageSize` and `upload` force
+  several parts, several pages or an upload mode.
+- **Tests** (`e2e/files-http.spec.ts`), checking results both in the page and in the served file
+  system:
+  - text and generated binary writes, reads and range reads;
+  - `stats` and `exists`; `mkdir`, `copy`, `move` and `remove`;
+  - paged recursive listings;
+  - a chunked upload in four parts, verified byte for byte on the server and streamed back in the
+    browser;
+  - awkward names, and absent files;
+  - a forced streamed upload failing without storing anything.
+
+WebKit is opt-in (`E2E_WEBKIT=1 pnpm test:e2e`). Besides `npx playwright install webkit` it needs
+system libraries that only `sudo npx playwright install-deps webkit` installs.
+
 ## Limitations
 
 - An interrupted **streamed** upload restarts from the beginning; only chunked uploads retry per part.
@@ -190,7 +228,8 @@ The package runs the shared suites four ways:
 - `createFilesApiTests` again over a real HTTP connection (`hono` with `@hono/node-server`, both
   development dependencies only);
 - `createBigFilesApiTests` (256 MiB), streamed and chunked, both directly and over HTTP;
-- protocol, upload, streaming, path and hook tests.
+- protocol, upload, streaming, path and hook tests;
+- the browser tests above (`pnpm test:e2e`), which are not part of `pnpm test`.
 
 ## License
 

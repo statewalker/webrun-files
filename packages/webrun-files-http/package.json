@@ -31,7 +31,9 @@
   "scripts": {
     "build": "rimraf dist && rolldown -c && tsc --emitDeclarationOnly --declaration",
     "test": "vitest run",
-    "lint": "biome lint src tests"
+    "lint": "biome lint src tests",
+    "test:e2e": "pnpm run build && playwright test",
+    "e2e:serve": "pnpm run build && tsx e2e/serve.ts"
   },
   "dependencies": {
     "@statewalker/webrun-files": "workspace:*",
@@ -39,11 +41,13 @@
   },
   "devDependencies": {
     "@hono/node-server": "catalog:",
+    "@playwright/test": "catalog:",
     "@statewalker/webrun-files-tests": "workspace:*",
     "@types/node": "catalog:",
     "hono": "catalog:",
     "rimraf": "catalog:",
     "rolldown": "catalog:",
+    "tsx": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
