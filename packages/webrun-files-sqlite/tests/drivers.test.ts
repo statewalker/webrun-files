@@ -4,7 +4,7 @@
  * returns a BLOB: ArrayBuffer from `ctx.storage.sql`, number[] from D1. This
  * proves the translation and the adapter's blob handling, not the runtimes.
  */
-import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
 import { createFilesApiTests } from "@statewalker/webrun-files-tests";
 import * as pako from "pako";
 import { describe, expect, it } from "vitest";
@@ -15,60 +15,7 @@ import {
   SqlarFilesApi,
   type SqlDriver,
 } from "../src/index.js";
-
-type Row = Record<string, unknown>;
-
-function mapBlobs(rows: unknown[], map: (bytes: Uint8Array) => unknown): Row[] {
-  return (rows as Row[]).map((row) =>
-    Object.fromEntries(
-      Object.entries(row).map(([k, v]) => [k, v instanceof Uint8Array ? map(v) : v]),
-    ),
-  );
-}
-
-/** Bindings arrive as runtime values; node:sqlite wants Uint8Array for blobs. */
-function toNodeParams(params: unknown[]): SQLInputValue[] {
-  return params.map((p) => (p instanceof ArrayBuffer ? new Uint8Array(p) : p)) as SQLInputValue[];
-}
-
-/** `ctx.storage.sql`: exec(query, ...bindings) → cursor with toArray(); BLOB → ArrayBuffer. */
-export function fakeDoSql(db: DatabaseSync) {
-  return {
-    exec(query: string, ...bindings: unknown[]) {
-      const stmt = db.prepare(query);
-      const params = toNodeParams(bindings);
-      let rows: unknown[] = [];
-      if (stmt.columns().length > 0) rows = stmt.all(...params);
-      else stmt.run(...params);
-      const out = mapBlobs(rows, (b) => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength));
-      return { toArray: () => out };
-    },
-  };
-}
-
-/** D1: prepare(q).bind(...).all() → { results }, run(); BLOB → number[]; async. */
-export function fakeD1(db: DatabaseSync) {
-  return {
-    prepare(query: string) {
-      let params: SQLInputValue[] = [];
-      const statement = {
-        bind(...values: unknown[]) {
-          params = toNodeParams(values);
-          return statement;
-        },
-        async all() {
-          const rows = db.prepare(query).all(...params);
-          return { success: true, results: mapBlobs(rows, (b) => Array.from(b)) };
-        },
-        async run() {
-          db.prepare(query).run(...params);
-          return { success: true, results: [] };
-        },
-      };
-      return statement;
-    },
-  };
-}
+import { fakeD1, fakeDoSql } from "./fakes.js";
 
 const drivers: [string, (db: DatabaseSync) => SqlDriver][] = [
   ["Durable Object", (db) => new DoSqlDriver(fakeDoSql(db))],

@@ -88,7 +88,12 @@ for (const [label, compression] of variants) {
               },
               run: (sql, ...params) => d.run(sql, ...params),
             },
-            { onFetch: () => (fetches++, consumedAtFetch.push(consumed)) },
+            {
+              onFetch: () => {
+                fetches++;
+                consumedAtFetch.push(consumed);
+              },
+            },
           ),
       });
       for await (const chunk of files.read("/f")) {
@@ -115,3 +120,25 @@ for (const [label, compression] of variants) {
     });
   });
 }
+
+describe("abort", () => {
+  it("stops a read at the next block once the signal aborts", async () => {
+    const { files } = await newFiles({
+      compression: null,
+      minBlockSize: 16 * KiB,
+      maxBlockSize: MAX_BLOCK,
+    });
+    await files.write("/f", positionContent(SIZE, [MiB]));
+    const controller = new AbortController();
+    let consumed = 0;
+    await expect(
+      (async () => {
+        for await (const chunk of files.read("/f", { signal: controller.signal })) {
+          consumed += chunk.length;
+          if (consumed >= 100 * KiB) controller.abort(new Error("enough"));
+        }
+      })(),
+    ).rejects.toThrow("enough");
+    expect(consumed).toBeLessThan(100 * KiB + MAX_BLOCK);
+  });
+});
