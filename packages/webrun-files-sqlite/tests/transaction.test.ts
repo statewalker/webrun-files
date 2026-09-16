@@ -13,6 +13,7 @@ const drivers: [string, (db: DatabaseSync) => SqlDriver][] = [
 function table() {
   const db = new DatabaseSync(":memory:");
   db.exec("CREATE TABLE t(k TEXT PRIMARY KEY, v INTEGER)");
+  db.exec("CREATE INDEX t_v ON t(v)");
   db.exec("INSERT INTO t VALUES ('a', 1), ('b', 2)");
   return db;
 }
@@ -33,7 +34,7 @@ for (const [label, driverFor] of drivers) {
       ]);
     });
 
-    it("reports zero exactly for statements that changed nothing", async () => {
+    it("reports how many rows each statement changed, not counting index writes", async () => {
       const db = table();
       const counts = await driverFor(db).transaction([
         { sql: "UPDATE t SET v = 5 WHERE k = 'a'" },
@@ -41,7 +42,7 @@ for (const [label, driverFor] of drivers) {
         { sql: "INSERT INTO t SELECT 'x', 9 WHERE EXISTS (SELECT 1 FROM t WHERE k = 'nope')" },
         { sql: "DELETE FROM t" },
       ]);
-      expect(counts.map((n) => n > 0)).toEqual([true, false, false, true]);
+      expect(counts).toEqual([1, 0, 0, 2]);
     });
 
     it("rolls back every statement when a later one fails, and rethrows", async () => {

@@ -1,7 +1,7 @@
 /** Paths share immutable contents; a content lives as long as a path points at it. */
 import { collectGenerator, collectStream, positionContent } from "@statewalker/webrun-files-tests";
 import { describe, expect, it, vi } from "vitest";
-import { count, fileRow, newFiles, pathRow } from "./helpers.js";
+import { count, fileRow, newFiles, passthrough, pathRow } from "./helpers.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -144,14 +144,19 @@ describe("failures", () => {
     let closed = false;
     const { files } = await newFiles({
       ...small,
-      wrap: (driver) => ({
-        all: (sql, ...params) => driver.all(sql, ...params),
-        run: (sql, ...params) => {
-          if (sql.includes("INSERT INTO fs_blocks") && params[1] === 64)
-            throw new Error("disk full");
-          return driver.run(sql, ...params);
-        },
-      }),
+      wrap: (driver) =>
+        passthrough(driver, {
+          transaction: (statements) => {
+            if (
+              statements.some(
+                (st) => st.sql.includes("INSERT INTO fs_blocks") && st.params?.[1] === 64,
+              )
+            ) {
+              throw new Error("disk full");
+            }
+            return driver.transaction(statements);
+          },
+        }),
     });
     async function* source() {
       try {

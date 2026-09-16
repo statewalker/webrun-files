@@ -23,7 +23,8 @@ function toNodeParams(params: unknown[]): SQLInputValue[] {
 
 /**
  * `ctx.storage`: `sql.exec(query, ...bindings)` → a cursor with `toArray()` and
- * `rowsWritten`; BLOB → ArrayBuffer; `transactionSync(fn)` runs `fn`
+ * `rowsWritten` (which, as documented, also counts index rows — approximated
+ * here as one index per table); BLOB → ArrayBuffer; `transactionSync(fn)` runs `fn`
  * synchronously and rolls back if it throws. `sql.exec` rejects transaction
  * statements, as the runtime does.
  */
@@ -38,10 +39,9 @@ export function fakeDoStorage(db: DatabaseSync) {
     let rowsWritten = 0;
     if (stmt.columns().length > 0) {
       rows = stmt.all(...params);
-      // RETURNING statements write as well; count what they returned.
-      if (/^\s*(INSERT|UPDATE|DELETE)\b/i.test(query)) rowsWritten = rows.length;
     } else {
-      rowsWritten = Number(stmt.run(...params).changes);
+      // The runtime counts every index row a write touches as well.
+      rowsWritten = Number(stmt.run(...params).changes) * 2;
     }
     const out = mapBlobs(rows, (b) => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength));
     return { toArray: () => out, rowsWritten };

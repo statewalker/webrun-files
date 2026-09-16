@@ -44,7 +44,7 @@ export class NodeSqlDriver implements SqlDriver {
 /** The subset of a Durable Object's `ctx.storage` this driver uses. */
 export interface DoStorage {
   sql: {
-    exec(query: string, ...bindings: unknown[]): { toArray(): unknown[]; rowsWritten: number };
+    exec(query: string, ...bindings: unknown[]): { toArray(): unknown[] };
   };
   transactionSync<T>(fn: () => T): T;
 }
@@ -70,13 +70,16 @@ export class DoSqlDriver implements SqlDriver {
     this.#storage.sql.exec(sql, ...params).toArray();
   }
 
-  /** `rowsWritten` also counts index rows, which keeps zero meaning "changed nothing". */
+  /**
+   * Counts come from SQLite's `changes()` on the same connection, not from the
+   * cursor's `rowsWritten`, which also counts every index row a write touches.
+   */
   transaction(statements: SqlStatement[]): number[] {
     return this.#storage.transactionSync(() =>
       statements.map(({ sql, params = [] }) => {
-        const cursor = this.#storage.sql.exec(sql, ...params);
-        cursor.toArray();
-        return cursor.rowsWritten;
+        this.#storage.sql.exec(sql, ...params).toArray();
+        const [row] = this.#storage.sql.exec("SELECT changes() AS n").toArray() as { n: number }[];
+        return row.n;
       }),
     );
   }

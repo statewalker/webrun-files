@@ -35,13 +35,15 @@ for await (const chunk of files.read("/video.mp4", { start: 10_000_000, length: 
 }
 ```
 
-In a Durable Object: `new SqliteFilesApi(new DoSqlDriver(this.ctx.storage.sql))`.
+In a Durable Object: `new SqliteFilesApi(new DoSqlDriver(this.ctx.storage))` — the driver takes
+`ctx.storage`, not `ctx.storage.sql`, because transactions go through `transactionSync`.
 
 ### How content is stored
 
 - `fs_paths(pid, path UNIQUE, fid, mtime)` — a path points at a content, or is a directory (`fid` NULL).
-- `fs_files(fid, size, compression, block_size, hash)` — an immutable content: its uncompressed
-  size, `"none"` or `"deflate"`, the block size it was written with, and the SHA-256 of its bytes.
+- `fs_files(fid, size, compression, block_size, hash, updated)` — an immutable content: its
+  uncompressed size, `"none"` or `"deflate"`, the block size it was written with, the SHA-256 of its
+  bytes, and when it last changed (`size` and `hash` are NULL while it is being written).
 - `fs_blocks(fid, shift, block)`, keyed by `(fid, shift)` — the content cut into blocks of
   `block_size` uncompressed bytes (only the last one shorter); `shift` is the block's offset in the
   uncompressed content, always a multiple of `block_size`. Each block of a `deflate` content is its
@@ -75,9 +77,25 @@ bounds. An `AbortSignal` passed to `read` is checked before every block.
 - A read whose content is removed underneath it throws `changed during read`. A block whose
   uncompressed length is not what its position implies throws `block at <shift> holds … bytes`,
   before any wrong byte reaches the reader.
-- No transactions (Durable Objects and D1 reject `BEGIN`); every multi-step operation is ordered so
-  concurrent calls cannot delete content still in use. A process killed mid-write can leave an
-  unreferenced content behind.
+
+### Interruptions and `sweep`
+
+Streaming happens outside transactions; every step that changes what a path shows is one
+transaction (`BEGIN IMMEDIATE` on node:sqlite, `transactionSync` on Durable Objects, `batch()` on D1):
+storing each block, finishing a write, `remove`, `copy` and `move`. A failure inside any of them
+leaves the database exactly as it was — `move` onto an existing target never loses the target.
+
+A write stays invisible until it finishes. If the process dies mid-stream, the partly written
+content is left behind unreferenced; remove such leftovers with
+
+```typescript
+const removed = await files.sweep({ olderThan: 60 * 60_000 }); // contents untouched for an hour
+```
+
+`sweep` deletes contents that no path references and that have not been updated for `olderThan`
+milliseconds, with their blocks. A write refreshes its content with every block, so only a write
+stalled longer than `olderThan` can be swept — and it then fails rather than creating a broken path.
+Choose a threshold above the longest pause a source may take. `sweep` never runs on its own.
 
 ## SqlarFilesApi
 
@@ -99,7 +117,7 @@ console.log(await readText(files, "/docs/index.md"));
 import { D1SqlDriver, DoSqlDriver, SqlarFilesApi } from "@statewalker/webrun-files-sqlite";
 
 // Inside a Durable Object
-const files = new SqlarFilesApi(new DoSqlDriver(this.ctx.storage.sql));
+const files = new SqlarFilesApi(new DoSqlDriver(this.ctx.storage));
 
 // With a D1 binding
 const shared = new SqlarFilesApi(new D1SqlDriver(env.DB));

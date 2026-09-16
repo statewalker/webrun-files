@@ -5,7 +5,7 @@ import { collectStream, positionContent } from "@statewalker/webrun-files-tests"
 import * as pako from "pako";
 import { describe, expect, it } from "vitest";
 import { pakoDeflateCodec, type SqlDriver, SqliteFilesApi } from "../../src/index.js";
-import { blocksOf, count, fileRow, newFiles, pathRow } from "./helpers.js";
+import { blocksOf, count, fileRow, newFiles, passthrough, pathRow } from "./helpers.js";
 
 const KiB = 1024;
 const MiB = 1024 * KiB;
@@ -80,6 +80,7 @@ describe("fixed block size", () => {
   it("records size, compression, block size and the SHA-256 of the uncompressed content", async () => {
     const { db, files } = await newFiles({ compression: null, blockSize: 100 });
     const bytes = await bytesOf(5000);
+    const before = Date.now();
     await files.write("/f", [bytes]);
     const fid = fidOf(db, "/f");
     expect(fileRow(db, fid)).toEqual({
@@ -88,7 +89,10 @@ describe("fixed block size", () => {
       compression: "none",
       block_size: 100,
       hash: createHash("sha256").update(bytes).digest("hex"),
+      updated: expect.any(Number),
     });
+    expect(fileRow(db, fid)?.updated).toBeGreaterThanOrEqual(before);
+    expect(fileRow(db, fid)?.updated).toBeLessThanOrEqual(Date.now());
   });
 
   it("stores directories as paths without content, and mtime in milliseconds", async () => {
@@ -105,7 +109,7 @@ describe("fixed block size", () => {
 
 describe("blockSize validation", () => {
   const construct = (blockSize: number) =>
-    new SqliteFilesApi({ all: () => [], run: () => {} }, { blockSize });
+    new SqliteFilesApi({ all: () => [], run: () => {}, transaction: () => [] }, { blockSize });
 
   for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 1.5 * MiB + 1]) {
     it(`rejects ${bad}`, () => {
@@ -156,13 +160,13 @@ describe("range reads", () => {
     const { files } = await newFiles({
       compression: null,
       blockSize: 100,
-      wrap: (d): SqlDriver => ({
-        all: (sql, ...params) => {
-          if (sql.includes("FROM fs_blocks")) shifts.push(params[1] as number);
-          return d.all(sql, ...params);
-        },
-        run: (sql, ...params) => d.run(sql, ...params),
-      }),
+      wrap: (d): SqlDriver =>
+        passthrough(d, {
+          all: (sql, ...params) => {
+            if (sql.includes("FROM fs_blocks")) shifts.push(params[1] as number);
+            return d.all(sql, ...params);
+          },
+        }),
     });
     await files.write("/f", positionContent(1000, [333]));
     const fetched = async (start: number, length?: number) => {

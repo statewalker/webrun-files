@@ -7,7 +7,7 @@ import type {
 } from "@statewalker/webrun-files";
 import { normalizePath } from "@statewalker/webrun-files";
 import { toBytes } from "../bytes.js";
-import type { SqlDriver } from "../sql.types.js";
+import type { SqlDriver, SqlStatement } from "../sql.types.js";
 import { ByteReader, collectBlock } from "./byte-reader.js";
 import { Sha256 } from "./sha256.js";
 import { type StreamCodec, webDeflateCodec } from "./stream-codec.js";
@@ -91,7 +91,8 @@ export class SqliteFilesApi implements FilesApi {
         size INTEGER,
         compression TEXT NOT NULL,
         block_size INTEGER NOT NULL,
-        hash TEXT
+        hash TEXT,
+        updated INTEGER NOT NULL
       )`,
       `CREATE TABLE IF NOT EXISTS ${this.#blocks}(
         fid INTEGER NOT NULL,
@@ -163,6 +164,11 @@ export class SqliteFilesApi implements FilesApi {
 
   // --------------------------------------------------------------- write
 
+  /**
+   * Streams the content into a new, invisible content row, one block per
+   * transaction, then points the path at it in one transaction. Any failure
+   * removes the pending content; a crash leaves it for {@link sweep}.
+   */
   async write(
     path: string,
     content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
@@ -170,19 +176,19 @@ export class SqliteFilesApi implements FilesApi {
     const name = normalizePath(path);
     const compression = this.#codec?.name ?? "none";
     const created = await this.#sql.all<{ fid: number }>(
-      `INSERT INTO ${this.#files}(size, compression, block_size, hash)
-       VALUES (NULL, ?, ?, NULL) RETURNING fid`,
+      `INSERT INTO ${this.#files}(size, compression, block_size, hash, updated)
+       VALUES (NULL, ?, ?, NULL, ?) RETURNING fid`,
       compression,
       this.#blockSize,
+      Date.now(),
     );
     const fid = created[0].fid;
 
     const limit = this.#blockSize;
     const reader = new ByteReader(content);
     const hash = new Sha256();
-    let size = 0;
-    let digest: string;
     try {
+      let size = 0;
       for (;;) {
         const first = await reader.read(limit);
         if (!first) break;
@@ -199,58 +205,84 @@ export class SqliteFilesApi implements FilesApi {
           }
         };
         const block = await collectBlock(this.#codec ? this.#codec.compress(pieces()) : pieces());
-        await this.#sql.run(
-          `INSERT INTO ${this.#blocks}(fid, shift, block) VALUES (?, ?, ?)`,
-          fid,
-          size,
-          block,
-        );
+        const [alive] = await this.#sql.transaction([
+          {
+            sql: `UPDATE ${this.#files} SET updated = ? WHERE fid = ? AND size IS NULL`,
+            params: [Date.now(), fid],
+          },
+          {
+            sql: `INSERT INTO ${this.#blocks}(fid, shift, block)
+                  SELECT ?, ?, ? WHERE EXISTS (${this.#pending("?")})`,
+            params: [fid, size, block, fid],
+          },
+        ]);
+        if (alive === 0) throw sweptDuringWrite(name);
         size += raw;
       }
-      digest = hash.digestHex();
-      await this.#sql.run(
-        `UPDATE ${this.#files} SET size = ?, hash = ? WHERE fid = ?`,
-        size,
-        digest,
-        fid,
+
+      const previous = await this.#entry(name);
+      const [finished] = await this.#sql.transaction(
+        this.#finishWrite(name, fid, size, hash.digestHex(), compression, previous?.fid ?? null),
       );
+      if (finished === 0) throw sweptDuringWrite(name);
     } catch (error) {
-      await reader.close().catch(() => {});
-      await this.#deleteContent(fid);
+      try {
+        await reader.close();
+      } catch {}
+      // Best effort, and never allowed to replace the error that brought us here —
+      // including a synchronous throw from a synchronous driver.
+      try {
+        await this.#sql.transaction([
+          { sql: `DELETE FROM ${this.#files} WHERE fid = ? AND size IS NULL`, params: [fid] },
+          ...this.#deleteBlocksOfMissing(fid),
+        ]);
+      } catch {}
       throw error;
     }
+  }
 
-    await this.mkdir(parentOf(name));
-    const previous = await this.#entry(name);
+  /**
+   * One transaction: finish the content, create the parents, point the path at
+   * an identical content if one exists or else at this one, then collect this
+   * content if it ended up unused and the path's previous content. Everything
+   * after the first statement is conditioned on the content still existing, so
+   * a swept write changes nothing.
+   */
+  #finishWrite(
+    name: string,
+    fid: number,
+    size: number,
+    digest: string,
+    compression: string,
+    previous: number | null,
+  ): SqlStatement[] {
     const now = Date.now();
-    const shared = await this.#sql.all<{ fid: number }>(
-      `INSERT INTO ${this.#paths}(path, fid, mtime)
-         SELECT ?, fid, ? FROM ${this.#files}
-         WHERE hash = ? AND size = ? AND compression = ? AND block_size = ? AND fid <> ?
-         ORDER BY fid LIMIT 1
-       ON CONFLICT(path) DO UPDATE SET fid = excluded.fid, mtime = excluded.mtime
-       RETURNING fid`,
-      name,
-      now,
-      digest,
-      size,
-      compression,
-      this.#blockSize,
-      fid,
-    );
-    if (shared.length > 0) {
-      await this.#deleteContent(fid);
-    } else {
-      await this.#sql.run(
-        `INSERT INTO ${this.#paths}(path, fid, mtime) VALUES (?, ?, ?)
-         ON CONFLICT(path) DO UPDATE SET fid = excluded.fid, mtime = excluded.mtime`,
-        name,
-        fid,
-        now,
-      );
-    }
-    const current = shared[0]?.fid ?? fid;
-    if (previous?.fid != null && previous.fid !== current) await this.#collect(previous.fid);
+    const exists = `SELECT 1 FROM ${this.#files} WHERE fid = ?`;
+    const statements: SqlStatement[] = [
+      {
+        sql: `UPDATE ${this.#files} SET size = ?, hash = ?, updated = ? WHERE fid = ? AND size IS NULL`,
+        params: [size, digest, now, fid],
+      },
+      ...ancestorsAndSelf(parentOf(name)).map((dir) => ({
+        sql: `INSERT INTO ${this.#paths}(path, fid, mtime) SELECT ?, NULL, ? WHERE EXISTS (${exists})
+              ON CONFLICT(path) DO NOTHING`,
+        params: [dir, now, fid],
+      })),
+      {
+        sql: `INSERT INTO ${this.#paths}(path, fid, mtime)
+              SELECT ?, COALESCE((
+                SELECT f.fid FROM ${this.#files} f
+                WHERE f.hash = ? AND f.size = ? AND f.compression = ? AND f.block_size = ? AND f.fid <> ?
+                ORDER BY f.fid LIMIT 1
+              ), ?), ?
+              WHERE EXISTS (${exists})
+              ON CONFLICT(path) DO UPDATE SET fid = excluded.fid, mtime = excluded.mtime`,
+        params: [name, digest, size, compression, this.#blockSize, fid, fid, now, fid],
+      },
+      ...this.#collect(fid),
+    ];
+    if (previous !== null && previous !== fid) statements.push(...this.#collect(previous));
+    return statements;
   }
 
   async mkdir(path: string): Promise<void> {
@@ -308,19 +340,38 @@ export class SqliteFilesApi implements FilesApi {
   // ------------------------------------------------------------- mutation
 
   async remove(path: string): Promise<boolean> {
-    const range = selfAndDescendants(normalizePath(path));
-    const found = await this.#sql.all(
-      `SELECT 1 FROM ${this.#paths} p WHERE ${range.where} LIMIT 1`,
-      ...range.params,
-    );
-    if (found.length === 0) return false;
-    const fids = await this.#sql.all<{ fid: number }>(
-      `SELECT DISTINCT fid FROM ${this.#paths} p WHERE ${range.where} AND fid IS NOT NULL`,
-      ...range.params,
-    );
-    await this.#sql.run(`DELETE FROM ${this.#paths} AS p WHERE ${range.where}`, ...range.params);
-    for (const { fid } of fids) await this.#collect(fid);
-    return true;
+    const counts = await this.#sql.transaction(this.#removeTree(normalizePath(path)));
+    return counts[counts.length - 1] > 0;
+  }
+
+  /**
+   * Deletes available contents and blocks referenced only from inside the tree, then the tree's
+   * path rows. Set-based, so it needs no ids read beforehand. `guard` conditions every statement.
+   */
+  #removeTree(path: string, guard: Guard = NO_GUARD): SqlStatement[] {
+    const inP = selfAndDescendants(path, "p");
+    const inQ = selfAndDescendants(path, "q");
+    const referenced = `SELECT p.fid FROM ${this.#paths} p WHERE ${inP.where}`;
+    return [
+      {
+        sql: `DELETE FROM ${this.#files} WHERE size IS NOT NULL
+              AND fid IN (${referenced})
+              AND NOT EXISTS (
+                SELECT 1 FROM ${this.#paths} q WHERE q.fid = ${this.#files}.fid AND NOT ${inQ.where}
+              ) ${guard.sql}`,
+        params: [...inP.params, ...inQ.params, ...guard.params],
+      },
+      {
+        sql: `DELETE FROM ${this.#blocks} WHERE fid IN (${referenced})
+              AND NOT EXISTS (SELECT 1 FROM ${this.#files} f WHERE f.fid = ${this.#blocks}.fid)
+              ${guard.sql}`,
+        params: [...inP.params, ...guard.params],
+      },
+      {
+        sql: `DELETE FROM ${this.#paths} AS p WHERE ${inP.where} ${guard.sql}`,
+        params: [...inP.params, ...guard.params],
+      },
+    ];
   }
 
   async copy(source: string, target: string): Promise<boolean> {
@@ -331,42 +382,79 @@ export class SqliteFilesApi implements FilesApi {
     return this.#transfer(source, target, "move");
   }
 
+  /**
+   * One transaction: replace the target's subtree, create its parents, then copy
+   * or rename. Everything before the last statement is conditioned on the source
+   * existing, so a source that vanished leaves the target untouched.
+   */
   async #transfer(source: string, target: string, mode: "copy" | "move"): Promise<boolean> {
     const from = normalizePath(source);
     const to = normalizePath(target);
-    const range = selfAndDescendants(from);
-    const found = await this.#sql.all(
-      `SELECT 1 FROM ${this.#paths} p WHERE ${range.where} LIMIT 1`,
-      ...range.params,
-    );
-    if (found.length === 0) return false;
-    if (from === to) return true;
+    if (from === to) return this.exists(from);
     if (isInside(to, from) || isInside(from, to)) {
       throw new Error(`sqlite-files: cannot ${mode} ${from} to ${to}: one contains the other`);
     }
 
-    await this.remove(to);
-    await this.mkdir(parentOf(to));
+    const range = selfAndDescendants(from, "p");
+    const inS = selfAndDescendants(from, "s");
+    const guard: Guard = {
+      sql: `AND EXISTS (SELECT 1 FROM ${this.#paths} s WHERE ${inS.where})`,
+      params: inS.params,
+    };
     const now = Date.now();
-    if (mode === "copy") {
-      await this.#sql.run(
-        `INSERT INTO ${this.#paths}(path, fid, mtime)
-         SELECT ? || substr(p.path, ?), p.fid, ? FROM ${this.#paths} p WHERE ${range.where}`,
-        to,
-        from.length + 1,
-        now,
-        ...range.params,
-      );
-    } else {
-      await this.#sql.run(
-        `UPDATE ${this.#paths} AS p SET path = ? || substr(p.path, ?), mtime = ? WHERE ${range.where}`,
-        to,
-        from.length + 1,
-        now,
-        ...range.params,
+    const statements: SqlStatement[] = [
+      ...this.#removeTree(to, guard),
+      ...ancestorsAndSelf(parentOf(to)).map((dir) => ({
+        sql: `INSERT INTO ${this.#paths}(path, fid, mtime) SELECT ?, NULL, ? WHERE 1 ${guard.sql}
+              ON CONFLICT(path) DO NOTHING`,
+        params: [dir, now, ...guard.params],
+      })),
+      mode === "copy"
+        ? {
+            sql: `INSERT INTO ${this.#paths}(path, fid, mtime)
+                  SELECT ? || substr(p.path, ?), p.fid, ? FROM ${this.#paths} p WHERE ${range.where}`,
+            params: [to, from.length + 1, now, ...range.params],
+          }
+        : {
+            sql: `UPDATE ${this.#paths} AS p SET path = ? || substr(p.path, ?), mtime = ?
+                  WHERE ${range.where}`,
+            params: [to, from.length + 1, now, ...range.params],
+          },
+    ];
+    const counts = await this.#sql.transaction(statements);
+    return counts[counts.length - 1] > 0;
+  }
+
+  /**
+   * Deletes, in one transaction, every content not updated for `olderThan`
+   * milliseconds that is still pending or that no path references, with its
+   * blocks. Returns how many contents were deleted.
+   *
+   * A write refreshes its pending content with every block, so only a write
+   * stalled longer than `olderThan` can be swept — and it then fails instead of
+   * pointing a path at missing content. Never runs on its own.
+   */
+  async sweep(options: { olderThan: number }): Promise<number> {
+    const { olderThan } = options;
+    if (!(Number.isFinite(olderThan) && olderThan >= 0)) {
+      throw new Error(
+        `SqliteFilesApi.sweep: olderThan must be a finite number >= 0, got ${olderThan}`,
       );
     }
-    return true;
+    const cutoff = Date.now() - olderThan;
+    // A pending content is never referenced — a path only points at a content in
+    // the transaction that finishes it — so "unreferenced" covers both cases.
+    const eligible = `f.updated < ? AND NOT EXISTS (
+      SELECT 1 FROM ${this.#paths} p WHERE p.fid = f.fid
+    )`;
+    const [, contents] = await this.#sql.transaction([
+      {
+        sql: `DELETE FROM ${this.#blocks} WHERE fid IN (SELECT f.fid FROM ${this.#files} f WHERE ${eligible})`,
+        params: [cutoff],
+      },
+      { sql: `DELETE FROM ${this.#files} AS f WHERE ${eligible}`, params: [cutoff] },
+    ]);
+    return contents;
   }
 
   // -------------------------------------------------------------- private
@@ -402,31 +490,47 @@ export class SqliteFilesApi implements FilesApi {
     return rows[0];
   }
 
-  /**
-   * Delete a content no path references. Each step is one statement, so a
-   * concurrent write sharing it either lands first (and nothing is deleted)
-   * or finds no row to share. `size IS NOT NULL` spares contents being written.
-   */
-  async #collect(fid: number): Promise<void> {
-    await this.#sql.run(
-      `DELETE FROM ${this.#files} WHERE fid = ? AND size IS NOT NULL
-         AND NOT EXISTS (SELECT 1 FROM ${this.#paths} WHERE fid = ?)`,
-      fid,
-      fid,
-    );
-    await this.#sql.run(
-      `DELETE FROM ${this.#blocks} WHERE fid = ?
-         AND NOT EXISTS (SELECT 1 FROM ${this.#files} WHERE fid = ?)`,
-      fid,
-      fid,
-    );
+  /** A subquery selecting the content `fid` while it is still pending. */
+  #pending(fid: string): string {
+    return `SELECT 1 FROM ${this.#files} WHERE fid = ${fid} AND size IS NULL`;
   }
 
-  /** Unconditional: only for a content this call created and nothing points at. */
-  async #deleteContent(fid: number): Promise<void> {
-    await this.#sql.run(`DELETE FROM ${this.#files} WHERE fid = ?`, fid);
-    await this.#sql.run(`DELETE FROM ${this.#blocks} WHERE fid = ?`, fid);
+  /**
+   * Delete a finished content no path references, then its blocks. Inside a
+   * transaction the reference check and the delete cannot be separated by a
+   * write that shares the content.
+   */
+  #collect(fid: number): SqlStatement[] {
+    return [
+      {
+        sql: `DELETE FROM ${this.#files} WHERE fid = ? AND size IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM ${this.#paths} WHERE fid = ?)`,
+        params: [fid, fid],
+      },
+      ...this.#deleteBlocksOfMissing(fid),
+    ];
   }
+
+  #deleteBlocksOfMissing(fid: number): SqlStatement[] {
+    return [
+      {
+        sql: `DELETE FROM ${this.#blocks} WHERE fid = ?
+              AND NOT EXISTS (SELECT 1 FROM ${this.#files} WHERE fid = ?)`,
+        params: [fid, fid],
+      },
+    ];
+  }
+}
+
+interface Guard {
+  sql: string;
+  params: unknown[];
+}
+
+const NO_GUARD: Guard = { sql: "", params: [] };
+
+function sweptDuringWrite(name: string): Error {
+  return new Error(`sqlite-files: ${name} content was swept during write`);
 }
 
 function corruptBlock(name: string, shift: number, holds: number | string, expected: number) {
@@ -449,16 +553,16 @@ async function* once(bytes: Uint8Array): AsyncGenerator<Uint8Array> {
   yield bytes;
 }
 
-/** Rows strictly under `path`, as a range on the unique index (case-sensitive, unlike LIKE). */
-function descendants(path: string): { where: string; params: string[] } {
+/** Rows strictly under `path` as a range on the unique index (case-sensitive, unlike LIKE). */
+function descendants(path: string, alias = "p"): { where: string; params: string[] } {
   if (path === "/") return { where: "1", params: [] };
-  return { where: "(p.path > ? AND p.path < ?)", params: [`${path}/`, `${path}0`] };
+  return { where: `(${alias}.path > ? AND ${alias}.path < ?)`, params: [`${path}/`, `${path}0`] };
 }
 
-function selfAndDescendants(path: string): { where: string; params: string[] } {
-  if (path === "/") return descendants(path);
-  const range = descendants(path);
-  return { where: `(p.path = ? OR ${range.where})`, params: [path, ...range.params] };
+function selfAndDescendants(path: string, alias = "p"): { where: string; params: string[] } {
+  if (path === "/") return descendants(path, alias);
+  const range = descendants(path, alias);
+  return { where: `(${alias}.path = ? OR ${range.where})`, params: [path, ...range.params] };
 }
 
 function isInside(path: string, ancestor: string): boolean {

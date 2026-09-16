@@ -12,7 +12,7 @@ import {
   type StreamCodec,
   webDeflateCodec,
 } from "../../src/index.js";
-import { newFiles } from "./helpers.js";
+import { newFiles, passthrough } from "./helpers.js";
 
 const KiB = 1024;
 const MiB = 1024 * KiB;
@@ -28,16 +28,18 @@ const variants: [string, StreamCodec | null][] = [
 
 /** A driver that reports every block insert and block fetch. */
 function watching(driver: SqlDriver, events: { onInsert?(shift: number): void; onFetch?(): void }) {
-  return {
+  return passthrough(driver, {
     all(sql: string, ...params: unknown[]) {
       if (/SELECT shift, block FROM fs_blocks/.test(sql)) events.onFetch?.();
       return driver.all(sql, ...params);
     },
-    run(sql: string, ...params: unknown[]) {
-      if (/INSERT INTO fs_blocks/.test(sql)) events.onInsert?.(params[1] as number);
-      return driver.run(sql, ...params);
+    transaction(statements) {
+      for (const { sql, params } of statements) {
+        if (/INSERT INTO fs_blocks/.test(sql)) events.onInsert?.(params?.[1] as number);
+      }
+      return driver.transaction(statements);
     },
-  } as SqlDriver;
+  } as Partial<SqlDriver>);
 }
 
 for (const [label, compression] of variants) {
@@ -78,14 +80,13 @@ for (const [label, compression] of variants) {
         compression,
         wrap: (d) =>
           watching(
-            {
+            passthrough(d, {
               all: (sql, ...params) => {
                 const rows = d.all<{ shift: number }>(sql, ...params) as { shift: number }[];
                 if (/FROM fs_blocks/.test(sql) && rows[0]) shifts.push(rows[0].shift);
                 return rows as never;
               },
-              run: (sql, ...params) => d.run(sql, ...params),
-            },
+            }),
             {
               onFetch: () => {
                 fetches++;
