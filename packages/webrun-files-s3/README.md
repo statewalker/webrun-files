@@ -145,6 +145,14 @@ S3 doesn't have real directories, but this implementation simulates them using:
 With `{ recursive: true }` the delimiter is omitted and only file entries are yielded: directories,
 including empty ones created by `mkdir()`, do not appear in a recursive listing.
 
+Entries come out in path order (code-point order, as every `FilesApi` lists), and `{ after }` is
+sent to S3 as `StartAfter`, so resuming a listing does not re-list what came before. Keys list in
+UTF-8 byte order, which is already that order for files; but a directory `a` arrives as the common
+prefix `a/` *after* keys such as `a-x` and `a.txt` that must follow it. A non-recursive listing
+therefore holds back the few entries a directory still to come could precede, across page
+boundaries, and releases them in order. When a key `a` and keys under `a/` both exist, the path
+`/a` is listed once, as the file — the same answer `stats()` gives.
+
 Because `FileStats` is a discriminated union, this implementation has to commit
 to two things a store without real directories could otherwise leave vague:
 

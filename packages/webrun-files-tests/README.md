@@ -26,8 +26,9 @@ createFilesApiTests("MyCustomFilesApi", async () => {
 ```
 
 The factory runs before each test, so every test gets a fresh, isolated instance. One call
-registers 69 tests: 57 covering every `FilesApi` method, and the 12 of
-`createFileStatsConformanceTests` (below), which it always includes.
+registers 77 tests: 57 covering every `FilesApi` method, plus the 12 of
+`createFileStatsConformanceTests` and the 8 of `createListOrderTests` (both below), which it always
+includes.
 
 | Category | Tests | What's covered |
 |----------|-------|----------------|
@@ -43,6 +44,25 @@ registers 69 tests: 57 covering every `FilesApi` method, and the 12 of
 | Path handling | 6 | Double slashes, missing leading slash, trailing slashes, dot segments, special characters, long paths |
 | Concurrent operations | 3 | Parallel writes, reads and listings |
 | Error handling | 3 | Reading, removing and `stats()` on non-existent paths |
+
+### `createListOrderTests` — listing order and `after`
+
+Every `list()` must yield paths in strictly increasing `comparePaths` order (Unicode code point, i.e.
+UTF-8 bytes), and `{ after }` must yield exactly the entries that follow a path. The fixture, under
+`/order`, holds names chosen to break naive orderings: `B` (before `a`), `a b.txt`, `a-x` and
+`a.txt` (between the directory `a` and its children, since ` `, `-` and `.` sort before `/`),
+`é.txt`, and `\uFFFD.txt` before `😀.txt` (a surrogate pair, which `<` puts first).
+
+The 8 tests check:
+
+- the non-recursive listing is exactly the expected sequence, directories included;
+- the recursive listing is strictly increasing and holds every file in place (which directories a
+  recursive listing includes is left to the backend: S3 has none);
+- for each listing mode, resuming after every entry yields exactly the rest;
+- for each mode, cursors that are not entries — between entries, before the directory, past it, and
+  unnormalised ones like `/order/./z` — yield exactly the entries after them;
+- paging in chunks of three with `after` reassembles the full listing;
+- the root lists in order.
 
 ### `createFileStatsConformanceTests` — the `FileStats` union
 

@@ -215,7 +215,16 @@ filter to that mount only).
    mount set by the constructor is always last.
 3. The matched prefix is stripped and the mount's `fsPath` is prepended.
 4. Mount points themselves appear as synthetic directories in `list()` and
-   `stats()`, and `remove()` on a mount point throws.
+   `stats()`, and `remove()` on a mount point throws. In a listing, a mount
+   point replaces any entry the parent backend has at the same path.
+5. `list()` merges the owning backend's listing (minus the subtrees of mounts
+   inside the listed directory), each such mount's listing (recursive listings
+   include nested mounts), and the mount points, into one path-ordered stream.
+   `{ after }` is translated into each backend's own paths, and a mount whose
+   whole subtree sorts at or before it is not listed at all.
+
+`overlay` and `cow` list their merged directories in the same path order, and
+`FilteredFilesApi` and `GuardedFilesApi` pass `after` through unchanged.
 
 ### GuardedFilesApi — effective operation matrix
 
