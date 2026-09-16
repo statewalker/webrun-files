@@ -92,6 +92,9 @@ class MemFilesApi implements FilesApi {
 }
 ```
 
+`list()` yields entries in path order, as every `FilesApi` does: each call collects the matching
+entries and sorts them, so a listing costs O(n log n) in the number of entries it covers.
+
 ## Testing Example
 
 Use with vitest or any test framework:

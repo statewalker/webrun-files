@@ -176,6 +176,33 @@ for await (const entry of files.list('/project', { recursive: true })) {
 }
 ```
 
+### Listing order and resuming
+
+Every implementation yields `list()` entries in **strictly increasing path order, compared by
+Unicode code point** — the order of UTF-8 bytes, which is also how SQLite and S3 list — for
+recursive and non-recursive listings alike. `ListOptions.after` resumes after any path, whether or
+not it exists:
+
+```typescript
+// Read a big directory in chunks of 256 without keeping an iterator open.
+let after: string | undefined;
+for (;;) {
+  const chunk: FileInfo[] = [];
+  for await (const entry of files.list('/data', { recursive: true, after })) {
+    chunk.push(entry);
+    if (chunk.length === 256) break;
+  }
+  if (chunk.length === 0) break;
+  await handle(chunk);
+  after = chunk[chunk.length - 1].path;
+}
+```
+
+Two consequences of the order: a directory comes before its descendants, but they are not
+contiguous with it (`/a-x` and `/a.txt` sort between `/a` and `/a/b`, because `-` and `.` sort
+before `/`); and JavaScript's `<` is not this order — it misorders characters above U+FFFF — so
+compare paths with `comparePaths`.
+
 ### File Management
 
 ```typescript
@@ -183,6 +210,22 @@ await files.mkdir('/archive/2024');
 await files.copy('/report.pdf', '/archive/2024/report.pdf');
 await files.move('/temp/draft.txt', '/documents/final.txt');
 await files.remove('/old-stuff'); // Recursively deletes directories
+```
+
+### Listing helpers for backends
+
+```typescript
+import { comparePaths, listInPathOrder, mergeInPathOrder } from '@statewalker/webrun-files';
+
+comparePaths(a, b); // the listing order: negative, zero or positive
+
+// A backend that reads one directory at a time: children(dir) returns its direct
+// entries in any order. Reads a directory only when the listing reaches it, and
+// never one whose whole subtree sorts at or before options.after.
+listInPathOrder(dir, children, { recursive, after });
+
+// Merge listings that are each already ordered; the first stream wins a shared path.
+mergeInPathOrder([streamA, streamB]);
 ```
 
 ## Type Reference
@@ -199,7 +242,7 @@ import type {
   FileEntryLocation,    // { name: string, path: string }
   FileKind,             // "file" | "directory"
   ReadOptions,          // { start?: number, length?: number, signal?: AbortSignal }
-  ListOptions,          // { recursive?: boolean }
+  ListOptions,          // { recursive?: boolean, after?: string }
 } from '@statewalker/webrun-files';
 ```
 
@@ -212,6 +255,13 @@ be present on one backend and missing on the next. The parametrized suite in
 `@statewalker/webrun-files-tests` — a workspace package of this monorepo, not
 published to npm — checks this at runtime: `createFilesApiTests` runs it (as
 `createFileStatsConformanceTests`) for you.
+
+A listing must also follow the order above and honour `after` exactly: the
+entries after a path are the same, in the same order, as the matching suffix of
+the full listing. `createFilesApiTests` checks that too
+(`createListOrderTests`), against a fixture of names chosen to break naive
+orderings. `listInPathOrder` gives both properties to a backend that can read
+one directory at a time.
 
 ## License
 

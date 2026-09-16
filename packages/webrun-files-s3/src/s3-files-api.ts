@@ -24,7 +24,7 @@ import type {
   ListOptions,
   ReadOptions,
 } from "@statewalker/webrun-files";
-import { basename, normalizePath } from "@statewalker/webrun-files";
+import { basename, comparePaths, normalizePath } from "@statewalker/webrun-files";
 
 /** Default part size for multipart uploads: 5MB (S3 minimum) */
 const DEFAULT_PART_SIZE = 5 * 1024 * 1024;
@@ -277,11 +277,42 @@ export class S3FilesApi implements FilesApi {
     await this.client.send(command);
   }
 
+  /**
+   * Keys list in UTF-8 byte order, which is `comparePaths` order for files.
+   * A recursive listing is therefore already ordered. A non-recursive one is
+   * not quite: the directory `a` arrives as the common prefix `a/`, after keys
+   * such as `a-x` and `a.txt` that must follow it, so entries pass through a
+   * small reorder buffer (see {@link releaseBound}).
+   */
   async *list(path: string, options?: ListOptions): AsyncIterable<FileInfo> {
     const recursive = options?.recursive ?? false;
+    const after = options?.after;
+    const dirPath = normalizePath(path);
     const prefix = this.resolveKey(path);
     const normalizedPrefix = prefix ? `${prefix}/` : this.prefix ? `${this.prefix}/` : "";
 
+    // `after` as a key, by raw prefix replacement: normalising the path could
+    // move the cursor past entries that sort after it.
+    const dirPrefix = dirPath === "/" ? "" : dirPath;
+    let startAfter: string | undefined;
+    if (after !== undefined) {
+      if (after.startsWith(`${dirPrefix}/`)) {
+        startAfter = normalizedPrefix + after.slice(dirPrefix.length + 1);
+      } else if (comparePaths(after, `${dirPrefix}/`) >= 0) {
+        return; // the whole directory lies at or before the cursor
+      }
+    }
+
+    const pending: FileInfo[] = [];
+    // A key `a` and keys under `a/` make a file and a directory with the same
+    // path. A listing is strictly increasing, so the first released — the file,
+    // as `stats` also reports — is kept.
+    let released: string | undefined;
+    const release = (entry: FileInfo): boolean => {
+      if (entry.path === released) return false;
+      released = entry.path;
+      return after === undefined || comparePaths(entry.path, after) > 0;
+    };
     let continuationToken: string | undefined;
 
     do {
@@ -290,58 +321,75 @@ export class S3FilesApi implements FilesApi {
         Prefix: normalizedPrefix,
         Delimiter: recursive ? undefined : "/",
         ContinuationToken: continuationToken,
+        StartAfter: continuationToken ? undefined : startAfter,
         MaxKeys: 1000,
       });
 
       const response = await this.client.send(command);
 
-      if (!recursive && response.CommonPrefixes) {
-        for (const cpPrefix of response.CommonPrefixes) {
-          if (!cpPrefix.Prefix) continue;
-
-          const dirKey = cpPrefix.Prefix.endsWith("/")
-            ? cpPrefix.Prefix.slice(0, -1)
-            : cpPrefix.Prefix;
-
-          const dirPath = this.keyToPath(dirKey);
-
-          // A common prefix IS the directory variant: it exists only as an
-          // artefact of key naming, so there is nothing to report about it
-          // beyond its being a directory.
-          yield {
-            kind: "directory",
-            name: basename(dirPath),
-            path: dirPath,
-          };
-        }
+      // Common prefixes and contents each come sorted; interleave them by key.
+      const page: { key: string; entry?: FileInfo }[] = [];
+      for (const cpPrefix of recursive ? [] : (response.CommonPrefixes ?? [])) {
+        if (!cpPrefix.Prefix) continue;
+        const dirKey = cpPrefix.Prefix.endsWith("/")
+          ? cpPrefix.Prefix.slice(0, -1)
+          : cpPrefix.Prefix;
+        const childPath = this.keyToPath(dirKey);
+        // A common prefix IS the directory variant: it exists only as an
+        // artefact of key naming, so there is nothing to report about it
+        // beyond its being a directory.
+        page.push({
+          key: cpPrefix.Prefix,
+          entry: { kind: "directory", name: basename(childPath), path: childPath },
+        });
       }
-
-      if (response.Contents) {
-        for (const obj of response.Contents) {
-          if (!obj.Key) continue;
-          if (obj.Key === normalizedPrefix) continue;
-          if (`${obj.Key}/` === normalizedPrefix) continue;
-          // A key ending in "/" is the zero-byte marker `mkdir` writes to make
-          // an empty directory visible. It is NOT a file with `size: 0` — it
-          // is how this store spells a directory, and it surfaces through
-          // `CommonPrefixes` above. Every other key is a file, and a genuinely
-          // empty object is the file variant with `size: 0`.
-          if (obj.Key.endsWith("/")) continue;
-
-          const filePath = this.keyToPath(obj.Key);
-
-          yield {
+      for (const obj of response.Contents ?? []) {
+        if (!obj.Key) continue;
+        if (obj.Key === normalizedPrefix) continue;
+        if (`${obj.Key}/` === normalizedPrefix) continue;
+        // A key ending in "/" is the zero-byte marker `mkdir` writes to make
+        // an empty directory visible. It is NOT a file with `size: 0` — it
+        // is how this store spells a directory, and it surfaces through
+        // `CommonPrefixes` above. Every other key is a file, and a genuinely
+        // empty object is the file variant with `size: 0`. It still moves
+        // the listing's position forward.
+        if (obj.Key.endsWith("/")) {
+          page.push({ key: obj.Key });
+          continue;
+        }
+        const filePath = this.keyToPath(obj.Key);
+        page.push({
+          key: obj.Key,
+          entry: {
             kind: "file",
             name: basename(filePath),
             path: filePath,
             size: obj.Size ?? 0,
             lastModified: obj.LastModified?.getTime() ?? 0,
-          };
+          },
+        });
+      }
+      page.sort((x, y) => comparePaths(x.key, y.key));
+
+      for (const { key, entry } of page) {
+        if (recursive) {
+          if (entry && release(entry)) yield entry;
+          continue;
+        }
+        if (entry) insertInOrder(pending, entry);
+        const bound = releaseBound(this.keyToPath(key));
+        while (pending.length > 0 && comparePaths(pending[0].path, bound) < 0) {
+          const next = pending.shift() as FileInfo;
+          if (release(next)) yield next;
         }
       }
 
       continuationToken = response.NextContinuationToken;
     } while (continuationToken);
+
+    for (const entry of pending) {
+      if (release(entry)) yield entry;
+    }
   }
 
   async stats(path: string): Promise<FileStats | undefined> {
@@ -529,4 +577,25 @@ export class S3FilesApi implements FilesApi {
 
     return copied;
   }
+}
+
+/**
+ * Once a delimited listing has reached key position `position` (as a path), a
+ * directory still to come — which arrives as `D + "/"` at or after that
+ * position — has a path of at least this bound: the shortest prefix of
+ * `position` followed by a character that sorts before `/`, or `position`
+ * itself if there is none. Buffered entries below the bound are final.
+ */
+function releaseBound(position: string): string {
+  for (let i = 0; i < position.length; i++) {
+    if (position.charCodeAt(i) < 0x2f) return position.slice(0, i);
+  }
+  return position;
+}
+
+function insertInOrder(entries: FileInfo[], entry: FileInfo): void {
+  let i = entries.length;
+  // Equal paths keep arrival order: a file arrives before its same-named prefix.
+  while (i > 0 && comparePaths(entries[i - 1].path, entry.path) > 0) i--;
+  entries.splice(i, 0, entry);
 }

@@ -71,8 +71,8 @@ interface FilesApi {
   // Create directory (and parents)
   mkdir(path: string): Promise<void>;
 
-  // List directory contents
-  list(path: string, options?: { recursive?: boolean }): AsyncIterable<FileInfo>;
+  // List directory contents, in path order; `after` resumes after any path
+  list(path: string, options?: { recursive?: boolean; after?: string }): AsyncIterable<FileInfo>;
 
   // Get file/directory metadata (a discriminated union - see below)
   stats(path: string): Promise<FileStats | undefined>;
@@ -109,6 +109,14 @@ size, and a modification time for one exists on some stores and not on others,
 so no caller may rely on it. Narrow on `kind` and the fields for that kind are
 known to be present. Note that a zero-byte file is the file variant with
 `size: 0` - check the `kind`, never the truthiness of `size`.
+
+### Listings are ordered and resumable
+
+Every backend yields `list()` entries in strictly increasing path order, compared by Unicode code
+point (UTF-8 byte order, as SQLite and S3 list), and `{ after }` resumes after any path. A large or
+remote listing can therefore be read in chunks — take N entries, remember the last path, ask again
+— without holding an iterator open. Compare paths with `comparePaths` from
+`@statewalker/webrun-files`, not `<`.
 
 ## Packages
 
@@ -246,8 +254,8 @@ createFilesApiTests('MyCustomFilesApi', async () => ({
 createBigFilesApiTests('MyCustomFilesApi', async () => ({ api: new MyCustomFilesApi() }));
 ```
 
-`createFilesApiTests` registers 69 tests: every `FilesApi` method, path edge cases, concurrency,
-error handling, and runtime checks of the `FileStats` union. `createBigFilesApiTests` adds 11 tests
+`createFilesApiTests` registers 77 tests: every `FilesApi` method, path edge cases, concurrency,
+error handling, runtime checks of the `FileStats` union, and listing order with `after`. `createBigFilesApiTests` adds 11 tests
 of full and range reads, early stops, copy, remove and overwrite on a big file.
 
 ## Cross-repo dependencies

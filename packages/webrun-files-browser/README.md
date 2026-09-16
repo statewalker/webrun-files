@@ -142,6 +142,13 @@ function verifyPermission(
 ): Promise<boolean>;
 ```
 
+## Ordered Listings
+
+Directory handles enumerate in no defined order, so `list()` reads each directory (fetching each
+file's `File` for its size and time) and yields entries in path order, as every `FilesApi` does. A
+recursive listing reads a directory only when the listing reaches it, and with `{ after }` skips any
+directory whose whole subtree sorts at or before the cursor.
+
 ## Native Move Support
 
 The `move()` method attempts to use the browser's native [`FileSystemHandle.move()`](https://developer.mozilla.org/en-US/docs/Web/API/FileSystemHandle/move) when available (Chrome 110+, Edge 110+). This provides an atomic, in-place rename/move without copying file data. On older browsers or polyfills that lack native `move()`, or when the native call throws, the method falls back to copy-then-delete, which is not atomic.

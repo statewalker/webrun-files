@@ -121,6 +121,13 @@ Parent directories are created automatically when writing files:
 await writeText(files, '/deep/nested/path/file.txt', 'content');
 ```
 
+### Ordered Listings
+
+`readdir` returns names in no guaranteed order, so `list()` reads each directory, stats its entries
+and yields them in path order (as every `FilesApi` does). A recursive listing reads a directory only
+when the listing reaches it, and with `{ after }` skips any directory whose whole subtree sorts at
+or before the cursor.
+
 ### Recursive Operations
 
 Copy and remove work recursively on directories. `move()` is a single `fs.rename`: when the rename

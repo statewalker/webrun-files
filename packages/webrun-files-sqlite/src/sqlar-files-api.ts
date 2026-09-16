@@ -5,7 +5,7 @@ import type {
   ListOptions,
   ReadOptions,
 } from "@statewalker/webrun-files";
-import { normalizePath } from "@statewalker/webrun-files";
+import { comparePaths, normalizePath } from "@statewalker/webrun-files";
 import { toBytes } from "./bytes.js";
 import { type Codec, defaultCodec } from "./codec.js";
 import type { SqlDriver } from "./sql.types.js";
@@ -127,7 +127,22 @@ export class SqlarFilesApi implements FilesApi {
    * before anything under it. Link entries report their target's stats; a
    * recursive listing never descends through one, which rules out cycles.
    */
+  /**
+   * Rows come back in name order, but implicit directories and resolved links
+   * do not sit where `comparePaths` puts them, so the entries are collected,
+   * sorted and filtered by `after`. This backend already loads every row of
+   * the directory; sorting them costs no extra reads.
+   */
   async *list(path: string, options: ListOptions = {}): AsyncIterable<FileInfo> {
+    const entries: FileInfo[] = [];
+    for await (const entry of this.#listUnordered(path, options)) entries.push(entry);
+    entries.sort((a, b) => comparePaths(a.path, b.path));
+    for (const entry of entries) {
+      if (options.after === undefined || comparePaths(entry.path, options.after) > 0) yield entry;
+    }
+  }
+
+  async *#listUnordered(path: string, options: ListOptions): AsyncIterable<FileInfo> {
     const requested = toName(path);
     const resolved = await this.#resolve(requested);
     if (resolved?.stats.kind !== "directory") return;

@@ -101,6 +101,9 @@ pulling for the next; `read` fetches a block only when its consumer asks for byt
 previous one. Memory is bounded by one block plus one source chunk, and the tests measure both
 bounds. An `AbortSignal` passed to `read` is checked before every block.
 
+`list` is streamed too: it reads `fs_paths` in pages of 256 by key, in the index's order — which is
+the path order every `FilesApi` lists in — and `{ after }` is simply where the first page starts.
+
 ### Options
 
 | Option | Default | |
@@ -201,6 +204,8 @@ await files.readlink("/latest.js"); // "./v2/index.js"
   of one file is capped there. Use `SqliteFilesApi` in those runtimes.
 - Multi-row mutations (`copy`, `move`, `remove` of a tree) are not wrapped in a transaction.
 - Only the final path component is resolved through symlinks.
+- `list` loads every row under the directory, then sorts the entries into path order (implicit
+  directories and resolved links do not sit where the rows do) before applying `after`.
 
 ## License
 

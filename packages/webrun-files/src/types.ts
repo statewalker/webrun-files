@@ -30,6 +30,15 @@ export interface ReadOptions {
 export interface ListOptions {
   /** If true, lists all descendants recursively. Defaults to false. */
   recursive?: boolean;
+  /**
+   * Yield only entries whose path sorts strictly after this one, in
+   * `comparePaths` order. The path need not exist, and may lie outside
+   * the listed directory: before it, everything is yielded; past it, nothing.
+   *
+   * Resuming with the last path yielded continues a listing exactly where it
+   * stopped, without holding an iterator open between the calls.
+   */
+  after?: string;
 }
 
 /**
@@ -128,6 +137,10 @@ export interface FilesApi {
   /**
    * List directory contents.
    * Returns empty iterable for non-existent or non-directory paths.
+   *
+   * Entries are yielded in strictly increasing path order, compared by
+   * Unicode code point (`comparePaths`) — the same for recursive and
+   * non-recursive listings. `options.after` resumes after a given path.
    */
   list(path: string, options?: ListOptions): AsyncIterable<FileInfo>;
 
