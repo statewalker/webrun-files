@@ -21,24 +21,67 @@ function toNodeParams(params: unknown[]): SQLInputValue[] {
   return params.map((p) => (p instanceof ArrayBuffer ? new Uint8Array(p) : p)) as SQLInputValue[];
 }
 
-/** `ctx.storage.sql`: exec(query, ...bindings) → cursor with toArray(); BLOB → ArrayBuffer. */
-export function fakeDoSql(db: DatabaseSync) {
+/**
+ * `ctx.storage`: `sql.exec(query, ...bindings)` → a cursor with `toArray()` and
+ * `rowsWritten`; BLOB → ArrayBuffer; `transactionSync(fn)` runs `fn`
+ * synchronously and rolls back if it throws. `sql.exec` rejects transaction
+ * statements, as the runtime does.
+ */
+export function fakeDoStorage(db: DatabaseSync) {
+  const exec = (query: string, ...bindings: unknown[]) => {
+    if (/^\s*(BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE)\b/i.test(query)) {
+      throw new Error("sql.exec() cannot execute transaction statements");
+    }
+    const stmt = db.prepare(query);
+    const params = toNodeParams(bindings);
+    let rows: unknown[] = [];
+    let rowsWritten = 0;
+    if (stmt.columns().length > 0) {
+      rows = stmt.all(...params);
+      // RETURNING statements write as well; count what they returned.
+      if (/^\s*(INSERT|UPDATE|DELETE)\b/i.test(query)) rowsWritten = rows.length;
+    } else {
+      rowsWritten = Number(stmt.run(...params).changes);
+    }
+    const out = mapBlobs(rows, (b) => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength));
+    return { toArray: () => out, rowsWritten };
+  };
   return {
-    exec(query: string, ...bindings: unknown[]) {
-      const stmt = db.prepare(query);
-      const params = toNodeParams(bindings);
-      let rows: unknown[] = [];
-      if (stmt.columns().length > 0) rows = stmt.all(...params);
-      else stmt.run(...params);
-      const out = mapBlobs(rows, (b) => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength));
-      return { toArray: () => out };
+    sql: { exec },
+    transactionSync<T>(fn: () => T): T {
+      if (db.isTransaction) throw new Error("fake: nested transactionSync");
+      db.exec("BEGIN");
+      try {
+        const result = fn();
+        db.exec("COMMIT");
+        return result;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
     },
   };
 }
 
-/** D1: prepare(q).bind(...).all() → { results }, run(); BLOB → number[]; async. */
+/**
+ * D1: prepare(q).bind(...).all() → { results }, run(), and batch(statements) —
+ * one atomic transaction returning a result with `meta.changes` per statement;
+ * BLOB → number[]; async.
+ */
 export function fakeD1(db: DatabaseSync) {
   return {
+    async batch(statements: { run(): Promise<{ meta: { changes: number } }> }[]) {
+      db.exec("BEGIN");
+      try {
+        const results = [];
+        for (const statement of statements) results.push(await statement.run());
+        db.exec("COMMIT");
+        return results;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
     prepare(query: string) {
       let params: SQLInputValue[] = [];
       const statement = {
@@ -51,8 +94,12 @@ export function fakeD1(db: DatabaseSync) {
           return { success: true, results: mapBlobs(rows, (b) => Array.from(b)) };
         },
         async run() {
-          db.prepare(query).run(...params);
-          return { success: true, results: [] };
+          const stmt = db.prepare(query);
+          const changes =
+            stmt.columns().length > 0
+              ? stmt.all(...params).length
+              : Number(stmt.run(...params).changes);
+          return { success: true, results: [], meta: { changes } };
         },
       };
       return statement;

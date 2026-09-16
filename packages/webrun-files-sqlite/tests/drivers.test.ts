@@ -15,10 +15,10 @@ import {
   SqlarFilesApi,
   type SqlDriver,
 } from "../src/index.js";
-import { fakeD1, fakeDoSql } from "./fakes.js";
+import { fakeD1, fakeDoStorage } from "./fakes.js";
 
 const drivers: [string, (db: DatabaseSync) => SqlDriver][] = [
-  ["Durable Object", (db) => new DoSqlDriver(fakeDoSql(db))],
+  ["Durable Object", (db) => new DoSqlDriver(fakeDoStorage(db))],
   ["D1", (db) => new D1SqlDriver(fakeD1(db))],
 ];
 
