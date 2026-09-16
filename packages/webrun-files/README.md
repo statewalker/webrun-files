@@ -14,6 +14,7 @@ For actual filesystem implementations, install one of these packages:
 - `@statewalker/webrun-files-browser` - Browser File System Access API
 - `@statewalker/webrun-files-s3` - AWS S3 / S3-compatible storage
 - `@statewalker/webrun-files-sqlite` - SQLite (node:sqlite, Cloudflare Durable Objects, D1)
+- `@statewalker/webrun-files-http` - Serve and consume a `FilesApi` over HTTP (fetch-based stubs)
 - `@statewalker/webrun-files-composite` - Mount multiple backends into a unified filesystem
 
 ## The FilesApi Interface

@@ -12,6 +12,7 @@
  * - @statewalker/webrun-files-browser (browser)
  * - @statewalker/webrun-files-s3 (S3)
  * - @statewalker/webrun-files-sqlite (SQLite: node:sqlite, Durable Objects, D1)
+ * - @statewalker/webrun-files-http (a FilesApi served and consumed over HTTP)
  * - @statewalker/webrun-files-composite (mount several backends as one tree)
  */
 
