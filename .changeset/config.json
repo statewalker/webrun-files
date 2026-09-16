@@ -10,7 +10,7 @@
       "@statewalker/webrun-files-browser",
       "@statewalker/webrun-files-s3",
       "@statewalker/webrun-files-composite",
-      "@statewalker/webrun-files-sqlar"
+      "@statewalker/webrun-files-sqlite"
     ]
   ],
   "linked": [],

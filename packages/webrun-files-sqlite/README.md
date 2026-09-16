@@ -1,4 +1,4 @@
-# @statewalker/webrun-files-sqlar
+# @statewalker/webrun-files-sqlite
 
 A `FilesApi` whose whole state is one table in the [SQLite Archive](https://sqlite.org/sqlar.html)
 (SQLAR) format.
@@ -15,7 +15,7 @@ A `FilesApi` whose whole state is one table in the [SQLite Archive](https://sqli
 ## Installation
 
 ```bash
-npm install @statewalker/webrun-files-sqlar @statewalker/webrun-files
+npm install @statewalker/webrun-files-sqlite @statewalker/webrun-files
 ```
 
 ## Usage
@@ -23,7 +23,7 @@ npm install @statewalker/webrun-files-sqlar @statewalker/webrun-files
 ```typescript
 import { DatabaseSync } from "node:sqlite";
 import { readText, writeText } from "@statewalker/webrun-files";
-import { NodeSqlDriver, SqlarFilesApi } from "@statewalker/webrun-files-sqlar";
+import { NodeSqlDriver, SqlarFilesApi } from "@statewalker/webrun-files-sqlite";
 
 const files = new SqlarFilesApi(new NodeSqlDriver(new DatabaseSync("site.sqlar")));
 await files.init(); // creates the sqlar table if missing — await before anything else
@@ -35,7 +35,7 @@ console.log(await readText(files, "/docs/index.md"));
 ### Durable Objects and D1
 
 ```typescript
-import { D1SqlDriver, DoSqlDriver, SqlarFilesApi } from "@statewalker/webrun-files-sqlar";
+import { D1SqlDriver, DoSqlDriver, SqlarFilesApi } from "@statewalker/webrun-files-sqlite";
 
 // Inside a Durable Object
 const files = new SqlarFilesApi(new DoSqlDriver(this.ctx.storage.sql));

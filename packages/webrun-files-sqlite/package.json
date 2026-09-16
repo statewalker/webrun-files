@@ -1,9 +1,9 @@
 {
-  "name": "@statewalker/webrun-files-sqlar",
+  "name": "@statewalker/webrun-files-sqlite",
   "version": "0.9.0",
   "private": false,
   "type": "module",
-  "description": "FilesApi implementation stored as a SQLite Archive (SQLAR)",
+  "description": "SQLite-backed FilesApi implementations",
   "homepage": "https://github.com/statewalker/webrun-files",
   "author": {
     "name": "Mikhail Kotelnikov",

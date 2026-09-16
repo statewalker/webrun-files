@@ -1,5 +1,5 @@
 ---
-"@statewalker/webrun-files-sqlar": minor
+"@statewalker/webrun-files-sqlite": minor
 ---
 
 New package: `SqlarFilesApi`, a `FilesApi` stored as a SQLite Archive, with drivers for
