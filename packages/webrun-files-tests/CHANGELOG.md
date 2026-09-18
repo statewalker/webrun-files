@@ -1,5 +1,12 @@
 # @statewalker/webrun-files-tests
 
+## 3.0.0
+
+### Patch Changes
+
+- Updated dependencies [2ea6787]
+  - @statewalker/webrun-files@0.10.0
+
 ## 2.0.0
 
 ### Patch Changes

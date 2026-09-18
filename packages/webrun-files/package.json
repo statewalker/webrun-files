@@ -1,6 +1,6 @@
 {
   "name": "@statewalker/webrun-files",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "private": false,
   "type": "module",
   "description": "FilesApi interface and utilities for cross-platform filesystem abstraction",
