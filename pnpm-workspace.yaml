@@ -2,7 +2,7 @@ packages:
   - "packages/*"
 
 catalog:
-  "@changesets/cli": ^2.31.1
+  "@changesets/cli": ^3.0.3
   "@aws-sdk/client-s3": ^3.1146.0
   "@biomejs/biome": ^2.5.15
   "@hono/node-server": ^2.1.3
