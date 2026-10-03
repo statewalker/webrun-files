@@ -36,14 +36,14 @@
     "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
-    "@statewalker/webrun-files": "workspace:*"
+    "@statewalker/webrun-files": "workspace:^"
   },
   "peerDependencies": {
     "@aws-sdk/client-s3": "catalog:peers"
   },
   "devDependencies": {
     "@aws-sdk/client-s3": "catalog:",
-    "@statewalker/webrun-files-tests": "workspace:*",
+    "@statewalker/webrun-files-tests": "workspace:^",
     "@types/node": "catalog:",
     "rimraf": "catalog:",
     "rolldown": "catalog:",

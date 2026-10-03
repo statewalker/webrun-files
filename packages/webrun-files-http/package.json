@@ -36,13 +36,13 @@
     "e2e:serve": "pnpm run build && tsx e2e/serve.ts"
   },
   "dependencies": {
-    "@statewalker/webrun-files": "workspace:*",
-    "@statewalker/webrun-files-mem": "workspace:*"
+    "@statewalker/webrun-files": "workspace:^",
+    "@statewalker/webrun-files-mem": "workspace:^"
   },
   "devDependencies": {
     "@hono/node-server": "catalog:",
     "@playwright/test": "catalog:",
-    "@statewalker/webrun-files-tests": "workspace:*",
+    "@statewalker/webrun-files-tests": "workspace:^",
     "@types/node": "catalog:",
     "hono": "catalog:",
     "rimraf": "catalog:",

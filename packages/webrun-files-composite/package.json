@@ -34,11 +34,11 @@
     "lint": "biome lint src tests"
   },
   "dependencies": {
-    "@statewalker/webrun-files": "workspace:*"
+    "@statewalker/webrun-files": "workspace:^"
   },
   "devDependencies": {
-    "@statewalker/webrun-files-tests": "workspace:*",
-    "@statewalker/webrun-files-mem": "workspace:*",
+    "@statewalker/webrun-files-tests": "workspace:^",
+    "@statewalker/webrun-files-mem": "workspace:^",
     "@types/node": "catalog:",
     "rimraf": "catalog:",
     "rolldown": "catalog:",
