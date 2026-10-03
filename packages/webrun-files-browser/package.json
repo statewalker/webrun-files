@@ -35,7 +35,7 @@
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
-    "@statewalker/webrun-files": "workspace:^"
+    "@statewalker/webrun-files": "workspace:*"
   },
   "devDependencies": {
     "@statewalker/webrun-files-tests": "workspace:*",
