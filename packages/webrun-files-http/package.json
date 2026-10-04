@@ -1,6 +1,6 @@
 {
   "name": "@statewalker/webrun-files-http",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "private": false,
   "type": "module",
   "description": "FilesApi over HTTP: a fetch-based server stub and client stub",
