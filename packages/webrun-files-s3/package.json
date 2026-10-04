@@ -1,6 +1,6 @@
 {
   "name": "@statewalker/webrun-files-s3",
-  "version": "0.10.0",
+  "version": "0.10.2",
   "private": false,
   "type": "module",
   "description": "S3-backed FilesApi implementation for webrun-files",
@@ -19,6 +19,7 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
+      "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/esm/index.js",
       "require": "./dist/cjs/index.cjs"
@@ -36,14 +37,14 @@
     "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
-    "@statewalker/webrun-files": "workspace:*"
+    "@statewalker/webrun-files": "workspace:^"
   },
   "peerDependencies": {
-    "@aws-sdk/client-s3": "^3.1032.0"
+    "@aws-sdk/client-s3": "catalog:peers"
   },
   "devDependencies": {
     "@aws-sdk/client-s3": "catalog:",
-    "@statewalker/webrun-files-tests": "workspace:*",
+    "@statewalker/webrun-files-tests": "workspace:^",
     "@types/node": "catalog:",
     "rimraf": "catalog:",
     "rolldown": "catalog:",

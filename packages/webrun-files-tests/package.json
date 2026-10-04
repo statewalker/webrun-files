@@ -17,8 +17,8 @@
     "lint": "biome lint src"
   },
   "peerDependencies": {
-    "@statewalker/webrun-files": "workspace:*",
-    "vitest": "^4.1.4"
+    "@statewalker/webrun-files": "workspace:^",
+    "vitest": "catalog:peers"
   },
   "devDependencies": {
     "@types/node": "catalog:",

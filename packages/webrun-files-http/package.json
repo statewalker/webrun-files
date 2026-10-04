@@ -1,6 +1,6 @@
 {
   "name": "@statewalker/webrun-files-http",
-  "version": "0.10.0",
+  "version": "0.10.2",
   "private": false,
   "type": "module",
   "description": "FilesApi over HTTP: a fetch-based server stub and client stub",
@@ -19,6 +19,7 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
+      "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/esm/index.js",
       "require": "./dist/cjs/index.cjs"
@@ -36,13 +37,13 @@
     "e2e:serve": "pnpm run build && tsx e2e/serve.ts"
   },
   "dependencies": {
-    "@statewalker/webrun-files": "workspace:*",
-    "@statewalker/webrun-files-mem": "workspace:*"
+    "@statewalker/webrun-files": "workspace:^",
+    "@statewalker/webrun-files-mem": "workspace:^"
   },
   "devDependencies": {
     "@hono/node-server": "catalog:",
     "@playwright/test": "catalog:",
-    "@statewalker/webrun-files-tests": "workspace:*",
+    "@statewalker/webrun-files-tests": "workspace:^",
     "@types/node": "catalog:",
     "hono": "catalog:",
     "rimraf": "catalog:",

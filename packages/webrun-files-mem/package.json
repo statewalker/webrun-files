@@ -1,6 +1,6 @@
 {
   "name": "@statewalker/webrun-files-mem",
-  "version": "0.10.0",
+  "version": "0.10.2",
   "private": false,
   "type": "module",
   "description": "In-memory FilesApi implementation",
@@ -19,6 +19,7 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
+      "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/esm/index.js",
       "require": "./dist/cjs/index.cjs"
@@ -34,10 +35,10 @@
     "lint": "biome lint src tests"
   },
   "dependencies": {
-    "@statewalker/webrun-files": "workspace:*"
+    "@statewalker/webrun-files": "workspace:^"
   },
   "devDependencies": {
-    "@statewalker/webrun-files-tests": "workspace:*",
+    "@statewalker/webrun-files-tests": "workspace:^",
     "@types/node": "catalog:",
     "rimraf": "catalog:",
     "rolldown": "catalog:",
