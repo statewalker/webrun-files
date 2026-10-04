@@ -4,7 +4,10 @@
   "private": false,
   "type": "module",
   "description": "SQLite-backed FilesApi implementations",
-  "homepage": "https://github.com/statewalker/webrun-files",
+  "bugs": {
+    "url": "https://github.com/statewalker/webrun-files/issues"
+  },
+  "homepage": "https://github.com/statewalker/webrun-files/tree/main/packages/webrun-files-sqlite#readme",
   "author": {
     "name": "Mikhail Kotelnikov",
     "email": "mikhail.kotelnikov@gmail.com"
@@ -12,7 +15,8 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git@github.com:statewalker/webrun-files.git"
+    "url": "git+https://github.com/statewalker/webrun-files.git",
+    "directory": "packages/webrun-files-sqlite"
   },
   "main": "./dist/cjs/index.cjs",
   "module": "./dist/esm/index.js",

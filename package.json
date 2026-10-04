@@ -4,7 +4,10 @@
   "type": "module",
   "packageManager": "pnpm@10.16.1",
   "description": "Basic files API - monorepo",
-  "homepage": "https://github.com/statewalker/webrun-files",
+  "bugs": {
+    "url": "https://github.com/statewalker/webrun-files/issues"
+  },
+  "homepage": "https://github.com/statewalker/webrun-files#readme",
   "author": {
     "name": "Mikhail Kotelnikov",
     "email": "mikhail.kotelnikov@gmail.com"
@@ -12,7 +15,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/statewalker/webrun-files.git"
+    "url": "git+https://github.com/statewalker/webrun-files.git"
   },
   "scripts": {
     "build": "pnpm -r run build",
@@ -26,7 +29,8 @@
     "publish-all": "pnpm run build && pnpm -r publish --access public --no-git-checks",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release-packages": "changeset publish"
+    "release-packages": "changeset publish",
+    "typecheck": "pnpm -r run typecheck"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
