@@ -11,12 +11,8 @@
     "declaration": true,
     "declarationMap": true,
     "paths": {
-      "@statewalker/webrun-files": [
-        "packages/webrun-files/src"
-      ],
-      "@statewalker/webrun-files-tests": [
-        "packages/webrun-files-tests/src"
-      ]
+      "@statewalker/webrun-files": ["packages/webrun-files/src"],
+      "@statewalker/webrun-files-tests": ["packages/webrun-files-tests/src"]
     }
   }
 }
