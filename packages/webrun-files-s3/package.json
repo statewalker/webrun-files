@@ -1,6 +1,6 @@
 {
   "name": "@statewalker/webrun-files-s3",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "private": false,
   "type": "module",
   "description": "S3-backed FilesApi implementation for webrun-files",

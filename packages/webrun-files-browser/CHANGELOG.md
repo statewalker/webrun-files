@@ -1,5 +1,15 @@
 # @statewalker/webrun-files-browser
 
+## 0.10.2
+
+### Patch Changes
+
+- Release of the changes since the last published version:
+  
+  - files changed: README.md
+- Updated dependencies
+  - @statewalker/webrun-files@0.10.2
+
 ## 0.10.0
 
 ### Minor Changes
