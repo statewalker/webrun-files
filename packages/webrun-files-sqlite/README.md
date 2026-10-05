@@ -17,10 +17,15 @@ SQLAR tools, in a runtime without a row limit (Node, Deno, Bun, a browser SQLite
 ## Installation
 
 ```bash
-npm install @statewalker/webrun-files-sqlite @statewalker/webrun-files
+pnpm add @statewalker/webrun-files-sqlite @statewalker/webrun-files
 ```
 
 `pako` is not a dependency: pass the module to `pakoCodec` / `pakoDeflateCodec` if you use them.
+
+## Entry points
+
+One entry point, `@statewalker/webrun-files-sqlite`: ESM (`dist/esm/index.js`), CommonJS (`dist/cjs/index.cjs`) and types (`dist/index.d.ts`). The TypeScript sources ship in `src/`.
+Any runtime with a supported SQLite handle: Node.js (`node:sqlite`), Cloudflare Durable Objects, Cloudflare D1. The package imports none of them itself.
 
 ## Drivers
 
@@ -169,6 +174,8 @@ It takes the same drivers (see *Drivers*), subject to the row limit below.
 import * as pako from "pako";
 const files = new SqlarFilesApi(driver, { codec: pakoCodec(pako) });
 ```
+
+`defaultCodec()` picks `webCodec()` where `CompressionStream` exists and `rawCodec()` elsewhere; it is what `SqlarFilesApi` uses when `codec` is not given.
 
 All codecs read and write the same zlib format, so an archive written with one is read by another.
 Inputs shorter than `minSize` (64 bytes by default) are stored without attempting compression.

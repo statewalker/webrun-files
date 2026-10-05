@@ -13,8 +13,15 @@ Serve any `FilesApi` over HTTP, and use it remotely as a `FilesApi` again — wi
 ## Installation
 
 ```bash
-npm install @statewalker/webrun-files-http @statewalker/webrun-files
+pnpm add @statewalker/webrun-files-http @statewalker/webrun-files
 ```
+
+`@statewalker/webrun-files-mem` comes along as a dependency: the server stub uses it as the default `staging` for chunked uploads.
+
+## Entry points
+
+One entry point, `@statewalker/webrun-files-http`: ESM (`dist/esm/index.js`), CommonJS (`dist/cjs/index.cjs`) and types (`dist/index.d.ts`). The TypeScript sources ship in `src/`.
+Any runtime with `fetch`, `Request`, `Response` and `ReadableStream`: browsers, Service Workers, Node.js, Deno, Bun, Cloudflare Workers.
 
 ## Usage
 
@@ -211,8 +218,8 @@ pnpm test:e2e    # build, then run the Playwright tests in Chromium and Firefox
   - awkward names, and absent files;
   - a forced streamed upload failing without storing anything.
 
-WebKit is opt-in (`E2E_WEBKIT=1 pnpm test:e2e`). Besides `npx playwright install webkit` it needs
-system libraries that only `sudo npx playwright install-deps webkit` installs.
+WebKit is opt-in (`E2E_WEBKIT=1 pnpm test:e2e`). Besides `pnpm exec playwright install webkit` it needs
+system libraries that only `sudo pnpm exec playwright install-deps webkit` installs.
 
 ## Limitations
 
@@ -223,7 +230,7 @@ system libraries that only `sudo npx playwright install-deps webkit` installs.
 
 ## Testing
 
-The package runs the shared suites four ways:
+The package runs:
 - `createFilesApiTests`: streamed, chunked and `POST`-verb clients calling the server stub directly;
 - `createFilesApiTests` again over a real HTTP connection (`hono` with `@hono/node-server`, both
   development dependencies only);

@@ -12,8 +12,13 @@ This package provides a `FilesApi` implementation that works in modern browsers 
 ## Installation
 
 ```bash
-npm install @statewalker/webrun-files-browser @statewalker/webrun-files
+pnpm add @statewalker/webrun-files-browser @statewalker/webrun-files
 ```
+
+## Entry points
+
+One entry point, `@statewalker/webrun-files-browser`: ESM (`dist/esm/index.js`), CommonJS (`dist/cjs/index.cjs`) and types (`dist/index.d.ts`). The TypeScript sources ship in `src/`.
+Browsers with the File System Access API.
 
 ## Usage
 

@@ -80,6 +80,11 @@ const safe = new GuardedFilesApi(visible, [
 ]);
 ```
 
+## Entry points
+
+One entry point, `@statewalker/webrun-files-composite`: ESM (`dist/esm/index.js`), CommonJS (`dist/cjs/index.cjs`) and types (`dist/index.d.ts`). The TypeScript sources ship in `src/`.
+Runs anywhere: no runtime-specific imports.
+
 ## Examples
 
 ### Mount multiple backends

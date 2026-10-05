@@ -4,7 +4,7 @@ Shared test suites for `FilesApi` implementations. Every backend in this reposit
 them to check that a custom backend follows the interface contract.
 
 This package is private to the monorepo (`"private": true`) and is consumed through
-`workspace:*`. Its suites are Vitest suites: `vitest` is a peer dependency.
+`workspace:^`. Its suites are Vitest suites: `vitest` is a peer dependency.
 
 ## Test suites
 

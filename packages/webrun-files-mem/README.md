@@ -14,8 +14,13 @@ This package provides a fast, ephemeral filesystem that stores everything in mem
 ## Installation
 
 ```bash
-npm install @statewalker/webrun-files-mem @statewalker/webrun-files
+pnpm add @statewalker/webrun-files-mem @statewalker/webrun-files
 ```
+
+## Entry points
+
+One entry point, `@statewalker/webrun-files-mem`: ESM (`dist/esm/index.js`), CommonJS (`dist/cjs/index.cjs`) and types (`dist/index.d.ts`). The TypeScript sources ship in `src/`.
+Runs anywhere: browser, Node.js, workers.
 
 ## Usage
 

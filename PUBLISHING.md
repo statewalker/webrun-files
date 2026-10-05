@@ -1,87 +1,31 @@
-# Publishing Guide
+# Publishing
 
-This monorepo uses [Changesets](https://github.com/changesets/changesets) for version management and publishing.
+Packages are released automatically. Nobody runs `changeset version` or `changeset publish` by hand.
 
-## Quick Reference
+1. CI runs on every push to `main` (the shared workflow from
+   [statewalker/.github](https://github.com/statewalker/.github)).
+2. After CI passes, a job compares each public package's packed contents with the version on npm.
+   For every package that differs it writes a changeset: a patch bump, or a minor bump on a 0.x
+   package when one of its dependencies crosses a breaking line.
+3. The job opens (or updates) a "chore: version packages" pull request with the version bumps and
+   `CHANGELOG.md` entries.
+4. Merging that pull request publishes the bumped packages to npm with provenance.
 
-```bash
-pnpm changeset          # Create a changeset
-pnpm version-packages   # Bump versions from changesets
-pnpm release-packages   # Publish to npm
-```
+## Choosing the bump or the changelog text
 
-## Step-by-Step Publishing Flow
-
-### 1. Create a Changeset
-
-After making code changes, create a changeset to describe what changed:
+Add your own changeset in your pull request:
 
 ```bash
 pnpm changeset
 ```
 
-This will prompt you to:
-- Select which packages have changed
-- Choose the semver bump type (`patch`, `minor`, or `major`)
-- Write a summary of the changes
-
-A new markdown file will be created in `.changeset/` directory.
-
-### 2. Version the Packages
-
-When ready to release, consume all pending changesets and update package versions:
-
-```bash
-pnpm version-packages
-```
-
-This command:
-- Reads all changeset files in `.changeset/`
-- Updates `package.json` versions for affected packages
-- Generates/updates `CHANGELOG.md` files
-- Deletes the consumed changeset files
-
-### 3. Commit Version Changes
-
-```bash
-git add .
-git commit -m "chore: version packages"
-```
-
-### 4. Publish to npm
-
-```bash
-pnpm release-packages
-```
-
-This publishes all packages with updated versions to npm.
-
-### 5. Push to Git
-
-```bash
-git push --follow-tags
-```
-
-## Alternative: Manual Publish
-
-For more control, you can use the `publish-all` script which builds and publishes with public access:
-
-```bash
-pnpm publish-all
-```
+Pick the packages, the bump (`patch`, `minor`, `major`) and write the summary.
 
 ## Configuration
 
-Changeset configuration is in `.changeset/config.json`:
+`.changeset/config.json` holds the changesets settings. Each public package sets
+`publishConfig.access` to `public`; `@statewalker/webrun-files-tests` is private and never
+published.
 
-| Option | Value | Description |
-|--------|-------|-------------|
-| `access` | `restricted` | npm access level (use `publish-all` for public) |
-| `baseBranch` | `main` | Branch to compare against |
-| `commit` | `false` | Don't auto-commit version changes |
-
-## Semver Guidelines
-
-- **patch**: Bug fixes, documentation updates
-- **minor**: New features, non-breaking changes
-- **major**: Breaking changes to the API
+The full description of the release flow, Renovate and the shared CI lives in
+[statewalker/.github](https://github.com/statewalker/.github#readme).

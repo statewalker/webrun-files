@@ -13,8 +13,15 @@ This package provides a `FilesApi` implementation that stores files in Amazon S3
 ## Installation
 
 ```bash
-npm install @statewalker/webrun-files-s3 @statewalker/webrun-files @aws-sdk/client-s3
+pnpm add @statewalker/webrun-files-s3 @statewalker/webrun-files @aws-sdk/client-s3
 ```
+
+`@aws-sdk/client-s3` (`^3.1032.0`) is a peer dependency: you create the `S3Client` and pass it in.
+
+## Entry points
+
+One entry point, `@statewalker/webrun-files-s3`: ESM (`dist/esm/index.js`), CommonJS (`dist/cjs/index.cjs`) and types (`dist/index.d.ts`). The TypeScript sources ship in `src/`.
+Any runtime the AWS SDK v3 supports (Node.js, browsers, workers).
 
 ## Usage
 

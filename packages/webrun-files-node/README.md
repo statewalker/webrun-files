@@ -9,8 +9,13 @@ This package provides a `FilesApi` implementation that works with the real files
 ## Installation
 
 ```bash
-npm install @statewalker/webrun-files-node @statewalker/webrun-files
+pnpm add @statewalker/webrun-files-node @statewalker/webrun-files
 ```
+
+## Entry points
+
+One entry point, `@statewalker/webrun-files-node`: ESM (`dist/esm/index.js`), CommonJS (`dist/cjs/index.cjs`) and types (`dist/index.d.ts`). The TypeScript sources ship in `src/`.
+Node.js only (uses `node:fs/promises`).
 
 ## Usage
 

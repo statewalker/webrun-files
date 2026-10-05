@@ -5,7 +5,7 @@ Core types and utilities for cross-platform file operations. This package define
 ## Installation
 
 ```bash
-npm install @statewalker/webrun-files
+pnpm add @statewalker/webrun-files
 ```
 
 For actual filesystem implementations, install one of these packages:
@@ -16,6 +16,11 @@ For actual filesystem implementations, install one of these packages:
 - `@statewalker/webrun-files-sqlite` - SQLite (node:sqlite, Cloudflare Durable Objects, D1)
 - `@statewalker/webrun-files-http` - Serve and consume a `FilesApi` over HTTP (fetch-based stubs)
 - `@statewalker/webrun-files-composite` - Mount multiple backends into a unified filesystem
+
+## Entry points
+
+One entry point, `@statewalker/webrun-files`: ESM (`dist/esm/index.js`), CommonJS (`dist/cjs/index.cjs`) and types (`dist/index.d.ts`). The TypeScript sources ship in `src/`.
+Runs anywhere: no runtime-specific imports.
 
 ## The FilesApi Interface
 
