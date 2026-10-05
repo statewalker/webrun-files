@@ -1,12 +1,36 @@
 # @statewalker/webrun-files-tests
 
-Shared test suites for `FilesApi` implementations. Every backend in this repository runs them; use
-them to check that a custom backend follows the interface contract.
+## What it is
 
-This package is private to the monorepo (`"private": true`) and is consumed through
-`workspace:^`. Its suites are Vitest suites: `vitest` is a peer dependency.
+Shared Vitest suites that define, as executable tests, what a correct `FilesApi` implementation
+does, plus small helpers for writing such tests. Private to this repository (`"private": true`),
+not published to npm; packages here depend on it as `workspace:^`.
 
-## Test suites
+## Why it exists
+
+Every backend in this repository implements the same interface. Written separately, their tests would drift and each
+backend would end up with its own idea of edge cases: empty files, range reads past the end,
+directory metadata, listing order. One parametrized suite that every backend runs keeps them in
+agreement, and gives the author of a new backend a ready-made definition of done.
+
+## How to use
+
+Add it as a development dependency inside this workspace (`"@statewalker/webrun-files-tests":
+"workspace:^"`). `vitest` and `@statewalker/webrun-files` are peer dependencies. The package
+builds to `dist/esm` and `dist/cjs` (`pnpm build`); backends import the built suites, so rebuild
+it after changing a suite.
+
+Call a suite factory at the top level of a test file with a name and a factory that returns a fresh
+`{ api, cleanup? }`:
+
+| Export | Registers |
+| --- | --- |
+| `createFilesApiTests(name, factory)` | 77 tests: the interface contract, including the two suites below |
+| `createFileStatsConformanceTests(name, factory)` | 12 tests of the `FileStats` union |
+| `createListOrderTests(name, factory)` | 8 tests of listing order and `after` |
+| `createBigFilesApiTests(name, factory, options?)` | 11 tests on one big (256 MiB by default) streamed file |
+
+## What each suite checks
 
 ### `createFilesApiTests` — the interface contract
 
@@ -100,7 +124,7 @@ boundaries never line up with a backend's own. The 11 tests check:
 - `copy` of the big file, a range read of the copy, and `remove` of the copy leaving the original;
 - overwriting a copy of the big file with 3 bytes.
 
-## Types
+## Types the factories use
 
 ```typescript
 interface FilesApiTestContext {
@@ -123,7 +147,7 @@ interface BigFilesTestOptions {
 }
 ```
 
-## Test utilities
+## Helpers for writing tests
 
 ```typescript
 import {
@@ -179,6 +203,28 @@ createBigFilesApiTests("MemFilesApi", async () => ({ api: new MemFilesApi() }));
 
 Keep `createBigFilesApiTests` in its own test file (this repository uses `tests/big-files.test.ts`):
 Vitest runs test files in parallel, and a 256 MiB suite competes for CPU and memory.
+
+## Internals
+
+### Why the big-file suite never holds the file
+
+A 256 MiB buffer per backend, times parallel test files, would exhaust memory before it found a
+bug. The content is a function of the offset (`positionByte`), generated while writing and checked
+while reading, so the suite's own memory stays at one chunk. Because that content does not compress,
+backends that compress are tested with input that grows.
+
+### Constraints
+
+- The factories register tests at import time, so call them at the top level of a test file, not
+  inside a test.
+- `createBigFilesApiTests` creates one instance for the whole suite (`beforeAll`); the other suites
+  call the factory before each test.
+- `TestSuiteOptions` is exported but no suite takes it; the factories receive only `name` and
+  `factory`.
+
+### Dependencies
+
+Peers: `vitest` (`^4.1.4 || ^5.0.3`) and `@statewalker/webrun-files`. No other runtime dependency.
 
 ## License
 

@@ -1,265 +1,150 @@
 # @statewalker/webrun-files-s3
 
-S3 implementation of the `FilesApi` interface from `@statewalker/webrun-files`.
+## What it is
 
-## Overview
+`S3FilesApi`, an implementation of `FilesApi` from `@statewalker/webrun-files` that stores files
+as objects in an Amazon S3 bucket or any S3-compatible store (MinIO, RustFS, Cloudflare R2,
+DigitalOcean Spaces, Backblaze B2, Wasabi). Paths become keys under an optional prefix.
 
-This package provides a `FilesApi` implementation that stores files in Amazon S3 or S3-compatible object storage services (MinIO, DigitalOcean Spaces, Backblaze B2, Cloudflare R2, etc.). It maps filesystem-like operations to S3 API calls, providing:
+## Why it exists
 
-- **Virtual directory structure** using key prefixes
-- **Range reads** via HTTP Range headers for efficient partial access
-- **Server-side copy** for copy/move operations (no data transfer through client)
+S3 has keys, not files and directories, and its API (ranges, multipart uploads, server-side copy,
+delimited listings) is far from a file system's. This package maps the file operations onto it
+once, with streaming in both directions, so code written against `FilesApi` runs on object storage
+unchanged.
 
-## Installation
+## How to use
 
 ```bash
 pnpm add @statewalker/webrun-files-s3 @statewalker/webrun-files @aws-sdk/client-s3
 ```
 
-`@aws-sdk/client-s3` (`^3.1032.0`) is a peer dependency: you create the `S3Client` and pass it in.
+`@aws-sdk/client-s3` (`^3.1032.0`) is a peer dependency: you create and configure the `S3Client`
+(credentials, region, endpoint) and pass it in.
 
-## Entry points
+One entry point, `@statewalker/webrun-files-s3`: ESM (`dist/esm/index.js`), CommonJS
+(`dist/cjs/index.cjs`), types (`dist/index.d.ts`); sources in `src/`. Runs wherever the AWS SDK v3
+runs.
 
-One entry point, `@statewalker/webrun-files-s3`: ESM (`dist/esm/index.js`), CommonJS (`dist/cjs/index.cjs`) and types (`dist/index.d.ts`). The TypeScript sources ship in `src/`.
-Any runtime the AWS SDK v3 supports (Node.js, browsers, workers).
+```typescript
+interface S3FilesApiOptions {
+  client: S3Client;            // a configured client
+  bucket: string;
+  prefix?: string;             // key prefix acting as the root; leading/trailing "/" are stripped
+  multipartPartSize?: number;  // bytes per multipart part, default 5 MiB (the S3 minimum)
+}
+```
 
-## Usage
+## Examples
 
-### Basic Usage
+### AWS
 
 ```typescript
 import { S3Client } from '@aws-sdk/client-s3';
 import { S3FilesApi } from '@statewalker/webrun-files-s3';
 import { readText, writeText } from '@statewalker/webrun-files';
 
-// Create S3 client
-const s3Client = new S3Client({
-  region: 'us-east-1',
-  credentials: {
-    accessKeyId: 'YOUR_ACCESS_KEY',
-    secretAccessKey: 'YOUR_SECRET_KEY',
-  },
-});
-
-// Create S3-backed files API
+// Credentials come from the environment or the IAM role
 const files = new S3FilesApi({
-  client: s3Client,
+  client: new S3Client({ region: 'us-east-1' }),
   bucket: 'my-bucket',
-  prefix: 'my-app/data', // optional key prefix
+  prefix: 'my-app/data',
 });
 
-// Write a file
-await writeText(files, '/docs/hello.txt', 'Hello, S3!');
+await writeText(files, '/docs/hello.txt', 'Hello, S3!'); // key: my-app/data/docs/hello.txt
+console.log(await readText(files, '/docs/hello.txt'));
 
-// Read a file
-const content = await readText(files, '/docs/hello.txt');
-console.log(content); // "Hello, S3!"
-
-// List directory contents
 for await (const entry of files.list('/docs')) {
   console.log(entry.name, entry.kind, entry.kind === 'file' ? entry.size : '');
 }
 ```
 
-### With S3-Compatible Storage (MinIO)
+### An S3-compatible server on a custom endpoint
 
 ```typescript
-import { S3Client } from '@aws-sdk/client-s3';
-import { S3FilesApi } from '@statewalker/webrun-files-s3';
-
-const s3Client = new S3Client({
-  endpoint: 'http://localhost:9000',
-  region: 'us-east-1',
-  credentials: {
-    accessKeyId: 'minioadmin',
-    secretAccessKey: 'minioadmin',
-  },
-  forcePathStyle: true, // Required for MinIO
-});
-
 const files = new S3FilesApi({
-  client: s3Client,
+  client: new S3Client({
+    endpoint: 'http://localhost:9000',
+    region: 'us-east-1',
+    credentials: { accessKeyId: 'minioadmin', secretAccessKey: 'minioadmin' },
+    forcePathStyle: true, // MinIO, RustFS and most self-hosted servers need path-style URLs
+  }),
   bucket: 'my-bucket',
 });
 ```
 
-### With AWS IAM Roles (EC2, Lambda, ECS)
+### Stream a large upload and a range read
 
 ```typescript
-import { S3Client } from '@aws-sdk/client-s3';
-import { S3FilesApi } from '@statewalker/webrun-files-s3';
+await files.write('/data/large.bin', generateChunks()); // AsyncIterable<Uint8Array>
 
-// Credentials are automatically loaded from environment/IAM role
-const s3Client = new S3Client({ region: 'us-east-1' });
-
-const files = new S3FilesApi({
-  client: s3Client,
-  bucket: 'my-bucket',
-});
-```
-
-## API Reference
-
-### S3FilesApi
-
-```typescript
-interface S3FilesApiOptions {
-  /** Pre-configured S3Client instance. */
-  client: S3Client;
-  /** S3 bucket name. */
-  bucket: string;
-  /** Optional key prefix (acts as root directory). */
-  prefix?: string;
-  /** Part size for multipart uploads (default: 5MB, S3 minimum). */
-  multipartPartSize?: number;
-}
-
-class S3FilesApi implements FilesApi {
-  constructor(options: S3FilesApiOptions);
-
-  // All FilesApi methods
-  read(path: string, options?: ReadOptions): AsyncIterable<Uint8Array>;
-  write(path: string, content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>): Promise<void>;
-  mkdir(path: string): Promise<void>;
-  list(path: string, options?: ListOptions): AsyncIterable<FileInfo>;
-  stats(path: string): Promise<FileStats | undefined>;
-  exists(path: string): Promise<boolean>;
-  remove(path: string): Promise<boolean>;
-  move(source: string, target: string): Promise<boolean>;
-  copy(source: string, target: string): Promise<boolean>;
+for await (const chunk of files.read('/data/large.bin', { start: 1000, length: 500 })) {
+  // bytes 1000-1499, fetched with a Range header
 }
 ```
 
-## How It Works
+## Internals
 
-### Path to Key Mapping
-
-Virtual paths are mapped to S3 keys by combining the optional prefix with the path:
+### How calls map to S3
 
 ```
-prefix: "my-app/data"
-path:   "/docs/file.txt"
-key:    "my-app/data/docs/file.txt"
+path "/docs/file.txt" + prefix "my-app/data"  ->  key "my-app/data/docs/file.txt"
 ```
 
-### Directory Listing
+| Call | S3 requests |
+| --- | --- |
+| `read` | `GetObject`, with `Range: bytes=start-end` when `start`/`length` are given; streams the body |
+| `write` | under 5 MiB: one `PutObject`; otherwise `CreateMultipartUpload` + one `UploadPart` per `multipartPartSize` + `CompleteMultipartUpload`; `AbortMultipartUpload` on any error |
+| `mkdir` | `PutObject` of an empty `dir/` marker key |
+| `list` | `ListObjectsV2` with `Delimiter: "/"` (or none when recursive), `StartAfter` for `after` |
+| `copy` | `CopyObject` per object, server-side |
+| `move` | `copy`, then `remove` |
+| `remove` | `DeleteObject` per key under the path |
 
-S3 doesn't have real directories, but this implementation simulates them using:
+A write buffers at most one part, so memory stays at about `multipartPartSize` whatever the file
+size.
 
-- **ListObjectsV2** with `Delimiter="/"` to get "subdirectories" via `CommonPrefixes`
-- Files are returned from `Contents`
+### How directories are represented
 
-With `{ recursive: true }` the delimiter is omitted and only file entries are yielded: directories,
-including empty ones created by `mkdir()`, do not appear in a recursive listing.
-
-Entries come out in path order (code-point order, as every `FilesApi` lists), and `{ after }` is
-sent to S3 as `StartAfter`, so resuming a listing does not re-list what came before. Keys list in
-UTF-8 byte order, which is already that order for files; but a directory `a` arrives as the common
-prefix `a/` *after* keys such as `a-x` and `a.txt` that must follow it. A non-recursive listing
-therefore holds back the few entries a directory still to come could precede, across page
-boundaries, and releases them in order. When a key `a` and keys under `a/` both exist, the path
-`/a` is listed once, as the file — the same answer `stats()` gives.
-
-Because `FileStats` is a discriminated union, this implementation has to commit
-to two things a store without real directories could otherwise leave vague:
-
-- A **common prefix is the directory variant** - `{ kind: "directory" }` and
-  nothing more. There is no size or modification time to report for something
-  that exists only as an artefact of key naming.
-- **Any key ending in `/` is a directory, not a file** — such as the zero-byte
-  marker `mkdir()` writes so an empty directory is visible — and it is skipped
-  when reading `Contents`. Every other key is a file, and a genuinely empty
+- A **common prefix is a directory**: `{ kind: "directory" }` and nothing more. There is no size or
+  time for something that exists only in key names.
+- **A key ending in `/` is a directory**, such as the marker `mkdir()` writes so an empty
+  directory is visible; it is skipped when reading files. Every other key is a file, and an empty
   object is the file variant with `size: 0`.
+- With `{ recursive: true }` only files are yielded. Directories, including empty ones created by
+  `mkdir()`, do not appear in a recursive listing.
 
-```typescript
-// List /docs with prefix "my-app"
-// S3 request: ListObjectsV2(Prefix="my-app/docs/", Delimiter="/")
-for await (const entry of files.list('/docs')) {
-  // entry.kind is "file" or "directory"
-}
-```
+### Why the non-recursive listing holds entries back
 
-### Reading Files
+S3 lists keys in UTF-8 byte order, which is the `FilesApi` order for files. But a directory `a`
+arrives as the common prefix `a/`, after keys such as `a-x` and `a.txt` that must follow it,
+because `-` and `.` sort before `/`. The listing therefore buffers the few entries a directory still
+to come could precede, across page boundaries, and releases them in order. When a key `a` and keys
+under `a/` both exist, `/a` is listed once, as the file, the same answer `stats()` gives.
 
-Reads use `GetObject` with HTTP Range headers for efficient partial access:
+### What breaks, and how it looks
 
-```typescript
-// Read bytes 1000-1499 from a file
-for await (const chunk of files.read('/large-file.bin', { start: 1000, length: 500 })) {
-  // Streams directly from S3, no full file download
-}
-```
+- **`move` and directory `copy` are not atomic.** They are many `CopyObject` and `DeleteObject`
+  calls; a failure midway leaves some objects copied and the source partly removed.
+- **Writing zero chunks creates nothing.** `write(path, [])` sends no request, so the path does not
+  exist afterwards. Pass `[new Uint8Array(0)]` to create an empty file.
+- **Single-request copies.** Each object is copied with one `CopyObject`, which S3 limits to 5 GB
+  per object.
+- **Errors other than not-found propagate.** `read` treats `404` and `416` as an empty read; any
+  other SDK error (access denied, bad credentials, wrong region) is thrown as the SDK's error.
 
-### Writing Files
+### Testing
 
-Files are uploaded using a streaming approach that minimizes memory usage:
+`pnpm test` runs only unit tests (a fake client exercises listing order across pages).
+`pnpm test:integration` needs Docker: it starts
+[RustFS](https://github.com/rustfs/rustfs) through testcontainers (`rustfs/rustfs:latest`, override
+with `RUSTFS_IMAGE`) and runs the shared `createFilesApiTests` and `createBigFilesApiTests` suites
+against it.
 
-- **Small files** (< 5MB): Uses simple `PutObject` for efficiency
-- **Large files** (>= 5MB): Uses streaming multipart upload, buffering only one part at a time
+### Dependencies
 
-```typescript
-// Small file - uses PutObject
-await writeText(files, '/data/file.txt', 'small content');
-
-// Large file - automatically uses multipart upload
-const largeContent = generateLargeContent(); // AsyncIterable<Uint8Array>
-await files.write('/data/large-file.bin', largeContent);
-// Only one 5MB part is buffered at a time
-```
-
-The `multipartPartSize` option controls part size (default: 5MB, S3 minimum).
-
-### Copy and Move
-
-- **Copy** uses `CopyObject` for single files or multiple `CopyObject` calls for directories
-- **Move** is implemented as copy + delete
-- Both operations happen server-side without transferring data through the client
-
-### Directory Creation
-
-S3 directories are implicit (they exist if files exist within them). The `mkdir()` method creates an empty directory marker object:
-
-```typescript
-await files.mkdir('/empty-dir');
-// Creates object: "prefix/empty-dir/" with 0 bytes
-```
-
-## S3-Compatible Storage
-
-This implementation works with any S3-compatible storage:
-
-| Service | Configuration Notes |
-|---------|---------------------|
-| **AWS S3** | Standard configuration |
-| **MinIO** | Set `forcePathStyle: true` |
-| **DigitalOcean Spaces** | Use `endpoint: "https://<region>.digitaloceanspaces.com"` |
-| **Backblaze B2** | Use S3-compatible endpoint |
-| **Cloudflare R2** | Use account-specific endpoint |
-| **Wasabi** | Use region-specific endpoint |
-
-## Testing
-
-The package has integration tests only. They need Docker and run against a real S3-compatible
-server, [RustFS](https://github.com/rustfs/rustfs), started through
-[testcontainers](https://github.com/testcontainers/testcontainers-node) as a `GenericContainer` of
-`rustfs/rustfs:latest` (override the image with `RUSTFS_IMAGE`). They run the shared
-`createFilesApiTests` and `createBigFilesApiTests` suites from `@statewalker/webrun-files-tests`.
-
-```bash
-pnpm test               # unit profile: excludes *.integration.test.ts, so no Docker needed (runs nothing today)
-pnpm test:integration   # Docker: RustFS container, all suites including the 256 MiB big-file suite
-```
-
-The client the tests build is the one to use against any S3-compatible server on a custom endpoint:
-
-```typescript
-const s3Client = new S3Client({
-  endpoint: `http://${container.getHost()}:${container.getMappedPort(9000)}`,
-  region: 'us-east-1',
-  credentials: { accessKeyId: 'rustfsadmin', secretAccessKey: 'rustfsadmin' },
-  forcePathStyle: true,
-});
-```
+`@statewalker/webrun-files` for the types and path helpers; `@aws-sdk/client-s3` as a peer, so the
+application controls the SDK version and shares one client.
 
 ## License
 

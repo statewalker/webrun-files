@@ -29,7 +29,7 @@ the types `PathFilter`, `FileGuard`, `FileOperation`, `CowOptions` and
 
 ## Why it exists
 
-Real filesystems are rarely flat. Workbench-style apps need to combine
+Real file systems are rarely flat. Applications need to combine
 storage backends (local FS for projects, in-memory FS for transient data,
 remote FS for shared documents), forbid writes to system folders, and hide
 implementation-detail paths from end users. Implementing all of this inside
@@ -49,8 +49,12 @@ three concerns are deliberately split across separate classes:
 ## How to use
 
 ```bash
-pnpm add @statewalker/webrun-files-composite
+pnpm add @statewalker/webrun-files-composite @statewalker/webrun-files
 ```
+
+One entry point, `@statewalker/webrun-files-composite`: ESM (`dist/esm/index.js`), CommonJS
+(`dist/cjs/index.cjs`), types (`dist/index.d.ts`); sources in `src/`. No runtime-specific
+imports: browsers, workers, Node.js.
 
 The decorators all implement `FilesApi`, so they compose freely. A typical
 stack: a composite root that mounts a few backends, wrapped first with a
@@ -79,11 +83,6 @@ const safe = new GuardedFilesApi(visible, [
   },
 ]);
 ```
-
-## Entry points
-
-One entry point, `@statewalker/webrun-files-composite`: ESM (`dist/esm/index.js`), CommonJS (`dist/cjs/index.cjs`) and types (`dist/index.d.ts`). The TypeScript sources ship in `src/`.
-Runs anywhere: no runtime-specific imports.
 
 ## Examples
 
@@ -190,9 +189,26 @@ to gate these flows by composite path:
 await fs.move("/cache/draft.md", "/docs/draft.md"); // memFs → s3Fs
 ```
 
+### Read-only, overlay and copy-on-write views
+
+```ts
+import { cow, overlay, readOnly } from "@statewalker/webrun-files-composite";
+import { MemFilesApi } from "@statewalker/webrun-files-mem";
+
+const ro = readOnly(sourceFiles);
+await ro.write("/a.txt", data); // throws "read-only: /a.txt"
+
+// userFiles shadows defaultFiles; the union is read-only
+const view = overlay(userFiles, defaultFiles);
+
+// Changes land in the MemFilesApi; templateFiles is never modified
+const draft = cow(templateFiles, new MemFilesApi());
+await draft.remove("/obsolete.md"); // recorded as /.wh.obsolete.md in the writable layer
+```
+
 ## Internals
 
-### Architecture
+### How the decorators stack
 
 ```
 +---------------------+
@@ -260,7 +276,7 @@ multiple operation lists.
 | `move` / `copy`     | `false` (no side effect) |
 | `write` / `mkdir`   | throws `"Path is hidden"` (silent drop would lose data) |
 
-### Constraints
+### What it refuses, and what is not atomic
 
 - The root mount (`/`) is fixed at construction; you cannot remount it.
 - Mount points are immutable — `remove()` on a mount point throws.

@@ -1,273 +1,204 @@
 # @statewalker/webrun-files
 
-Core types and utilities for cross-platform file operations. This package defines the `FilesApi` interface that all storage backends implement, plus utility functions for common file operations.
+## What it is
 
-## Installation
+The `FilesApi` interface for file storage, its metadata types, and helpers that work on any
+implementation: whole-file and range reads, text writes, path manipulation, and the listing order
+every implementation follows. It contains no storage backend.
+
+## Why it exists
+
+Code that reads and writes files should not care whether the files live in memory, on disk, in a
+browser directory, in S3, in SQLite or behind an HTTP endpoint. This package is the contract those
+backends implement, so application code, tests and decorators are written once against it. Keeping
+it backend-free means depending on it pulls in nothing runtime-specific.
+
+Backends: `@statewalker/webrun-files-mem`, `-node`, `-browser`, `-s3`, `-sqlite`, `-http`; mounts,
+guards and layers: `@statewalker/webrun-files-composite`.
+
+## How to use
 
 ```bash
 pnpm add @statewalker/webrun-files
 ```
 
-For actual filesystem implementations, install one of these packages:
-- `@statewalker/webrun-files-mem` - In-memory storage
-- `@statewalker/webrun-files-node` - Node.js filesystem
-- `@statewalker/webrun-files-browser` - Browser File System Access API
-- `@statewalker/webrun-files-s3` - AWS S3 / S3-compatible storage
-- `@statewalker/webrun-files-sqlite` - SQLite (node:sqlite, Cloudflare Durable Objects, D1)
-- `@statewalker/webrun-files-http` - Serve and consume a `FilesApi` over HTTP (fetch-based stubs)
-- `@statewalker/webrun-files-composite` - Mount multiple backends into a unified filesystem
-
-## Entry points
-
-One entry point, `@statewalker/webrun-files`: ESM (`dist/esm/index.js`), CommonJS (`dist/cjs/index.cjs`) and types (`dist/index.d.ts`). The TypeScript sources ship in `src/`.
-Runs anywhere: no runtime-specific imports.
-
-## The FilesApi Interface
-
-All implementations provide this interface:
+One entry point, `@statewalker/webrun-files`: ESM (`dist/esm/index.js`), CommonJS
+(`dist/cjs/index.cjs`), types (`dist/index.d.ts`); the TypeScript sources ship in `src/`. It has no
+runtime-specific imports and runs in browsers, workers and Node.js.
 
 ```typescript
 interface FilesApi {
-  // Read file content as async iterable of chunks
-  read(path: string, options?: ReadOptions): AsyncIterable<Uint8Array>;
-
-  // Write content to file (creates parent directories)
-  write(path: string, content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>): Promise<void>;
-
-  // Create directory (and parents)
-  mkdir(path: string): Promise<void>;
-
-  // List directory contents
-  list(path: string, options?: ListOptions): AsyncIterable<FileInfo>;
-
-  // Get file/directory metadata
+  read(path: string, options?: ReadOptions): AsyncIterable<Uint8Array>; // missing path: yields nothing
+  write(path: string, content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>): Promise<void>; // creates parents
+  mkdir(path: string): Promise<void>;                                     // creates parents
+  list(path: string, options?: ListOptions): AsyncIterable<FileInfo>;     // in path order
   stats(path: string): Promise<FileStats | undefined>;
-
-  // Check if path exists
   exists(path: string): Promise<boolean>;
-
-  // Remove file or directory (recursively)
-  remove(path: string): Promise<boolean>;
-
-  // Move/rename file or directory
+  remove(path: string): Promise<boolean>;                                 // recursive
   move(source: string, target: string): Promise<boolean>;
-
-  // Copy file or directory (recursively)
-  copy(source: string, target: string): Promise<boolean>;
+  copy(source: string, target: string): Promise<boolean>;                 // recursive
 }
+
+interface ReadOptions { start?: number; length?: number; signal?: AbortSignal }
+interface ListOptions { recursive?: boolean; after?: string }
 ```
 
-## Quick Start
+## Examples
+
+### Read and write whole files
 
 ```typescript
 import { MemFilesApi } from '@statewalker/webrun-files-mem';
-import { readFile, writeText } from '@statewalker/webrun-files';
+import { readFile, readText, tryReadText, writeText } from '@statewalker/webrun-files';
 
 const files = new MemFilesApi();
-
-// Write a file
 await writeText(files, '/documents/notes.txt', 'Remember to water the plants');
 
-// Read it back
-const content = await readFile(files, '/documents/notes.txt');
-console.log(new TextDecoder().decode(content));
+const bytes = await readFile(files, '/documents/notes.txt'); // Uint8Array
+const text = await readText(files, '/documents/notes.txt');  // UTF-8 string
+const maybe = await tryReadText(files, '/optional.txt');     // undefined when missing
+
+// Binary content goes straight to write(), as chunks
+await files.write('/data.bin', [new Uint8Array([1, 2, 3, 4])]);
 ```
 
-## Utility Functions
+`readFile` and `readText` return an empty result for a missing path; `tryReadFile` and
+`tryReadText` return `undefined` instead.
 
-### Reading Files
+### Random access
 
 ```typescript
-import { readFile, readText, tryReadFile, tryReadText, readRange, readAt } from '@statewalker/webrun-files';
+import { readAt, readRange } from '@statewalker/webrun-files';
 
-// Read entire file as Uint8Array
-const content = await readFile(files, '/data.bin');
+const chunk = await readRange(files, '/large.bin', 1000, 500); // 500 bytes from position 1000
 
-// Read as UTF-8 string
-const text = await readText(files, '/config.json');
-
-// Read with undefined return for missing files
-const maybeContent = await tryReadFile(files, '/optional.txt');
-const maybeText = await tryReadText(files, '/optional.txt');
-
-// Read a specific byte range
-const chunk = await readRange(files, '/large.bin', 1000, 500); // 500 bytes starting at position 1000
-
-// Read into a buffer at specific offset (like fs.read)
+// Like fs.read: (files, path, buffer, bufferOffset, length, position) -> bytes read
 const buffer = new Uint8Array(100);
 const bytesRead = await readAt(files, '/data.bin', buffer, 0, 100, 500);
 ```
 
-### Writing Files
-
-```typescript
-import { writeText } from '@statewalker/webrun-files';
-
-// Write string content as UTF-8
-await writeText(files, '/greeting.txt', 'Hello, World!');
-
-// Write binary content directly
-await files.write('/data.bin', [new Uint8Array([1, 2, 3, 4])]);
-
-// Write from multiple chunks
-await files.write('/large.bin', generateChunks());
-```
-
-### Path Utilities
-
-```typescript
-import { normalizePath, joinPath, dirname, basename, extname } from '@statewalker/webrun-files';
-
-normalizePath('//foo/./bar//baz/');     // '/foo/bar/baz'
-joinPath('/foo', 'bar', 'baz.txt');    // '/foo/bar/baz.txt'
-dirname('/foo/bar/baz.txt');            // '/foo/bar'
-basename('/foo/bar/baz.txt');           // 'baz.txt'
-extname('/foo/bar/baz.txt');            // '.txt'
-```
-
-## Working with Files
-
-### Checking Existence
-
-```typescript
-if (await files.exists('/config.json')) {
-  // Load configuration
-}
-```
-
-### Getting Metadata
-
-`FileStats` is a discriminated union on `kind`. A file always reports a `size`
-and a `lastModified`; a directory reports neither, because a directory has no
-size and a modification time for one is unavailable on stores where a directory
-is only a key prefix. Narrow on `kind` and the fields for that kind are then
-known to be present:
+### Metadata: narrow on `kind`
 
 ```typescript
 const info = await files.stats('/photo.jpg');
 if (info?.kind === 'file') {
-  console.log(`Size: ${info.size} bytes`);          // number, never undefined
-  console.log(`Modified: ${new Date(info.lastModified)}`);
+  console.log(info.size, new Date(info.lastModified)); // both always present
 } else if (info?.kind === 'directory') {
-  console.log('a directory');                        // nothing else to report
+  console.log('a directory');                           // nothing else to report
 }
 ```
 
-A zero-byte file is the file variant with `size: 0`, so test the `kind` rather
-than the truthiness of `size`:
+### List a directory in pages
 
 ```typescript
-// WRONG - reads an empty file as though it had no size
-if (info.size) { /* ... */ }
+import type { FileInfo } from '@statewalker/webrun-files';
 
-// RIGHT
-if (info.kind === 'file') { /* info.size may legitimately be 0 */ }
-```
-
-### Listing Directories
-
-`FileInfo` is the same union plus `name` and `path`, so a listing narrows per
-entry exactly as `stats()` does:
-
-```typescript
-// List direct children
-for await (const entry of files.list('/documents')) {
-  const size = entry.kind === 'file' ? `${entry.size} bytes` : '';
-  console.log(`${entry.name} (${entry.kind}) ${size}`);
-}
-
-// List recursively
-for await (const entry of files.list('/project', { recursive: true })) {
-  console.log(entry.path);
-}
-```
-
-### Listing order and resuming
-
-Every implementation yields `list()` entries in **strictly increasing path order, compared by
-Unicode code point** — the order of UTF-8 bytes, which is also how SQLite and S3 list — for
-recursive and non-recursive listings alike. `ListOptions.after` resumes after any path, whether or
-not it exists:
-
-```typescript
-// Read a big directory in chunks of 256 without keeping an iterator open.
 let after: string | undefined;
 for (;;) {
-  const chunk: FileInfo[] = [];
+  const page: FileInfo[] = [];
   for await (const entry of files.list('/data', { recursive: true, after })) {
-    chunk.push(entry);
-    if (chunk.length === 256) break;
+    page.push(entry);
+    if (page.length === 256) break;
   }
-  if (chunk.length === 0) break;
-  await handle(chunk);
-  after = chunk[chunk.length - 1].path;
+  if (page.length === 0) break;
+  await handle(page);
+  after = page[page.length - 1].path;
 }
 ```
 
-Two consequences of the order: a directory comes before its descendants, but they are not
-contiguous with it (`/a-x` and `/a.txt` sort between `/a` and `/a/b`, because `-` and `.` sort
-before `/`); and JavaScript's `<` is not this order — it misorders characters above U+FFFF — so
-compare paths with `comparePaths`.
-
-### File Management
+### Paths
 
 ```typescript
-await files.mkdir('/archive/2024');
-await files.copy('/report.pdf', '/archive/2024/report.pdf');
-await files.move('/temp/draft.txt', '/documents/final.txt');
-await files.remove('/old-stuff'); // Recursively deletes directories
+import { basename, dirname, extname, joinPath, normalizePath } from '@statewalker/webrun-files';
+
+normalizePath('//foo/./bar//baz/');  // '/foo/bar/baz'
+joinPath('/foo', 'bar', 'baz.txt');  // '/foo/bar/baz.txt'
+dirname('/foo/bar/baz.txt');         // '/foo/bar'
+basename('/foo/bar/baz.txt');        // 'baz.txt'
+basename('/foo/bar/baz.txt', '.txt'); // 'baz'
+extname('/foo/bar/baz.txt');         // '.txt'
 ```
 
-### Listing helpers for backends
+### Listing helpers for backend authors
 
 ```typescript
 import { comparePaths, listInPathOrder, mergeInPathOrder } from '@statewalker/webrun-files';
 
 comparePaths(a, b); // the listing order: negative, zero or positive
 
-// A backend that reads one directory at a time: children(dir) returns its direct
-// entries in any order. Reads a directory only when the listing reaches it, and
-// never one whose whole subtree sorts at or before options.after.
-listInPathOrder(dir, children, { recursive, after });
+// children(dir) returns one directory's direct entries, in any order. The generator reads a
+// directory only when the listing reaches it, and skips any subtree that sorts at or before `after`.
+listInPathOrder('/', children, { recursive: true, after });
 
 // Merge listings that are each already ordered; the first stream wins a shared path.
 mergeInPathOrder([streamA, streamB]);
 ```
 
-## Type Reference
+### Types
 
 ```typescript
 import type {
-  FilesApi,             // Core interface for backends
-  FileStats,            // Metadata from stats(): FileEntryStats | DirectoryEntryStats
-  FileEntryStats,       // { kind: "file", size: number, lastModified: number }
-  DirectoryEntryStats,  // { kind: "directory" }
-  FileInfo,             // Metadata from list(): FileEntryInfo | DirectoryEntryInfo
-  FileEntryInfo,        // FileEntryStats & { name, path }
-  DirectoryEntryInfo,   // DirectoryEntryStats & { name, path }
-  FileEntryLocation,    // { name: string, path: string }
-  FileKind,             // "file" | "directory"
-  ReadOptions,          // { start?: number, length?: number, signal?: AbortSignal }
-  ListOptions,          // { recursive?: boolean, after?: string }
+  FilesApi,
+  FileStats,           // FileEntryStats | DirectoryEntryStats
+  FileEntryStats,      // { kind: "file"; size: number; lastModified: number }
+  DirectoryEntryStats, // { kind: "directory" }
+  FileInfo,            // FileEntryInfo | DirectoryEntryInfo
+  FileEntryInfo,       // FileEntryStats & FileEntryLocation
+  DirectoryEntryInfo,  // DirectoryEntryStats & FileEntryLocation
+  FileEntryLocation,   // { name: string; path: string }
+  FileKind,            // "file" | "directory"
+  ReadOptions,
+  ListOptions,
 } from '@statewalker/webrun-files';
 ```
 
-### Implementing a backend
+## Internals
 
-An implementation must return **exactly** one variant: a file with both numbers
-present, a directory with nothing but its `kind`. An implementation that knows a
-directory's modification time drops it rather than offering a value that would
-be present on one backend and missing on the next. The parametrized suite in
-`@statewalker/webrun-files-tests` — a workspace package of this monorepo, not
-published to npm — checks this at runtime: `createFilesApiTests` runs it (as
-`createFileStatsConformanceTests`) for you.
+### Why metadata is a union and not optional fields
 
-A listing must also follow the order above and honour `after` exactly: the
-entries after a path are the same, in the same order, as the matching suffix of
-the full listing. `createFilesApiTests` checks that too
-(`createListOrderTests`), against a fixture of names chosen to break naive
-orderings. `listInPathOrder` gives both properties to a backend that can read
-one directory at a time.
+A file always reports `size` and `lastModified`. A directory reports neither: it has no size, and
+on stores where a directory is only a key prefix there is no modification time to give. An
+implementation that knows a directory's time drops it, so callers cannot come to rely on a field
+that one backend has and the next lacks. A zero-byte file is the file variant with `size: 0`:
+
+```typescript
+if (info.size) { /* WRONG: treats an empty file as having no size */ }
+if (info.kind === 'file') { /* RIGHT: info.size may be 0 */ }
+```
+
+### Why listings have one global order
+
+Every implementation yields `list()` entries in strictly increasing path order, compared by Unicode
+code point. That is UTF-8 byte order, which SQLite and S3 already list in, so those backends can
+page through their native listings. `ListOptions.after` resumes after any path, present or not, so
+a client can read a large or remote listing in chunks without an open iterator.
+
+Two consequences:
+
+- A directory comes before its descendants, but they are not contiguous with it: `/a-x` and
+  `/a.txt` sort between `/a` and `/a/b`, because `-` and `.` sort before `/`.
+- JavaScript's `<` compares UTF-16 code units and misorders characters above U+FFFF. Use
+  `comparePaths`.
+
+### What a backend must do
+
+- Return exactly one metadata variant: a file with both numbers, a directory with only `kind`.
+- List in the order above and honour `after` exactly: the entries after a path are the same, in
+  the same order, as the matching suffix of the full listing.
+
+The shared suites in `@statewalker/webrun-files-tests` (a private workspace package) check both at
+runtime. `listInPathOrder` gives both properties to a backend that can read one directory at a
+time.
+
+### Path rules
+
+`normalizePath` splits on `/`, drops empty and `.` segments and returns a path with one leading
+slash and no trailing slash (`/` for the root). It does not resolve `..`; backends that map paths
+to real locations (such as `webrun-files-node`) document what that means for them.
+
+### Dependencies
+
+None at runtime.
 
 ## License
 
