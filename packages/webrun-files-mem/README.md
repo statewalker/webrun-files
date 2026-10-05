@@ -1,128 +1,107 @@
 # @statewalker/webrun-files-mem
 
-In-memory implementation of the `FilesApi` interface from `@statewalker/webrun-files`.
+## What it is
 
-## Overview
+`MemFilesApi`, an implementation of `FilesApi` from `@statewalker/webrun-files` that keeps every
+file and directory in a `Map` in memory. Nothing persists after the instance is dropped.
 
-This package provides a fast, ephemeral filesystem that stores everything in memory. Perfect for:
+## Why it exists
 
-- **Testing** - Isolated tests without disk I/O or cleanup
-- **Browser applications** - When you don't need persistence
-- **Prototyping** - Quick experiments without file system setup
-- **Caching layers** - Fast temporary storage
+Tests, prototypes and short-lived caches need a file system that starts empty (or pre-filled),
+needs no disk, no cleanup and no permissions, and behaves like every other backend. Because it
+passes the same shared test suites as the Node, browser, S3 and SQLite backends, code tested
+against it behaves the same when the backend is swapped.
 
-## Installation
+## How to use
 
 ```bash
-npm install @statewalker/webrun-files-mem @statewalker/webrun-files
+pnpm add @statewalker/webrun-files-mem @statewalker/webrun-files
 ```
 
-## Usage
+One entry point, `@statewalker/webrun-files-mem`: ESM (`dist/esm/index.js`), CommonJS
+(`dist/cjs/index.cjs`), types (`dist/index.d.ts`); sources in `src/`. Runs anywhere: browsers,
+workers, Node.js.
 
-### Basic Usage
+```typescript
+import { MemFilesApi, type MemFilesApiOptions } from '@statewalker/webrun-files-mem';
+
+const files = new MemFilesApi(); // or new MemFilesApi({ initialFiles: { ... } })
+```
+
+`MemFilesApiOptions` has one field, `initialFiles?: Record<string, string | Uint8Array>`: paths
+mapped to content. Strings are encoded as UTF-8; parent directories are created.
+
+## Examples
+
+### Write, read, list
 
 ```typescript
 import { MemFilesApi } from '@statewalker/webrun-files-mem';
 import { readText, writeText } from '@statewalker/webrun-files';
 
 const files = new MemFilesApi();
-
-// Write a file
 await writeText(files, '/config.json', '{"debug": true}');
+console.log(await readText(files, '/config.json')); // {"debug": true}
 
-// Read it back
-const content = await readText(files, '/config.json');
-console.log(content); // {"debug": true}
-
-// List files
 for await (const entry of files.list('/')) {
-  if (entry.kind === 'file') {
-    console.log(entry.name, entry.kind, entry.size, entry.lastModified);
-  } else {
-    console.log(entry.name, entry.kind); // directories carry no size or time
-  }
+  if (entry.kind === 'file') console.log(entry.name, entry.size, entry.lastModified);
+  else console.log(entry.name, 'directory'); // directories carry no size or time
 }
 ```
 
-### Initialize with Files
-
-Pre-populate the filesystem when creating it:
+### Start with files
 
 ```typescript
-import { MemFilesApi } from '@statewalker/webrun-files-mem';
-import { readText } from '@statewalker/webrun-files';
-
 const files = new MemFilesApi({
   initialFiles: {
-    '/config.json': '{"theme": "dark", "locale": "en"}',
+    '/config.json': '{"theme": "dark"}',
     '/data/users.json': '[{"id": 1, "name": "Alice"}]',
     '/data/binary.bin': new Uint8Array([0x00, 0x01, 0x02, 0x03]),
-  }
+  },
 });
-
-// Files are ready to use
-const config = await readText(files, '/config.json');
 ```
 
-Values can be strings (encoded as UTF-8) or `Uint8Array` for binary data. Parent directories are created automatically.
-
-## API Reference
-
-### MemFilesApi
+### A fresh file system per test
 
 ```typescript
-interface MemFilesApiOptions {
-  /** Initial files to populate. Keys are paths, values are content. */
-  initialFiles?: Record<string, string | Uint8Array>;
-}
-
-class MemFilesApi implements FilesApi {
-  constructor(options?: MemFilesApiOptions);
-
-  // All FilesApi methods
-  read(path: string, options?: ReadOptions): AsyncIterable<Uint8Array>;
-  write(path: string, content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>): Promise<void>;
-  mkdir(path: string): Promise<void>;
-  list(path: string, options?: ListOptions): AsyncIterable<FileInfo>;
-  stats(path: string): Promise<FileStats | undefined>;
-  exists(path: string): Promise<boolean>;
-  remove(path: string): Promise<boolean>;
-  move(source: string, target: string): Promise<boolean>;
-  copy(source: string, target: string): Promise<boolean>;
-}
-```
-
-`list()` yields entries in path order, as every `FilesApi` does: each call collects the matching
-entries and sorts them, so a listing costs O(n log n) in the number of entries it covers.
-
-## Testing Example
-
-Use with vitest or any test framework:
-
-```typescript
-import { describe, it, expect, beforeEach } from 'vitest';
+import { beforeEach, expect, it } from 'vitest';
 import { MemFilesApi } from '@statewalker/webrun-files-mem';
 import { readText, writeText } from '@statewalker/webrun-files';
 
-describe('MyApp', () => {
-  let files: MemFilesApi;
+let files: MemFilesApi;
+beforeEach(() => {
+  files = new MemFilesApi({ initialFiles: { '/config.json': '{"version": 1}' } });
+});
 
-  beforeEach(() => {
-    // Fresh filesystem for each test
-    files = new MemFilesApi({
-      initialFiles: {
-        '/config.json': '{"version": 1}'
-      }
-    });
-  });
-
-  it('should update config', async () => {
-    await writeText(files, '/config.json', '{"version": 2}');
-    const content = await readText(files, '/config.json');
-    expect(JSON.parse(content).version).toBe(2);
-  });
+it('updates the config', async () => {
+  await writeText(files, '/config.json', '{"version": 2}');
+  expect(JSON.parse(await readText(files, '/config.json')).version).toBe(2);
 });
 ```
+
+## Internals
+
+### One map of normalized paths
+
+Each entry is keyed by its normalized path and is either a file (its bytes and a timestamp) or a
+directory. `write` collects all chunks and stores one `Uint8Array`; `read` yields one chunk, a
+`subarray` of the stored bytes clipped to `start`/`length`.
+
+### What it costs, and what to watch
+
+- **`list()` scans every entry.** Each call walks the whole map, keeps the entries under the
+  directory, sorts them with `comparePaths` and then applies `after`. Cost grows with the total
+  number of entries, not with the size of the listed directory.
+- **Shared buffers.** A `Uint8Array` passed in `initialFiles` is stored as is, and the chunk
+  `read()` yields is a view of the stored bytes. Mutating either changes the stored file. Copy
+  first if you need to modify them.
+- **`move` is copy then remove**, in memory, so it is cheap but not atomic against concurrent
+  calls on the same instance.
+- Everything lives in the JavaScript heap; a large file costs its size in memory.
+
+### Dependencies
+
+`@statewalker/webrun-files` only, for the types, `normalizePath`, `basename` and `comparePaths`.
 
 ## License
 

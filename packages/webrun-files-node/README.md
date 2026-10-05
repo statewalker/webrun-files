@@ -1,167 +1,117 @@
 # @statewalker/webrun-files-node
 
-Node.js filesystem implementation of the `FilesApi` interface from `@statewalker/webrun-files`.
+## What it is
 
-## Overview
+`NodeFilesApi`, an implementation of `FilesApi` from `@statewalker/webrun-files` over Node.js
+`fs/promises`. Virtual paths (`/users/alice.json`) are mapped to real files under a root directory.
 
-This package provides a `FilesApi` implementation that works with the real filesystem using Node.js `fs/promises`. It maps virtual paths (starting with `/`) to a root directory on disk.
+## Why it exists
 
-## Installation
+Server code, CLIs and tests that work against `FilesApi` need a backend that stores real files on
+disk. With this package the same code that runs on `MemFilesApi` in tests, or on S3 in production,
+reads and writes a local directory.
+
+## How to use
 
 ```bash
-npm install @statewalker/webrun-files-node @statewalker/webrun-files
+pnpm add @statewalker/webrun-files-node @statewalker/webrun-files
 ```
 
-## Usage
+One entry point, `@statewalker/webrun-files-node`: ESM (`dist/esm/index.js`), CommonJS
+(`dist/cjs/index.cjs`), types (`dist/index.d.ts`); sources in `src/`. Node.js only (it imports
+`node:fs/promises`).
 
-### Basic Usage
+```typescript
+import { NodeFilesApi, type NodeFilesApiOptions } from '@statewalker/webrun-files-node';
+
+const files = new NodeFilesApi({ rootDir: '/var/app/data' }); // rootDir defaults to process.cwd()
+```
+
+```
+rootDir:      /var/app/data
+virtual path: /users/alice.json
+real path:    /var/app/data/users/alice.json
+```
+
+## Examples
+
+### Read, write, list
 
 ```typescript
 import { NodeFilesApi } from '@statewalker/webrun-files-node';
 import { readText, writeText } from '@statewalker/webrun-files';
 
-// Create API rooted at a specific directory
 const files = new NodeFilesApi({ rootDir: '/var/app/data' });
 
-// Write a file - creates /var/app/data/config.json
-await writeText(files, '/config.json', '{"debug": true}');
+await writeText(files, '/deep/nested/config.json', '{"debug": true}'); // parents are created
+console.log(await readText(files, '/deep/nested/config.json'));
 
-// Read it back
-const content = await readText(files, '/config.json');
-console.log(content); // {"debug": true}
-
-// List files
-for await (const entry of files.list('/')) {
-  if (entry.kind === 'file') {
-    console.log(entry.name, entry.kind, entry.size, entry.lastModified);
-  } else {
-    console.log(entry.name, entry.kind); // directories carry no size or time
-  }
+for await (const entry of files.list('/', { recursive: true })) {
+  console.log(entry.path, entry.kind, entry.kind === 'file' ? entry.size : '');
 }
 ```
 
-### Default Root Directory
-
-If no `rootDir` is specified, the current working directory is used:
+### Stream a range
 
 ```typescript
-import { NodeFilesApi } from '@statewalker/webrun-files-node';
-
-const files = new NodeFilesApi();
-// Virtual path /data/file.txt maps to ./data/file.txt
-```
-
-### Path Mapping
-
-Virtual paths are mapped directly to the filesystem:
-
-```
-rootDir: "/var/app/data"
-virtual path: "/users/alice.json"
-real path: "/var/app/data/users/alice.json"
-```
-
-Paths are appended to `rootDir` without confinement: `..` segments are kept, not resolved, so a
-virtual path such as `/../etc/passwd` reaches outside `rootDir`. Do not pass untrusted paths.
-
-## API Reference
-
-### NodeFilesApi
-
-```typescript
-interface NodeFilesApiOptions {
-  /**
-   * Root directory for file operations.
-   * Virtual paths are appended to this directory (see "Path Mapping" for `..`).
-   * Defaults to current working directory if not specified.
-   */
-  rootDir?: string;
-}
-
-class NodeFilesApi implements FilesApi {
-  constructor(options?: NodeFilesApiOptions);
-
-  // All FilesApi methods
-  read(path: string, options?: ReadOptions): AsyncIterable<Uint8Array>;
-  write(path: string, content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>): Promise<void>;
-  mkdir(path: string): Promise<void>;
-  list(path: string, options?: ListOptions): AsyncIterable<FileInfo>;
-  stats(path: string): Promise<FileStats | undefined>;
-  exists(path: string): Promise<boolean>;
-  remove(path: string): Promise<boolean>;
-  move(source: string, target: string): Promise<boolean>;
-  copy(source: string, target: string): Promise<boolean>;
-}
-```
-
-## Features
-
-### Efficient Streaming
-
-Large files are read in chunks without loading entirely into memory:
-
-```typescript
-// Stream a large file
-for await (const chunk of files.read('/large-video.mp4')) {
-  // Process each chunk (default 8KB chunks)
-}
-
-// Read a specific range
 for await (const chunk of files.read('/large-file.bin', { start: 1000, length: 500 })) {
-  // Only bytes 1000-1499
+  // bytes 1000-1499, in chunks of at most 8 KiB
 }
 ```
 
-### Automatic Directory Creation
-
-Parent directories are created automatically when writing files:
-
-```typescript
-// Creates /var/app/data/deep/nested/path/ automatically
-await writeText(files, '/deep/nested/path/file.txt', 'content');
-```
-
-### Ordered Listings
-
-`readdir` returns names in no guaranteed order, so `list()` reads each directory, stats its entries
-and yields them in path order (as every `FilesApi` does). A recursive listing reads a directory only
-when the listing reaches it, and with `{ after }` skips any directory whose whole subtree sorts at
-or before the cursor.
-
-### Recursive Operations
-
-Copy and remove work recursively on directories. `move()` is a single `fs.rename`: when the rename
-fails — for example across devices — it returns `false` rather than falling back to copying.
-
-```typescript
-// Copy entire directory tree
-await files.copy('/source', '/destination');
-
-// Remove directory and all contents
-await files.remove('/old-data');
-```
-
-## Testing with Temporary Directories
+### A temporary directory per test
 
 ```typescript
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NodeFilesApi } from '@statewalker/webrun-files-node';
-import { writeText } from '@statewalker/webrun-files';
 
-// Create a temp directory for testing
-const tempDir = await mkdtemp(join(tmpdir(), 'test-'));
-const files = new NodeFilesApi({ rootDir: tempDir });
-
+const rootDir = await mkdtemp(join(tmpdir(), 'test-'));
+const files = new NodeFilesApi({ rootDir });
 try {
-  // Run tests...
-  await writeText(files, '/test.txt', 'test content');
+  // ...
 } finally {
-  // Cleanup
-  await rm(tempDir, { recursive: true, force: true });
+  await rm(rootDir, { recursive: true, force: true });
 }
 ```
+
+## Internals
+
+### How each call maps to `fs`
+
+| Call | Implementation |
+| --- | --- |
+| `read` | `fs.open` + positioned `handle.read` in 8 KiB buffers, only the requested range |
+| `write` | `fs.mkdir(parent, { recursive: true })`, then collects every chunk and calls `fs.writeFile` once |
+| `list` | `fs.readdir` + `fs.stat` per entry, walked through `listInPathOrder` |
+| `move` | `fs.rename` after creating the target's parent |
+| `copy` | `fs.cp(..., { recursive: true })` |
+| `remove` | `fs.rm(..., { recursive: true, force: true })` for a directory, `fs.unlink` for a file |
+
+### Why listings stat every entry
+
+`readdir` returns names in no guaranteed order, and every `FilesApi` must list in `comparePaths`
+order with `after` support. `list()` therefore reads each directory, stats its entries and yields
+them sorted. A recursive listing reads a directory only when the listing reaches it, and skips any
+directory whose whole subtree sorts at or before `after`.
+
+### What breaks, and how it looks
+
+- **Paths are not confined to `rootDir`.** `normalizePath` keeps `..` segments, and the result is
+  appended to `rootDir`, so `/../etc/passwd` reaches outside it. Never pass untrusted paths; wrap
+  the instance in a guard (for example `GuardedFilesApi` from
+  `@statewalker/webrun-files-composite`) if you must.
+- **`write` holds the whole file in memory** before writing it, so a very large upload costs its
+  full size in RAM. Reads stream.
+- **`move` across devices returns `false`.** It is a single `fs.rename`; when that fails (`EXDEV`,
+  permissions) the method returns `false` instead of falling back to copy and delete.
+- **Unreadable reads look like missing files.** `read` swallows every error (missing file,
+  permission denied, a directory) and yields nothing; `copy` and `move` return `false`.
+
+### Dependencies
+
+`@statewalker/webrun-files` for the types and path helpers; Node.js built-ins otherwise.
 
 ## License
 
