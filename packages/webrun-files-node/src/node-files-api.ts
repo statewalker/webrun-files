@@ -1,5 +1,6 @@
 import type { Dirent, Stats } from "node:fs";
 import * as fs from "node:fs/promises";
+import * as nodePath from "node:path";
 import type {
   FileInfo,
   FileStats,
@@ -11,8 +12,8 @@ import { dirname, joinPath, listInPathOrder, normalizePath } from "@statewalker/
 
 export interface NodeFilesApiOptions {
   /**
-   * Root directory for file operations. All paths are resolved relative to this.
-   * Defaults to current working directory if not specified.
+   * Root directory for file operations. All paths are resolved relative to this, and a path
+   * whose `..` segments would leave it is refused. Defaults to the current working directory.
    */
   rootDir?: string;
 }
@@ -25,12 +26,16 @@ export class NodeFilesApi implements FilesApi {
   private rootDir: string;
 
   constructor(options?: NodeFilesApiOptions) {
-    this.rootDir = options?.rootDir ?? process.cwd();
+    this.rootDir = nodePath.resolve(options?.rootDir ?? process.cwd());
   }
 
+  /** The real path of a virtual one; throws when `..` segments would take it outside rootDir. */
   private resolvePath(virtualPath: string): string {
-    const normalized = normalizePath(virtualPath);
-    return this.rootDir + normalized;
+    const real = nodePath.resolve(this.rootDir, `.${normalizePath(virtualPath)}`);
+    if (real !== this.rootDir && !real.startsWith(this.rootDir + nodePath.sep)) {
+      throw new Error(`NodeFilesApi: path is outside rootDir: ${virtualPath}`);
+    }
+    return real;
   }
 
   async *read(path: string, options?: ReadOptions): AsyncIterable<Uint8Array> {
@@ -82,7 +87,7 @@ export class NodeFilesApi implements FilesApi {
   ): Promise<void> {
     const realPath = this.resolvePath(path);
     const normalized = normalizePath(path);
-    const dir = this.rootDir + dirname(normalized);
+    const dir = this.resolvePath(dirname(normalized));
 
     await fs.mkdir(dir, { recursive: true });
 
@@ -206,7 +211,7 @@ export class NodeFilesApi implements FilesApi {
     }
 
     try {
-      const targetDir = this.rootDir + dirname(normalizedTarget);
+      const targetDir = this.resolvePath(dirname(normalizedTarget));
       await fs.mkdir(targetDir, { recursive: true });
       await fs.rename(sourcePath, targetPath);
       return true;
@@ -227,7 +232,7 @@ export class NodeFilesApi implements FilesApi {
     }
 
     try {
-      const targetDir = this.rootDir + dirname(normalizedTarget);
+      const targetDir = this.resolvePath(dirname(normalizedTarget));
       await fs.mkdir(targetDir, { recursive: true });
       await fs.cp(sourcePath, targetPath, { recursive: true });
       return true;
