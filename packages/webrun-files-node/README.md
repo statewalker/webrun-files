@@ -98,10 +98,11 @@ directory whose whole subtree sorts at or before `after`.
 
 ### What breaks, and how it looks
 
-- **Paths are not confined to `rootDir`.** `normalizePath` keeps `..` segments, and the result is
-  appended to `rootDir`, so `/../etc/passwd` reaches outside it. Never pass untrusted paths; wrap
-  the instance in a guard (for example `GuardedFilesApi` from
-  `@statewalker/webrun-files-composite`) if you must.
+- **A path that leaves `rootDir` is refused.** `..` segments are resolved against `rootDir`; when
+  the result is outside it, the call throws
+  `NodeFilesApi: path is outside rootDir: /../etc/passwd` (reads throw when iterated). `..` that
+  stays inside (`/a/../b.txt`) is fine. Symbolic links inside `rootDir` are followed as the
+  operating system follows them, so a link pointing out of `rootDir` still leads out.
 - **`write` holds the whole file in memory** before writing it, so a very large upload costs its
   full size in RAM. Reads stream.
 - **`move` across devices returns `false`.** It is a single `fs.rename`; when that fails (`EXDEV`,
