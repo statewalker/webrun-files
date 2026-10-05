@@ -1,22 +1,15 @@
 {
-  "$schema": "https://unpkg.com/@changesets/config@3.1.2/schema.json",
+  "$schema": "https://unpkg.com/@changesets/config@4.0.1/schema.json",
   "changelog": "@changesets/cli/changelog",
   "commit": false,
-  "fixed": [
-    [
-      "@statewalker/webrun-files",
-      "@statewalker/webrun-files-mem",
-      "@statewalker/webrun-files-node",
-      "@statewalker/webrun-files-browser",
-      "@statewalker/webrun-files-s3",
-      "@statewalker/webrun-files-composite",
-      "@statewalker/webrun-files-sqlite",
-      "@statewalker/webrun-files-http"
-    ]
-  ],
+  "fixed": [],
   "linked": [],
-  "access": "restricted",
+  "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
+  "privatePackages": {
+    "version": false,
+    "tag": false
+  },
   "ignore": []
 }
