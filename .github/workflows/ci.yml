@@ -8,15 +8,3 @@ on:
 jobs:
   ci:
     uses: statewalker/.github/.github/workflows/ci.yml@main
-
-  # Releases to npm: a version pull request while changes are unreleased, publishing once it is
-  # merged. npm's trusted publishers for these packages name this file (ci.yml).
-  release:
-    needs: ci
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    uses: statewalker/.github/.github/workflows/release.yml@main
-    permissions:
-      contents: write
-      pull-requests: write
-      id-token: write
-    secrets: inherit
