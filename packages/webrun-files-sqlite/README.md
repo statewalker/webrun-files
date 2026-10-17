@@ -37,8 +37,8 @@ Use `SqliteFilesApi` by default.
 pnpm add @statewalker/webrun-files-sqlite @statewalker/webrun-files @statewalker/db-sqlite-node
 ```
 
-Pick the driver for your runtime: `@statewalker/db-sqlite-node` on Node, `@statewalker/db-sqlite-do` in a
-Durable Object, `@statewalker/db-sqlite-browser` in the browser.
+Pick the driver for your runtime: `@statewalker/db-sqlite-node` on Node, `@statewalker/db-sqlite-do`
+in a Durable Object, `@statewalker/db-sqlite-browser` in the browser.
 
 `pako` is not a dependency: pass the module to `pakoCodec` / `pakoDeflateCodec` if you use them.
 
@@ -170,8 +170,8 @@ it too. A content and its blocks are deleted when the last path pointing at it g
 
 A deflated block can be slightly larger than its input. 1.5 MiB keeps even incompressible input
 under the 2 MB row limit of Durable Objects. Larger blocks mean fewer rows; smaller blocks make
-small range reads cheaper. Each content
-records its own block size, so changing `blockSize` never affects existing files.
+small range reads cheaper. Each content records its own block size, so changing `blockSize` never
+affects existing files.
 
 ### Streaming and memory
 
@@ -231,7 +231,9 @@ does. A dangling link, or a chain longer than 8, behaves as a missing path. `rem
   SQLAR keeps each file in one row. A larger file fails the `write` with `string or blob too big`
   — a value limit, not corruption. Store big files with `SqliteFilesApi`, whose blocks stay under
   the limit.
-- Multi-row mutations (`copy`, `move`, `remove` of a tree) are not wrapped in a transaction.
+- Multi-row mutations (`copy`, `move`, `remove` of a tree) are not wrapped in a transaction: a
+  failure part-way leaves the rows already changed in place, and a `move` can leave the entry under
+  both paths.
 - `list` loads every row under the directory, then sorts the entries into path order before
   applying `after`.
 
@@ -241,8 +243,8 @@ does. A dangling link, or a chain longer than 8, behaves as a missing path. `rem
 - `@statewalker/db-sqlite` — `inTransaction`, for `SqliteFilesApi`'s atomic steps.
 - `@statewalker/webrun-files` — the `FilesApi` contract and path helpers.
 
-The browser driver (`@statewalker/db-sqlite-browser`) is supported through the same `Db` contract, but this
-package's tests run on `node:sqlite` and the Durable Object fake only.
+The browser driver (`@statewalker/db-sqlite-browser`) is supported through the same `Db` contract, but
+this package's tests run on `node:sqlite` and the Durable Object fake only.
 
 The drivers (`@statewalker/db-sqlite-node`, `@statewalker/db-sqlite-do`, …) are the caller's
 choice and are not dependencies; neither is `pako`, which is passed in.

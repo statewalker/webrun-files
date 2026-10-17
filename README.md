@@ -1,9 +1,9 @@
 # webrun-files
 
 This repository holds `FilesApi`, one small interface for file storage, and its implementations:
-memory, Node.js, the browser File System Access API, S3, SQLite (over `@statewalker/db-api`: node:sqlite, the
-browser, Cloudflare Durable Objects) and HTTP. A set of decorators mounts, guards, filters and layers them. Application
-code is written once against `FilesApi`; the backend is picked where the code runs. All public
+memory, Node.js, the browser File System Access API, S3, SQLite (over `@statewalker/db-api`:
+node:sqlite, the browser, Cloudflare Durable Objects) and HTTP. A set of decorators mounts, guards,
+filters and layers them. Application code is written once against `FilesApi`; the backend is picked where the code runs. All public
 packages are published to npm under `@statewalker/`.
 
 ## The shape: one interface, one package per backend
