@@ -39,9 +39,13 @@
     "lint": "biome lint src tests"
   },
   "dependencies": {
+    "@statewalker/db-api": "catalog:",
+    "@statewalker/db-sqlite": "catalog:",
     "@statewalker/webrun-files": "workspace:^"
   },
   "devDependencies": {
+    "@statewalker/db-sqlite-do": "catalog:",
+    "@statewalker/db-sqlite-node": "catalog:",
     "@statewalker/webrun-files-tests": "workspace:^",
     "@types/node": "catalog:",
     "pako": "catalog:",

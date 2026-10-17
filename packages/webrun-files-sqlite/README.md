@@ -106,12 +106,12 @@ const removed = await files.sweep({ olderThan: 60 * 60_000 }); // contents untou
 ### A portable archive with `SqlarFilesApi`
 
 ```typescript
-import { DatabaseSync } from 'node:sqlite';
+import { newNodeSqliteDb } from '@statewalker/db-sqlite-node';
 import * as pako from 'pako';
 import { readText, writeText } from '@statewalker/webrun-files';
-import { NodeSqlDriver, pakoCodec, SqlarFilesApi } from '@statewalker/webrun-files-sqlite';
+import { pakoCodec, SqlarFilesApi } from '@statewalker/webrun-files-sqlite';
 
-const files = new SqlarFilesApi(new NodeSqlDriver(new DatabaseSync('site.sqlar')), {
+const files = new SqlarFilesApi(await newNodeSqliteDb({ path: 'site.sqlar' }), {
   codec: pakoCodec(pako, { level: 9 }),
 });
 await files.init(); // creates the sqlar table if missing

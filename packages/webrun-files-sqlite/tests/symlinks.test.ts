@@ -16,12 +16,12 @@ describe("symlink rows", () => {
   it("stores sz=-1, the target as TEXT, and the symlink mode", async () => {
     const { db, files } = await newArchive();
     await files.symlink("/pkg/latest.js", "./index.js");
-    const row = rawRow(db, "pkg/latest.js");
+    const row = await rawRow(db, "pkg/latest.js");
     expect(row?.sz).toBe(-1);
     expect(row?.dtype).toBe("text");
     expect(row?.data).toBe("./index.js");
     expect(row?.mode).toBe(0o120777);
-    expect(rawRow(db, "pkg")?.dtype).toBe("null");
+    expect((await rawRow(db, "pkg"))?.dtype).toBe("null");
   });
 
   it("reads the stored target back with readlink", async () => {
@@ -194,7 +194,7 @@ describe("mutations act on the link itself", () => {
     await files.move("/l", "/moved");
     expect(await files.readlink("/copy")).toBe("t.txt");
     expect(await files.readlink("/moved")).toBe("t.txt");
-    expect(rawRow(db, "copy")?.dtype).toBe("text");
+    expect((await rawRow(db, "copy"))?.dtype).toBe("text");
     expect(await files.readlink("/l")).toBeUndefined();
   });
 });

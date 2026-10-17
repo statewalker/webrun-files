@@ -1,10 +1,11 @@
-import { DatabaseSync } from "node:sqlite";
-import { type Codec, NodeSqlDriver, SqlarFilesApi } from "../src/index.js";
+import type { Db } from "@statewalker/db-api";
+import { type Codec, SqlarFilesApi } from "../src/index.js";
+import { type Driver, openDb } from "./open-db.js";
 
-/** A fresh in-memory archive over node:sqlite, with the raw handle for inspection. */
-export async function newArchive(opts: { codec?: Codec; db?: DatabaseSync } = {}) {
-  const db = opts.db ?? new DatabaseSync(":memory:");
-  const files = new SqlarFilesApi(new NodeSqlDriver(db), { codec: opts.codec });
+/** A fresh in-memory archive, with its Db for inspecting the table directly. */
+export async function newArchive(opts: { codec?: Codec; db?: Db; driver?: Driver } = {}) {
+  const db = opts.db ?? (await openDb(opts.driver));
+  const files = new SqlarFilesApi(db, { codec: opts.codec });
   await files.init();
   return { db, files };
 }
@@ -20,16 +21,15 @@ export interface RawRow {
 }
 
 /** The stored row for `name`, read with plain SQL — independent of the adapter. */
-export function rawRow(db: DatabaseSync, name: string): RawRow | undefined {
-  return db
-    .prepare(
-      "SELECT name, mode, mtime, sz, typeof(data) AS dtype, length(data) AS len, data FROM sqlar WHERE name = ?",
-    )
-    .get(name) as RawRow | undefined;
+export async function rawRow(db: Db, name: string): Promise<RawRow | undefined> {
+  const rows = await db.query<RawRow>(
+    "SELECT name, mode, mtime, sz, typeof(data) AS dtype, length(data) AS len, data FROM sqlar WHERE name = ?",
+    [name],
+  );
+  return rows[0];
 }
 
-export function rawNames(db: DatabaseSync): string[] {
-  return (db.prepare("SELECT name FROM sqlar ORDER BY name").all() as { name: string }[]).map(
-    (r) => r.name,
-  );
+export async function rawNames(db: Db): Promise<string[]> {
+  const rows = await db.query<{ name: string }>("SELECT name FROM sqlar ORDER BY name");
+  return rows.map((r) => r.name);
 }

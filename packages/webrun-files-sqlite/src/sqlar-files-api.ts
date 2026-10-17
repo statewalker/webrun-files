@@ -1,3 +1,4 @@
+import type { Db } from "@statewalker/db-api";
 import type {
   FileInfo,
   FileStats,
@@ -8,7 +9,6 @@ import type {
 import { comparePaths, normalizePath } from "@statewalker/webrun-files";
 import { toBytes } from "./bytes.js";
 import { type Codec, defaultCodec } from "./codec.js";
-import type { SqlDriver } from "./sql.types.js";
 
 /**
  * The table, verbatim from the SQLite Archive specification. Five columns,
@@ -44,17 +44,17 @@ export interface SqlarFilesApiOptions {
  * missing path — and {@link symlink} / {@link readlink} expose the link itself.
  */
 export class SqlarFilesApi implements FilesApi {
-  readonly #sql: SqlDriver;
+  readonly #db: Db;
   readonly #codec: Codec;
 
-  constructor(sql: SqlDriver, opts: SqlarFilesApiOptions = {}) {
-    this.#sql = sql;
+  constructor(db: Db, opts: SqlarFilesApiOptions = {}) {
+    this.#db = db;
     this.#codec = opts.codec ?? defaultCodec();
   }
 
   /** Creates the table if it is missing. Await it before any other call. */
   async init(): Promise<void> {
-    await this.#sql.run(SCHEMA);
+    await this.#db.query(SCHEMA);
   }
 
   /** A missing path or a directory yields nothing; a file yields one chunk. */
@@ -63,10 +63,9 @@ export class SqlarFilesApi implements FilesApi {
     const resolved = await this.#resolve(toName(path));
     if (resolved?.stats.kind !== "file") return;
 
-    const rows = await this.#sql.all<{ data: unknown }>(
-      "SELECT data FROM sqlar WHERE name = ?",
+    const rows = await this.#db.query<{ data: unknown }>("SELECT data FROM sqlar WHERE name = ?", [
       resolved.name,
-    );
+    ]);
     const content = await this.#content(resolved.name, resolved.stats.size, toBytes(rows[0]?.data));
     options.signal?.throwIfAborted();
     const start = options.start ?? 0;
@@ -150,9 +149,9 @@ export class SqlarFilesApi implements FilesApi {
     // Paths are reported under the requested name even when it is a link.
     const base = resolved.name;
     const range = descendants(base);
-    const rows = await this.#sql.all<StoredRow>(
+    const rows = await this.#db.query<StoredRow>(
       `SELECT ${ROW_COLUMNS} FROM sqlar WHERE ${range.where} ORDER BY name`,
-      ...range.params,
+      range.params,
     );
     const prefixLength = base === "" ? 0 : base.length + 1;
     const seen = new Set<string>();
@@ -183,12 +182,12 @@ export class SqlarFilesApi implements FilesApi {
   async remove(path: string): Promise<boolean> {
     const name = toName(path);
     const range = selfAndDescendants(name);
-    const found = await this.#sql.all(
+    const found = await this.#db.query(
       `SELECT 1 FROM sqlar WHERE ${range.where} LIMIT 1`,
-      ...range.params,
+      range.params,
     );
     if (found.length === 0) return false;
-    await this.#sql.run(`DELETE FROM sqlar WHERE ${range.where}`, ...range.params);
+    await this.#db.query(`DELETE FROM sqlar WHERE ${range.where}`, range.params);
     return true;
   }
 
@@ -200,7 +199,7 @@ export class SqlarFilesApi implements FilesApi {
     const from = toName(source);
     const to = toName(target);
     const range = selfAndDescendants(from);
-    const rows = await this.#sql.all<{
+    const rows = await this.#db.query<{
       name: string;
       mode: number;
       sz: number;
@@ -208,7 +207,7 @@ export class SqlarFilesApi implements FilesApi {
       data: unknown;
     }>(
       `SELECT name, mode, sz, typeof(data) AS dtype, data FROM sqlar WHERE ${range.where}`,
-      ...range.params,
+      range.params,
     );
     if (rows.length === 0) return false;
 
@@ -268,32 +267,28 @@ export class SqlarFilesApi implements FilesApi {
   }
 
   async #row(name: string): Promise<StoredRow | undefined> {
-    const rows = await this.#sql.all<StoredRow>(
+    const rows = await this.#db.query<StoredRow>(
       `SELECT ${ROW_COLUMNS} FROM sqlar WHERE name = ?`,
-      name,
+      [name],
     );
     return rows[0];
   }
 
   async #hasDescendants(name: string): Promise<boolean> {
     const range = descendants(name);
-    const rows = await this.#sql.all(
+    const rows = await this.#db.query(
       `SELECT 1 FROM sqlar WHERE ${range.where} LIMIT 1`,
-      ...range.params,
+      range.params,
     );
     return rows.length > 0;
   }
 
   async #put(name: string, mode: number, sz: number, data: Uint8Array | string | null) {
-    await this.#sql.run(
+    await this.#db.query(
       `INSERT INTO sqlar (name, mode, mtime, sz, data) VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(name) DO UPDATE SET
          mode = excluded.mode, mtime = excluded.mtime, sz = excluded.sz, data = excluded.data`,
-      name,
-      mode,
-      Math.floor(Date.now() / 1000), // SQLAR mtime is in seconds
-      sz,
-      data,
+      [name, mode, Math.floor(Date.now() / 1000), sz, data], // SQLAR mtime is in seconds
     );
   }
 }
