@@ -326,6 +326,7 @@ for (const driver of DRIVERS) {
           /no SQLite transaction hook/,
         );
         expect(await files.exists("/f")).toBe(false);
+        expect(await count(db, "fs_files")).toBe(0);
       });
     });
 

@@ -48,8 +48,9 @@ import { newNodeSqliteDb } from '@statewalker/db-sqlite-node';
 import { newDoSqliteDb } from '@statewalker/db-sqlite-do';
 import { SqliteFilesApi } from '@statewalker/webrun-files-sqlite';
 
-await newNodeSqliteDb({ path: 'files.db' }); // node:sqlite
-newDoSqliteDb(this.ctx.storage);             // in a Durable Object: ctx.storage, not ctx.storage.sql
+const db = await newNodeSqliteDb({ path: 'files.db' }); // node:sqlite
+// or, in a Durable Object (ctx.storage, not ctx.storage.sql):
+// const db = newDoSqliteDb(this.ctx.storage);
 
 const files = new SqliteFilesApi(db, { blockSize: 1024 * 1024 });
 await files.init(); // creates tables and indexes if missing; await it before any other call

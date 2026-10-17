@@ -181,12 +181,18 @@ export class SqliteFilesApi implements FilesApi {
   ): Promise<void> {
     const name = normalizePath(path);
     const compression = this.#codec?.name ?? "none";
-    const created = await this.#db.query<{ fid: number }>(
-      `INSERT INTO ${this.#files}(size, compression, block_size, hash, updated)
-       VALUES (NULL, ?, ?, NULL, ?) RETURNING fid`,
-      [compression, this.#blockSize, Date.now()],
+    // In a transaction too, so a Db without db-sqlite's hook fails before writing anything.
+    const fid = await inTransaction(
+      this.#db,
+      async (tx) =>
+        (
+          await tx.query<{ fid: number }>(
+            `INSERT INTO ${this.#files}(size, compression, block_size, hash, updated)
+             VALUES (NULL, ?, ?, NULL, ?) RETURNING fid`,
+            [compression, this.#blockSize, Date.now()],
+          )
+        )[0].fid,
     );
-    const fid = created[0].fid;
 
     const limit = this.#blockSize;
     const reader = new ByteReader(content);
