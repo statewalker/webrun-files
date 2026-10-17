@@ -1,7 +1,7 @@
 /** Paths share immutable contents; a content lives as long as a path points at it. */
 import { collectGenerator, collectStream, positionContent } from "@statewalker/webrun-files-tests";
 import { describe, expect, it, vi } from "vitest";
-import { count, fileRow, newFiles, passthrough, pathRow } from "./helpers.js";
+import { count, fileRow, newFiles, pathRow } from "./helpers.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -13,11 +13,11 @@ describe("sharing", () => {
   it("copy points the target at the same content, without copying blocks", async () => {
     const { db, files } = await newFiles(small);
     await files.write("/a", positionContent(300));
-    const blocks = count(db, "fs_blocks");
+    const blocks = await count(db, "fs_blocks");
     await files.copy("/a", "/b");
-    expect(pathRow(db, "/b")?.fid).toBe(pathRow(db, "/a")?.fid);
-    expect(count(db, "fs_blocks")).toBe(blocks);
-    expect(count(db, "fs_files")).toBe(1);
+    expect((await pathRow(db, "/b"))?.fid).toBe((await pathRow(db, "/a"))?.fid);
+    expect(await count(db, "fs_blocks")).toBe(blocks);
+    expect(await count(db, "fs_files")).toBe(1);
   });
 
   it("copies a directory tree, sharing every content", async () => {
@@ -38,7 +38,7 @@ describe("sharing", () => {
         "/dst/copy/x.txt",
       ].sort(),
     );
-    expect(count(db, "fs_files")).toBe(2);
+    expect(await count(db, "fs_files")).toBe(2);
     expect(await text(files, "/dst/copy/sub/y.txt")).toBe("y");
   });
 
@@ -46,9 +46,9 @@ describe("sharing", () => {
     const { db, files } = await newFiles(small);
     await files.write("/a", positionContent(300, [7]));
     await files.write("/b", positionContent(300, [100]));
-    expect(pathRow(db, "/b")?.fid).toBe(pathRow(db, "/a")?.fid);
-    expect(count(db, "fs_files")).toBe(1);
-    expect(count(db, "fs_blocks")).toBe(5); // 4 × 64 + 44
+    expect((await pathRow(db, "/b"))?.fid).toBe((await pathRow(db, "/a"))?.fid);
+    expect(await count(db, "fs_files")).toBe(1);
+    expect(await count(db, "fs_blocks")).toBe(5); // 4 × 64 + 44
   });
 
   it("does not share contents stored with different compression", async () => {
@@ -59,7 +59,7 @@ describe("sharing", () => {
     const packed = await newFiles({ ...small, db, compression: pakoDeflateCodec(pako) });
     await plain.files.write("/a", positionContent(300));
     await packed.files.write("/b", positionContent(300));
-    expect(pathRow(db, "/b")?.fid).not.toBe(pathRow(db, "/a")?.fid);
+    expect((await pathRow(db, "/b"))?.fid).not.toBe((await pathRow(db, "/a"))?.fid);
   });
 });
 
@@ -72,9 +72,9 @@ describe("sharing across block sizes", () => {
     await a.files.write("/a", positionContent(300));
     await b.files.write("/b", positionContent(300));
     await c.files.write("/c", positionContent(300));
-    expect(pathRow(db, "/b")?.fid).not.toBe(pathRow(db, "/a")?.fid);
-    expect(pathRow(db, "/c")?.fid).toBe(pathRow(db, "/b")?.fid);
-    expect(count(db, "fs_files")).toBe(2);
+    expect((await pathRow(db, "/b"))?.fid).not.toBe((await pathRow(db, "/a"))?.fid);
+    expect((await pathRow(db, "/c"))?.fid).toBe((await pathRow(db, "/b"))?.fid);
+    expect(await count(db, "fs_files")).toBe(2);
   });
 });
 
@@ -84,7 +84,7 @@ describe("collection", () => {
     await files.write("/a", positionContent(300));
     await files.copy("/a", "/b");
     await files.remove("/a");
-    expect(count(db, "fs_files")).toBe(1);
+    expect(await count(db, "fs_files")).toBe(1);
     expect((await collectStream(files.read("/b"))).length).toBe(300);
   });
 
@@ -93,17 +93,17 @@ describe("collection", () => {
     await files.write("/dir/a", positionContent(300));
     await files.copy("/dir/a", "/dir/b");
     await files.remove("/dir");
-    expect(count(db, "fs_paths")).toBe(0);
-    expect(count(db, "fs_files")).toBe(0);
-    expect(count(db, "fs_blocks")).toBe(0);
+    expect(await count(db, "fs_paths")).toBe(0);
+    expect(await count(db, "fs_files")).toBe(0);
+    expect(await count(db, "fs_blocks")).toBe(0);
   });
 
   it("collects the previous content on overwrite", async () => {
     const { db, files } = await newFiles(small);
     await files.write("/a", positionContent(300));
     await files.write("/a", [enc.encode("short")]);
-    expect(count(db, "fs_files")).toBe(1);
-    expect(count(db, "fs_blocks")).toBe(1);
+    expect(await count(db, "fs_files")).toBe(1);
+    expect(await count(db, "fs_blocks")).toBe(1);
     expect(await text(files, "/a")).toBe("short");
   });
 
@@ -111,7 +111,7 @@ describe("collection", () => {
     const { db, files } = await newFiles(small);
     await files.write("/a", [enc.encode("same")]);
     await files.write("/a", [enc.encode("same")]);
-    expect(count(db, "fs_files")).toBe(1);
+    expect(await count(db, "fs_files")).toBe(1);
     expect(await text(files, "/a")).toBe("same");
   });
 
@@ -120,7 +120,7 @@ describe("collection", () => {
     await files.write("/a", [enc.encode("aaa")]);
     await files.write("/b", [enc.encode("bbb")]);
     await files.move("/a", "/b");
-    expect(count(db, "fs_files")).toBe(1);
+    expect(await count(db, "fs_files")).toBe(1);
     expect(await text(files, "/b")).toBe("aaa");
     expect(await files.exists("/a")).toBe(false);
   });
@@ -136,27 +136,22 @@ describe("failures", () => {
     }
     await expect(files.write("/a", broken())).rejects.toThrow("source failed");
     expect(await text(files, "/a")).toBe("previous");
-    expect(count(db, "fs_files")).toBe(1);
-    expect(count(db, "fs_blocks")).toBe(1);
+    expect(await count(db, "fs_files")).toBe(1);
+    expect(await count(db, "fs_blocks")).toBe(1);
   });
 
   it("closes the source when storing a block fails", async () => {
     let closed = false;
     const { files } = await newFiles({
       ...small,
-      wrap: (driver) =>
-        passthrough(driver, {
-          transaction: (statements) => {
-            if (
-              statements.some(
-                (st) => st.sql.includes("INSERT INTO fs_blocks") && st.params?.[1] === 64,
-              )
-            ) {
-              throw new Error("disk full");
-            }
-            return driver.transaction(statements);
-          },
-        }),
+      spy: {
+        query: async (sql, params, next) => {
+          if (sql.includes("INSERT INTO fs_blocks") && params[1] === 64) {
+            throw new Error("disk full");
+          }
+          return next();
+        },
+      },
     });
     async function* source() {
       try {
@@ -202,15 +197,17 @@ describe("compression choice", () => {
   it("defaults to deflate over Compression Streams", async () => {
     const { db, files } = await newFiles({ blockSize: 1024 });
     await files.write("/t.txt", [enc.encode("abc".repeat(10_000))]);
-    const fid = pathRow(db, "/t.txt")?.fid as number;
-    expect(fileRow(db, fid)?.compression).toBe("deflate");
+    const fid = (await pathRow(db, "/t.txt"))?.fid as number;
+    expect((await fileRow(db, fid))?.compression).toBe("deflate");
     expect(await text(files, "/t.txt")).toBe("abc".repeat(10_000));
   });
 
   it("stores content uncompressed with compression: null", async () => {
     const { db, files } = await newFiles({ compression: null });
     await files.write("/t.txt", [enc.encode("abc")]);
-    expect(fileRow(db, pathRow(db, "/t.txt")?.fid as number)?.compression).toBe("none");
+    expect((await fileRow(db, (await pathRow(db, "/t.txt"))?.fid as number))?.compression).toBe(
+      "none",
+    );
   });
 
   it("reads deflate content through Compression Streams whatever codec it writes with", async () => {
@@ -246,10 +243,10 @@ describe("copy and move", () => {
   it("moves a tree by renaming, keeping contents and creating parents", async () => {
     const { db, files } = await newFiles(small);
     await files.write("/a/x.txt", [enc.encode("x")]);
-    const fid = pathRow(db, "/a/x.txt")?.fid;
+    const fid = (await pathRow(db, "/a/x.txt"))?.fid;
     await files.move("/a", "/deep/er/b");
-    expect(pathRow(db, "/deep/er/b/x.txt")?.fid).toBe(fid);
-    expect(pathRow(db, "/deep/er")?.fid).toBeNull();
+    expect((await pathRow(db, "/deep/er/b/x.txt"))?.fid).toBe(fid);
+    expect((await pathRow(db, "/deep/er"))?.fid).toBeNull();
     expect(await files.exists("/a")).toBe(false);
   });
 

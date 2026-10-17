@@ -6,13 +6,8 @@
 import { positionContent } from "@statewalker/webrun-files-tests";
 import * as pako from "pako";
 import { describe, expect, it } from "vitest";
-import {
-  pakoDeflateCodec,
-  type SqlDriver,
-  type StreamCodec,
-  webDeflateCodec,
-} from "../../src/index.js";
-import { newFiles, passthrough } from "./helpers.js";
+import { pakoDeflateCodec, type StreamCodec, webDeflateCodec } from "../../src/index.js";
+import { newFiles, type Spy } from "./helpers.js";
 
 const KiB = 1024;
 const MiB = 1024 * KiB;
@@ -26,20 +21,15 @@ const variants: [string, StreamCodec | null][] = [
   ["pako deflate", pakoDeflateCodec(pako)],
 ];
 
-/** A driver that reports every block insert and block fetch. */
-function watching(driver: SqlDriver, events: { onInsert?(shift: number): void; onFetch?(): void }) {
-  return passthrough(driver, {
-    all(sql: string, ...params: unknown[]) {
+/** A spy that reports every block insert and block fetch. */
+function watching(events: { onInsert?(shift: number): void; onFetch?(): void }): Spy {
+  return {
+    query(sql, params, next) {
       if (/SELECT shift, block FROM fs_blocks/.test(sql)) events.onFetch?.();
-      return driver.all(sql, ...params);
+      if (/INSERT INTO fs_blocks/.test(sql)) events.onInsert?.(params[1] as number);
+      return next();
     },
-    transaction(statements) {
-      for (const { sql, params } of statements) {
-        if (/INSERT INTO fs_blocks/.test(sql)) events.onInsert?.(params?.[1] as number);
-      }
-      return driver.transaction(statements);
-    },
-  } as Partial<SqlDriver>);
+  };
 }
 
 for (const [label, compression] of variants) {
@@ -50,8 +40,7 @@ for (const [label, compression] of variants) {
       const { files } = await newFiles({
         compression,
         blockSize: MAX_BLOCK,
-        wrap: (d) =>
-          watching(d, { onInsert: (shift) => (worst = Math.max(worst, pulled - shift)) }),
+        spy: watching({ onInsert: (shift) => (worst = Math.max(worst, pulled - shift)) }),
       });
       async function* source() {
         for await (const chunk of positionContent(SIZE, [SOURCE_CHUNK])) {
@@ -78,22 +67,17 @@ for (const [label, compression] of variants) {
       const { files } = await newFiles({
         db: writer.db,
         compression,
-        wrap: (d) =>
-          watching(
-            passthrough(d, {
-              all: (sql, ...params) => {
-                const rows = d.all<{ shift: number }>(sql, ...params) as { shift: number }[];
-                if (/FROM fs_blocks/.test(sql) && rows[0]) shifts.push(rows[0].shift);
-                return rows as never;
-              },
-            }),
-            {
-              onFetch: () => {
-                fetches++;
-                consumedAtFetch.push(consumed);
-              },
-            },
-          ),
+        spy: {
+          async query(sql, _params, next) {
+            if (/SELECT shift, block FROM fs_blocks/.test(sql)) {
+              fetches++;
+              consumedAtFetch.push(consumed);
+            }
+            const rows = (await next()) as { shift: number }[];
+            if (/FROM fs_blocks/.test(sql) && rows[0]) shifts.push(rows[0].shift);
+            return rows;
+          },
+        },
       });
       for await (const chunk of files.read("/f")) {
         consumed += chunk.length;
@@ -109,7 +93,7 @@ for (const [label, compression] of variants) {
       const { files } = await newFiles({
         compression,
         blockSize: MAX_BLOCK,
-        wrap: (d) => watching(d, { onFetch: () => fetches++ }),
+        spy: watching({ onFetch: () => fetches++ }),
       });
       await files.write("/f", positionContent(SIZE, [MiB]));
       for await (const _ of files.read("/f", { start: 100 * KiB })) break;

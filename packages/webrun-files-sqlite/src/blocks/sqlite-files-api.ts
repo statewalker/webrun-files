@@ -1,3 +1,5 @@
+import type { Db } from "@statewalker/db-api";
+import { inTransaction } from "@statewalker/db-sqlite";
 import type {
   FileInfo,
   FileStats,
@@ -7,13 +9,13 @@ import type {
 } from "@statewalker/webrun-files";
 import { normalizePath } from "@statewalker/webrun-files";
 import { toBytes } from "../bytes.js";
-import type { SqlDriver, SqlStatement } from "../sql.types.js";
+import { runStatements, type SqlStatement } from "../run-statements.js";
 import { ByteReader, collectBlock } from "./byte-reader.js";
 import { Sha256 } from "./sha256.js";
 import { type StreamCodec, webDeflateCodec } from "./stream-codec.js";
 
 const MiB = 1024 * 1024;
-/** Rows on Durable Objects and D1 are capped at 2 MB; leave room for deflate's worst case. */
+/** Rows on Durable Objects are capped at 2 MB; leave room for deflate's worst case. */
 const MAX_BLOCK_SIZE_LIMIT = 1.5 * MiB;
 const LIST_PAGE = 256;
 
@@ -49,14 +51,14 @@ interface ListRow extends EntryRow {
  * A FilesApi over three SQLite tables: paths point at immutable contents, and
  * a content is a sequence of bounded, optionally compressed blocks. Reads and
  * writes stream one block at a time, so no file is ever held whole and no row
- * outgrows the 2 MB limit of Durable Objects and D1.
+ * outgrows the 2 MB row limit of Durable Objects.
  *
  * Streaming happens outside transactions; every step that changes what a path
  * shows is one transaction, so an interruption leaves at most an unreferenced
  * content, which {@link sweep} removes.
  */
 export class SqliteFilesApi implements FilesApi {
-  readonly #sql: SqlDriver;
+  readonly #db: Db;
   readonly #codec: StreamCodec | null;
   readonly #blockSize: number;
   readonly #paths: string;
@@ -64,7 +66,7 @@ export class SqliteFilesApi implements FilesApi {
   readonly #blocks: string;
   readonly #prefix: string;
 
-  constructor(sql: SqlDriver, opts: SqliteFilesApiOptions = {}) {
+  constructor(db: Db, opts: SqliteFilesApiOptions = {}) {
     const prefix = opts.tablePrefix ?? "fs_";
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(prefix)) {
       throw new Error(`SqliteFilesApi: tablePrefix must be a plain SQL identifier, got ${prefix}`);
@@ -79,7 +81,7 @@ export class SqliteFilesApi implements FilesApi {
         `SqliteFilesApi: blockSize must be an integer from 1 to ${MAX_BLOCK_SIZE_LIMIT}, got ${this.#blockSize}`,
       );
     }
-    this.#sql = sql;
+    this.#db = db;
     this.#codec = opts.compression === undefined ? availableWebCodec() : opts.compression;
     this.#prefix = prefix;
     this.#paths = `${prefix}paths`;
@@ -113,7 +115,7 @@ export class SqliteFilesApi implements FilesApi {
       `CREATE INDEX IF NOT EXISTS ${this.#prefix}paths_fid ON ${this.#paths}(fid)`,
       `CREATE INDEX IF NOT EXISTS ${this.#prefix}files_hash ON ${this.#files}(hash, size)`,
     ];
-    for (const statement of statements) await this.#sql.run(statement);
+    for (const statement of statements) await this.#db.query(statement);
   }
 
   // ---------------------------------------------------------------- read
@@ -179,12 +181,10 @@ export class SqliteFilesApi implements FilesApi {
   ): Promise<void> {
     const name = normalizePath(path);
     const compression = this.#codec?.name ?? "none";
-    const created = await this.#sql.all<{ fid: number }>(
+    const created = await this.#db.query<{ fid: number }>(
       `INSERT INTO ${this.#files}(size, compression, block_size, hash, updated)
        VALUES (NULL, ?, ?, NULL, ?) RETURNING fid`,
-      compression,
-      this.#blockSize,
-      Date.now(),
+      [compression, this.#blockSize, Date.now()],
     );
     const fid = created[0].fid;
 
@@ -209,7 +209,7 @@ export class SqliteFilesApi implements FilesApi {
           }
         };
         const block = await collectBlock(this.#codec ? this.#codec.compress(pieces()) : pieces());
-        const [alive] = await this.#sql.transaction([
+        const [alive] = await this.#transaction([
           {
             sql: `UPDATE ${this.#files} SET updated = ? WHERE fid = ? AND size IS NULL`,
             params: [Date.now(), fid],
@@ -225,7 +225,7 @@ export class SqliteFilesApi implements FilesApi {
       }
 
       const previous = await this.#entry(name);
-      const [finished] = await this.#sql.transaction(
+      const [finished] = await this.#transaction(
         this.#finishWrite(name, fid, size, hash.digestHex(), compression, previous?.fid ?? null),
       );
       if (finished === 0) throw sweptDuringWrite(name);
@@ -234,9 +234,9 @@ export class SqliteFilesApi implements FilesApi {
         await reader.close();
       } catch {}
       // Best effort, and never allowed to replace the error that brought us here —
-      // including a synchronous throw from a synchronous driver.
+      // including a Db without db-sqlite's transaction hook.
       try {
-        await this.#sql.transaction([
+        await this.#transaction([
           { sql: `DELETE FROM ${this.#files} WHERE fid = ? AND size IS NULL`, params: [fid] },
           ...this.#deleteBlocksOfMissing(fid),
         ]);
@@ -292,10 +292,9 @@ export class SqliteFilesApi implements FilesApi {
   async mkdir(path: string): Promise<void> {
     const now = Date.now();
     for (const dir of ancestorsAndSelf(normalizePath(path))) {
-      await this.#sql.run(
+      await this.#db.query(
         `INSERT INTO ${this.#paths}(path, fid, mtime) VALUES (?, NULL, ?) ON CONFLICT(path) DO NOTHING`,
-        dir,
-        now,
+        [dir, now],
       );
     }
   }
@@ -326,12 +325,12 @@ export class SqliteFilesApi implements FilesApi {
     for (;;) {
       const params: unknown[] = [...range.params, cursor];
       if (!options.recursive) params.push(prefixLength + 1);
-      const rows = await this.#sql.all<ListRow>(
+      const rows = await this.#db.query<ListRow>(
         `SELECT p.path, p.fid, p.mtime, f.size, f.compression, f.block_size
          FROM ${this.#paths} p LEFT JOIN ${this.#files} f ON f.fid = p.fid
          WHERE ${range.where} AND p.path > ? ${directOnly}
          ORDER BY p.path LIMIT ${LIST_PAGE}`,
-        ...params,
+        params,
       );
       for (const row of rows) {
         const stats = toStats(row);
@@ -346,7 +345,7 @@ export class SqliteFilesApi implements FilesApi {
   // ------------------------------------------------------------- mutation
 
   async remove(path: string): Promise<boolean> {
-    const counts = await this.#sql.transaction(this.#removeTree(normalizePath(path)));
+    const counts = await this.#transaction(this.#removeTree(normalizePath(path)));
     return counts[counts.length - 1] > 0;
   }
 
@@ -427,7 +426,7 @@ export class SqliteFilesApi implements FilesApi {
             params: [to, from.length + 1, now, ...range.params],
           },
     ];
-    const counts = await this.#sql.transaction(statements);
+    const counts = await this.#transaction(statements);
     return counts[counts.length - 1] > 0;
   }
 
@@ -453,7 +452,7 @@ export class SqliteFilesApi implements FilesApi {
     const eligible = `f.updated < ? AND NOT EXISTS (
       SELECT 1 FROM ${this.#paths} p WHERE p.fid = f.fid
     )`;
-    const [, contents] = await this.#sql.transaction([
+    const [, contents] = await this.#transaction([
       {
         sql: `DELETE FROM ${this.#blocks} WHERE fid IN (SELECT f.fid FROM ${this.#files} f WHERE ${eligible})`,
         params: [cutoff],
@@ -465,12 +464,17 @@ export class SqliteFilesApi implements FilesApi {
 
   // -------------------------------------------------------------- private
 
+  /** The statements as one transaction; per statement, the rows it changed. */
+  #transaction(statements: SqlStatement[]): Promise<number[]> {
+    return inTransaction(this.#db, (tx) => runStatements(tx, statements));
+  }
+
   async #entry(name: string): Promise<EntryRow | undefined> {
-    const rows = await this.#sql.all<EntryRow>(
+    const rows = await this.#db.query<EntryRow>(
       `SELECT p.fid, p.mtime, f.size, f.compression, f.block_size
        FROM ${this.#paths} p LEFT JOIN ${this.#files} f ON f.fid = p.fid
        WHERE p.path = ?`,
-      name,
+      [name],
     );
     return rows[0];
   }
@@ -488,10 +492,9 @@ export class SqliteFilesApi implements FilesApi {
   }
 
   async #block(fid: number, shift: number) {
-    const rows = await this.#sql.all<{ shift: number; block: unknown }>(
+    const rows = await this.#db.query<{ shift: number; block: unknown }>(
       `SELECT shift, block FROM ${this.#blocks} WHERE fid = ? AND shift = ?`,
-      fid,
-      shift,
+      [fid, shift],
     );
     return rows[0];
   }

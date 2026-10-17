@@ -13,13 +13,4 @@ export {
   rawCodec,
   webCodec,
 } from "./codec.js";
-export {
-  type D1Database,
-  D1SqlDriver,
-  DoSqlDriver,
-  type DoStorage,
-  NodeSqlDriver,
-  type NodeSqliteDatabase,
-} from "./drivers.js";
-export type { SqlDriver, SqlStatement } from "./sql.types.js";
 export { SqlarFilesApi, type SqlarFilesApiOptions } from "./sqlar-files-api.js";

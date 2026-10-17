@@ -1,48 +1,49 @@
 /** How content is cut into fixed-size blocks, recorded, and read back — checked with raw SQL. */
 import { createHash } from "node:crypto";
 import { deflateSync, inflateSync } from "node:zlib";
+import type { Db } from "@statewalker/db-api";
 import { collectStream, positionContent } from "@statewalker/webrun-files-tests";
 import * as pako from "pako";
 import { describe, expect, it } from "vitest";
-import { pakoDeflateCodec, type SqlDriver, SqliteFilesApi } from "../../src/index.js";
-import { blocksOf, count, fileRow, newFiles, passthrough, pathRow } from "./helpers.js";
+import { pakoDeflateCodec, SqliteFilesApi } from "../../src/index.js";
+import { blocksOf, count, fileRow, newFiles, pathRow } from "./helpers.js";
 
 const KiB = 1024;
 const MiB = 1024 * KiB;
 
 const bytesOf = (size: number) => collectStream(positionContent(size, [size || 1]));
-const fidOf = (db: Parameters<typeof pathRow>[0], path: string) => pathRow(db, path)?.fid as number;
-const layout = (db: Parameters<typeof pathRow>[0], path: string) =>
-  blocksOf(db, fidOf(db, path)).map((b) => [b.shift, b.len]);
+const fidOf = async (db: Db, path: string) => (await pathRow(db, path))?.fid as number;
+const layout = async (db: Db, path: string) =>
+  (await blocksOf(db, await fidOf(db, path))).map((b) => [b.shift, b.len]);
 
 describe("fixed block size", () => {
   it("cuts 1 MiB blocks by default and records the size on the content", async () => {
     const { db, files } = await newFiles({ compression: null });
     await files.write("/f.bin", positionContent(2 * MiB + MiB / 2 + 123, [100_003]));
-    expect(layout(db, "/f.bin")).toEqual([
+    expect(await layout(db, "/f.bin")).toEqual([
       [0, MiB],
       [MiB, MiB],
       [2 * MiB, MiB / 2 + 123],
     ]);
-    expect(fileRow(db, fidOf(db, "/f.bin"))?.block_size).toBe(MiB);
+    expect((await fileRow(db, await fidOf(db, "/f.bin")))?.block_size).toBe(MiB);
   });
 
   it("cuts every block to blockSize, with only the last one shorter", async () => {
     const { db, files } = await newFiles({ compression: null, blockSize: 40 });
     await files.write("/f", positionContent(150, [7]));
-    expect(layout(db, "/f")).toEqual([
+    expect(await layout(db, "/f")).toEqual([
       [0, 40],
       [40, 40],
       [80, 40],
       [120, 30],
     ]);
-    expect(fileRow(db, fidOf(db, "/f"))?.block_size).toBe(40);
+    expect((await fileRow(db, await fidOf(db, "/f")))?.block_size).toBe(40);
   });
 
   it("writes no empty trailing block when the size is an exact multiple", async () => {
     const { db, files } = await newFiles({ compression: null, blockSize: 40 });
     await files.write("/f", positionContent(120, [50]));
-    expect(layout(db, "/f")).toEqual([
+    expect(await layout(db, "/f")).toEqual([
       [0, 40],
       [40, 40],
       [80, 40],
@@ -52,7 +53,7 @@ describe("fixed block size", () => {
   it("stores a file smaller than one block as a single short block", async () => {
     const { db, files } = await newFiles({ compression: null, blockSize: 40 });
     await files.write("/f", positionContent(5, [1]));
-    expect(layout(db, "/f")).toEqual([[0, 5]]);
+    expect(await layout(db, "/f")).toEqual([[0, 5]]);
   });
 
   it("does not depend on how the source is chunked", async () => {
@@ -60,20 +61,20 @@ describe("fixed block size", () => {
     const other = await newFiles({ compression: null, blockSize: 64 });
     await one.files.write("/f", positionContent(500, [500]));
     await other.files.write("/f", positionContent(500, [1, 3, 200, 9]));
-    const blocks = (db: typeof one.db) =>
-      blocksOf(db, fidOf(db, "/f")).map((b) => [b.shift, Array.from(b.block)]);
-    expect(blocks(other.db)).toEqual(blocks(one.db));
+    const blocks = async (db: Db) =>
+      (await blocksOf(db, await fidOf(db, "/f"))).map((b) => [b.shift, Array.from(b.block)]);
+    expect(await blocks(other.db)).toEqual(await blocks(one.db));
   });
 
   it("stores an empty file as size 0 with no blocks", async () => {
     const { db, files } = await newFiles({ compression: null, blockSize: 40 });
     await files.write("/empty", []);
-    expect(fileRow(db, fidOf(db, "/empty"))).toMatchObject({
+    expect(await fileRow(db, await fidOf(db, "/empty"))).toMatchObject({
       size: 0,
       compression: "none",
       block_size: 40,
     });
-    expect(blocksOf(db, fidOf(db, "/empty"))).toEqual([]);
+    expect(await blocksOf(db, await fidOf(db, "/empty"))).toEqual([]);
     expect(await files.stats("/empty")).toMatchObject({ kind: "file", size: 0 });
   });
 
@@ -82,8 +83,8 @@ describe("fixed block size", () => {
     const bytes = await bytesOf(5000);
     const before = Date.now();
     await files.write("/f", [bytes]);
-    const fid = fidOf(db, "/f");
-    expect(fileRow(db, fid)).toEqual({
+    const fid = await fidOf(db, "/f");
+    expect(await fileRow(db, fid)).toEqual({
       fid,
       size: 5000,
       compression: "none",
@@ -91,25 +92,24 @@ describe("fixed block size", () => {
       hash: createHash("sha256").update(bytes).digest("hex"),
       updated: expect.any(Number),
     });
-    expect(fileRow(db, fid)?.updated).toBeGreaterThanOrEqual(before);
-    expect(fileRow(db, fid)?.updated).toBeLessThanOrEqual(Date.now());
+    expect((await fileRow(db, fid))?.updated).toBeGreaterThanOrEqual(before);
+    expect((await fileRow(db, fid))?.updated).toBeLessThanOrEqual(Date.now());
   });
 
   it("stores directories as paths without content, and mtime in milliseconds", async () => {
     const { db, files } = await newFiles();
     const before = Date.now();
     await files.write("/a/b/c.txt", [new Uint8Array([1])]);
-    expect(pathRow(db, "/a")?.fid).toBeNull();
-    expect(pathRow(db, "/a/b")?.fid).toBeNull();
-    expect(pathRow(db, "/a/b/c.txt")?.mtime).toBeGreaterThanOrEqual(before);
-    expect(pathRow(db, "/")).toBeUndefined();
-    expect(count(db, "fs_paths")).toBe(3);
+    expect((await pathRow(db, "/a"))?.fid).toBeNull();
+    expect((await pathRow(db, "/a/b"))?.fid).toBeNull();
+    expect((await pathRow(db, "/a/b/c.txt"))?.mtime).toBeGreaterThanOrEqual(before);
+    expect(await pathRow(db, "/")).toBeUndefined();
+    expect(await count(db, "fs_paths")).toBe(3);
   });
 });
 
 describe("blockSize validation", () => {
-  const construct = (blockSize: number) =>
-    new SqliteFilesApi({ all: () => [], run: () => {}, transaction: () => [] }, { blockSize });
+  const construct = (blockSize: number) => new SqliteFilesApi({} as Db, { blockSize });
 
   for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 1.5 * MiB + 1]) {
     it(`rejects ${bad}`, () => {
@@ -148,8 +148,8 @@ describe("contents keep their own block size", () => {
     await first.files.write("/a", positionContent(100));
     const second = await newFiles({ db: first.db, compression: null, blockSize: 64 });
     await second.files.write("/b", positionContent(100, [3]));
-    expect(layout(first.db, "/a").map(([, len]) => len)).toEqual([40, 40, 20]);
-    expect(layout(first.db, "/b").map(([, len]) => len)).toEqual([64, 36]);
+    expect((await layout(first.db, "/a")).map(([, len]) => len)).toEqual([40, 40, 20]);
+    expect((await layout(first.db, "/b")).map(([, len]) => len)).toEqual([64, 36]);
     expect((await collectStream(second.files.read("/a"))).length).toBe(100);
   });
 });
@@ -160,13 +160,12 @@ describe("range reads", () => {
     const { files } = await newFiles({
       compression: null,
       blockSize: 100,
-      wrap: (d): SqlDriver =>
-        passthrough(d, {
-          all: (sql, ...params) => {
-            if (sql.includes("FROM fs_blocks")) shifts.push(params[1] as number);
-            return d.all(sql, ...params);
-          },
-        }),
+      spy: {
+        query: (sql, params, next) => {
+          if (sql.includes("FROM fs_blocks")) shifts.push(params[1] as number);
+          return next();
+        },
+      },
     });
     await files.write("/f", positionContent(1000, [333]));
     const fetched = async (start: number, length?: number) => {
@@ -208,8 +207,8 @@ describe("compressed blocks", () => {
     const { db, files } = await newFiles({ blockSize: 4000 });
     const bytes = new TextEncoder().encode("block storage streams bytes. ".repeat(1000));
     await files.write("/t.txt", [bytes]);
-    expect(fileRow(db, fidOf(db, "/t.txt"))?.compression).toBe("deflate");
-    const blocks = blocksOf(db, fidOf(db, "/t.txt"));
+    expect((await fileRow(db, await fidOf(db, "/t.txt")))?.compression).toBe("deflate");
+    const blocks = await blocksOf(db, await fidOf(db, "/t.txt"));
     expect(blocks.map((b) => b.shift)).toEqual([
       0, 4000, 8000, 12_000, 16_000, 20_000, 24_000, 28_000,
     ]);
@@ -229,11 +228,11 @@ describe("corrupt block lengths", () => {
       blockSize: 100,
     });
     await files.write("/f", positionContent(1000, [1000]));
-    db.prepare("UPDATE fs_blocks SET block = ? WHERE fid = ? AND shift = ?").run(
+    await db.query("UPDATE fs_blocks SET block = ? WHERE fid = ? AND shift = ?", [
       block,
-      fidOf(db, "/f"),
+      await fidOf(db, "/f"),
       shift,
-    );
+    ]);
     return files;
   }
   const bytesAt = async (shift: number, length: number) =>
@@ -291,7 +290,7 @@ describe("corrupt block lengths", () => {
   it("throws when a middle block is missing, even for a range starting inside it", async () => {
     const { db, files } = await newFiles({ compression: null, blockSize: 100 });
     await files.write("/f", positionContent(1000, [1000]));
-    db.prepare("DELETE FROM fs_blocks WHERE fid = ? AND shift = 500").run(fidOf(db, "/f"));
+    await db.query("DELETE FROM fs_blocks WHERE fid = ? AND shift = 500", [await fidOf(db, "/f")]);
     await expect(collectStream(files.read("/f"))).rejects.toThrow(/\/f changed during read/);
     await expect(collectStream(files.read("/f", { start: 550, length: 10 }))).rejects.toThrow(
       /\/f changed during read/,

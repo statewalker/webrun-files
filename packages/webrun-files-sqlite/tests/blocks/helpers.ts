@@ -1,25 +1,56 @@
-import { DatabaseSync } from "node:sqlite";
-import {
-  NodeSqlDriver,
-  type SqlDriver,
-  SqliteFilesApi,
-  type SqliteFilesApiOptions,
-} from "../../src/index.js";
+import type { Db } from "@statewalker/db-api";
+import { SQLITE_TRANSACTION, type SqliteTransactionHook } from "@statewalker/db-sqlite";
+import { SqliteFilesApi, type SqliteFilesApiOptions } from "../../src/index.js";
+import { type Driver, openDb } from "../open-db.js";
 
-/** A fresh in-memory SqliteFilesApi over node:sqlite, with the raw handle for inspection. */
+/** A fresh in-memory SqliteFilesApi, with its Db for inspecting the tables directly. */
 export async function newFiles(
-  opts: SqliteFilesApiOptions & {
-    db?: DatabaseSync;
-    wrap?: (driver: SqlDriver) => SqlDriver;
-    driver?: (db: DatabaseSync) => SqlDriver;
-  } = {},
+  opts: SqliteFilesApiOptions & { db?: Db; driver?: Driver; spy?: Spy } = {},
 ) {
-  const { db: given, wrap, driver, ...options } = opts;
-  const db = given ?? new DatabaseSync(":memory:");
-  const base = driver ? driver(db) : new NodeSqlDriver(db);
-  const files = new SqliteFilesApi(wrap ? wrap(base) : base, options);
+  const { db: given, driver, spy, ...options } = opts;
+  const db = given ?? (await openDb(driver));
+  const files = new SqliteFilesApi(spy ? spyDb(db, spy) : db, options);
   await files.init();
   return { db, files };
+}
+
+export interface Spy {
+  /** Sees every query, inside a transaction or not; `next` runs it. */
+  query?(
+    sql: string,
+    params: unknown[],
+    next: () => Promise<unknown[]>,
+    inTransaction: boolean,
+  ): Promise<unknown[]>;
+  /** Runs before each transaction starts. */
+  before?(): void | Promise<void>;
+  /** Runs inside each transaction after its statements; a throw rolls the transaction back. */
+  after?(tx: Db): void | Promise<void>;
+}
+
+/**
+ * A Db that reports to `spy`. A plain wrapper would lose db-sqlite's
+ * transaction hook, so this one re-exposes it and spies on the transaction's Db too.
+ */
+export function spyDb(db: Db, spy: Spy): Db {
+  const wrap = (inner: Db, inTransaction: boolean): Db => ({
+    query: <T>(sql: string, params: unknown[] = []) =>
+      (spy.query
+        ? spy.query(sql, params, () => inner.query(sql, params), inTransaction)
+        : inner.query(sql, params)) as Promise<T[]>,
+    exec: (sql) => inner.exec(sql),
+    close: () => inner.close(),
+  });
+  const hooked = db as unknown as Record<symbol, SqliteTransactionHook>;
+  const transaction: SqliteTransactionHook = async (cb) => {
+    await spy.before?.();
+    return hooked[SQLITE_TRANSACTION](async (tx) => {
+      const result = await cb(wrap(tx, true));
+      await spy.after?.(tx);
+      return result;
+    });
+  };
+  return Object.assign(wrap(db, false), { [SQLITE_TRANSACTION]: transaction });
 }
 
 export interface BlockRow {
@@ -29,12 +60,11 @@ export interface BlockRow {
   block: Uint8Array;
 }
 
-export function blocksOf(db: DatabaseSync, fid: number, prefix = "fs_"): BlockRow[] {
-  return db
-    .prepare(
-      `SELECT fid, shift, length(block) AS len, block FROM ${prefix}blocks WHERE fid = ? ORDER BY shift`,
-    )
-    .all(fid) as unknown as BlockRow[];
+export function blocksOf(db: Db, fid: number, prefix = "fs_"): Promise<BlockRow[]> {
+  return db.query<BlockRow>(
+    `SELECT fid, shift, length(block) AS len, block FROM ${prefix}blocks WHERE fid = ? ORDER BY shift`,
+    [fid],
+  );
 }
 
 export interface PathRow {
@@ -44,10 +74,8 @@ export interface PathRow {
   mtime: number;
 }
 
-export function pathRow(db: DatabaseSync, path: string, prefix = "fs_"): PathRow | undefined {
-  return db.prepare(`SELECT * FROM ${prefix}paths WHERE path = ?`).get(path) as unknown as
-    | PathRow
-    | undefined;
+export async function pathRow(db: Db, path: string, prefix = "fs_"): Promise<PathRow | undefined> {
+  return (await db.query<PathRow>(`SELECT * FROM ${prefix}paths WHERE path = ?`, [path]))[0];
 }
 
 export interface FileRow {
@@ -59,35 +87,23 @@ export interface FileRow {
   updated: number;
 }
 
-export function fileRow(db: DatabaseSync, fid: number, prefix = "fs_"): FileRow | undefined {
-  return db.prepare(`SELECT * FROM ${prefix}files WHERE fid = ?`).get(fid) as unknown as
-    | FileRow
-    | undefined;
+export async function fileRow(db: Db, fid: number, prefix = "fs_"): Promise<FileRow | undefined> {
+  return (await db.query<FileRow>(`SELECT * FROM ${prefix}files WHERE fid = ?`, [fid]))[0];
 }
 
-export function count(db: DatabaseSync, table: string): number {
-  return (db.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n;
-}
-
-/** A driver that delegates everything, with some methods replaced. */
-export function passthrough(driver: SqlDriver, overrides: Partial<SqlDriver> = {}): SqlDriver {
-  return {
-    all: (sql, ...params) => driver.all(sql, ...params),
-    run: (sql, ...params) => driver.run(sql, ...params),
-    transaction: (statements) => driver.transaction(statements),
-    ...overrides,
-  } as SqlDriver;
+export async function count(db: Db, table: string): Promise<number> {
+  return (await db.query<{ n: number }>(`SELECT count(*) AS n FROM ${table}`))[0].n;
 }
 
 /** Every row of the three tables, blocks summarised, for before/after comparisons. */
-export function snapshot(db: DatabaseSync, prefix = "fs_") {
+export async function snapshot(db: Db, prefix = "fs_") {
   return {
-    paths: db.prepare(`SELECT path, fid FROM ${prefix}paths ORDER BY path`).all(),
-    files: db
-      .prepare(`SELECT fid, size, compression, block_size, hash FROM ${prefix}files ORDER BY fid`)
-      .all(),
-    blocks: db
-      .prepare(`SELECT fid, shift, length(block) AS len FROM ${prefix}blocks ORDER BY fid, shift`)
-      .all(),
+    paths: await db.query(`SELECT path, fid FROM ${prefix}paths ORDER BY path`),
+    files: await db.query(
+      `SELECT fid, size, compression, block_size, hash FROM ${prefix}files ORDER BY fid`,
+    ),
+    blocks: await db.query(
+      `SELECT fid, shift, length(block) AS len FROM ${prefix}blocks ORDER BY fid, shift`,
+    ),
   };
 }

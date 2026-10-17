@@ -3,6 +3,7 @@
  * @statewalker/db-sqlite-do — including its BLOB shape, which the driver
  * normalises. Proves the adapter on that path, not the runtime.
  */
+import { randomBytes } from "node:crypto";
 import { createFilesApiTests } from "@statewalker/webrun-files-tests";
 import * as pako from "pako";
 import { describe, expect, it } from "vitest";
@@ -36,5 +37,13 @@ describe("Durable Object", () => {
     );
     expect(stored.t).toBe("blob");
     expect(stored.n).toBeLessThan(big.byteLength);
+  });
+
+  it("rejects a file whose stored row exceeds the 2 MB value limit", async () => {
+    const { files } = await newArchive({ driver: "do" });
+    const incompressible = new Uint8Array(randomBytes(2_100_000));
+    await expect(files.write("/big.bin", [incompressible])).rejects.toThrow(
+      /string or blob too big/,
+    );
   });
 });
