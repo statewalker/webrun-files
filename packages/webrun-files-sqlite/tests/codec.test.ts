@@ -33,7 +33,7 @@ for (const [label, make] of codecs) {
     it("compresses, keeping the original size in sz", async () => {
       const { db, files } = await newArchive({ codec: make() });
       await files.write("/a.js", [COMPRESSIBLE]);
-      const row = rawRow(db, "a.js");
+      const row = await rawRow(db, "a.js");
       expect(row?.sz).toBe(COMPRESSIBLE.byteLength);
       expect(row?.len).toBeLessThan(COMPRESSIBLE.byteLength);
     });
@@ -41,7 +41,7 @@ for (const [label, make] of codecs) {
     it("writes a zlib stream that node:zlib inflates to the original", async () => {
       const { db, files } = await newArchive({ codec: make() });
       await files.write("/a.js", [COMPRESSIBLE]);
-      const data = rawRow(db, "a.js")?.data as Uint8Array;
+      const data = (await rawRow(db, "a.js"))?.data as Uint8Array;
       expect(data[0]).toBe(0x78);
       expect(new Uint8Array(inflateSync(data))).toEqual(COMPRESSIBLE);
     });
@@ -49,7 +49,7 @@ for (const [label, make] of codecs) {
     it("stores incompressible content as plaintext", async () => {
       const { db, files } = await newArchive({ codec: make() });
       await files.write("/noise.bin", [INCOMPRESSIBLE]);
-      const row = rawRow(db, "noise.bin");
+      const row = await rawRow(db, "noise.bin");
       expect(row?.len).toBe(row?.sz);
       expect(await read(files, "/noise.bin")).toEqual(INCOMPRESSIBLE);
     });
@@ -60,14 +60,14 @@ for (const [label, make] of codecs) {
       const { db, files } = await newArchive({ codec });
       await files.write("/tiny.txt", [enc.encode("a".repeat(codec.minSize - 1))]);
       expect(deflate).not.toHaveBeenCalled();
-      expect(rawRow(db, "tiny.txt")?.len).toBe(codec.minSize - 1);
+      expect((await rawRow(db, "tiny.txt"))?.len).toBe(codec.minSize - 1);
     });
 
     it("never stores data longer than sz", async () => {
       const { db, files } = await newArchive({ codec: make() });
       for (const size of [1, 7, 63, 64, 65, 200, 5000]) {
         await files.write(`/f${size}`, [crypto.getRandomValues(new Uint8Array(size))]);
-        const row = rawRow(db, `f${size}`);
+        const row = await rawRow(db, `f${size}`);
         expect(row?.len, `f${size}`).toBeLessThanOrEqual(row?.sz ?? -1);
       }
     });
@@ -83,7 +83,7 @@ for (const [label, make] of codecs) {
       const { db, files } = await newArchive({ codec: make() });
       await files.write("/a.js", [COMPRESSIBLE]);
       await files.copy("/a.js", "/b.js");
-      expect(rawRow(db, "b.js")?.data).toEqual(rawRow(db, "a.js")?.data);
+      expect((await rawRow(db, "b.js"))?.data).toEqual((await rawRow(db, "a.js"))?.data);
       expect(await read(files, "/b.js")).toEqual(COMPRESSIBLE);
     });
   });
@@ -93,14 +93,14 @@ describe("codec options", () => {
   it("webCodec honours minSize", async () => {
     const { db, files } = await newArchive({ codec: webCodec({ minSize: 1_000_000 }) });
     await files.write("/a.js", [COMPRESSIBLE]);
-    expect(rawRow(db, "a.js")?.len).toBe(COMPRESSIBLE.byteLength);
+    expect((await rawRow(db, "a.js"))?.len).toBe(COMPRESSIBLE.byteLength);
   });
 
   it("pakoCodec passes the level through", async () => {
     // Level 0 emits stored blocks, which are longer than the input.
     const { db, files } = await newArchive({ codec: pakoCodec(pako, { level: 0 }) });
     await files.write("/a.js", [COMPRESSIBLE]);
-    expect(rawRow(db, "a.js")?.len).toBe(COMPRESSIBLE.byteLength);
+    expect((await rawRow(db, "a.js"))?.len).toBe(COMPRESSIBLE.byteLength);
   });
 });
 
@@ -117,10 +117,10 @@ describe("interoperability", () => {
 
   it("reads a row deflated by node:zlib, as sqlite3 -A writes it", async () => {
     const { db, files } = await newArchive({ codec: webCodec() });
-    db.prepare("INSERT INTO sqlar VALUES ('z.js', 33188, 1, ?, ?)").run(
+    await db.query("INSERT INTO sqlar VALUES ('z.js', 33188, 1, ?, ?)", [
       COMPRESSIBLE.byteLength,
       deflateSync(COMPRESSIBLE),
-    );
+    ]);
     expect(await read(files, "/z.js")).toEqual(COMPRESSIBLE);
   });
 });
@@ -129,7 +129,7 @@ describe("rawCodec", () => {
   it("never compresses, and still round-trips", async () => {
     const { db, files } = await newArchive({ codec: rawCodec() });
     await files.write("/a.js", [COMPRESSIBLE]);
-    expect(rawRow(db, "a.js")?.len).toBe(COMPRESSIBLE.byteLength);
+    expect((await rawRow(db, "a.js"))?.len).toBe(COMPRESSIBLE.byteLength);
     expect(await read(files, "/a.js")).toEqual(COMPRESSIBLE);
   });
 
@@ -163,7 +163,7 @@ describe("defaultCodec", () => {
   it("is used when no codec is given", async () => {
     const { db, files } = await newArchive();
     await files.write("/a.js", [COMPRESSIBLE]);
-    expect(rawRow(db, "a.js")?.len).toBeLessThan(COMPRESSIBLE.byteLength);
+    expect((await rawRow(db, "a.js"))?.len).toBeLessThan(COMPRESSIBLE.byteLength);
   });
 });
 
@@ -171,14 +171,14 @@ describe("corrupt rows", () => {
   it("throws when the inflated size disagrees with sz", async () => {
     const { db, files } = await newArchive({ codec: pakoCodec(pako) });
     await files.write("/a.js", [COMPRESSIBLE]);
-    db.prepare("UPDATE sqlar SET sz = 999999 WHERE name = 'a.js'").run();
+    await db.query("UPDATE sqlar SET sz = 999999 WHERE name = 'a.js'");
     await expect(read(files, "/a.js")).rejects.toThrow(/a\.js.*inflated 8000.*sz 999999/);
   });
 
   for (const [label, make] of codecs) {
     it(`throws a named error when ${label} cannot inflate the stored bytes`, async () => {
       const { db, files } = await newArchive({ codec: make() });
-      db.prepare("INSERT INTO sqlar VALUES ('bad.js', 33188, 1, 100, x'0102030405')").run();
+      await db.query("INSERT INTO sqlar VALUES ('bad.js', 33188, 1, 100, x'0102030405')");
       await expect(read(files, "/bad.js")).rejects.toThrow(/sqlar: bad\.js/);
     });
   }
@@ -186,7 +186,7 @@ describe("corrupt rows", () => {
   it("throws when length(data) exceeds sz", async () => {
     const { db, files } = await newArchive({ codec: pakoCodec(pako) });
     await files.write("/a.txt", [enc.encode("hello")]);
-    db.prepare("UPDATE sqlar SET sz = 2 WHERE name = 'a.txt'").run();
+    await db.query("UPDATE sqlar SET sz = 2 WHERE name = 'a.txt'");
     await expect(read(files, "/a.txt")).rejects.toThrow(/a\.txt.*length\(data\)=5.*sz=2/);
   });
 });

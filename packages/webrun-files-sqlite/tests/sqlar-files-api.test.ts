@@ -54,9 +54,9 @@ describe("prefix siblings", () => {
 describe("archives without directory rows", () => {
   async function foreign() {
     const { db, files } = await newArchive();
-    const put = db.prepare("INSERT INTO sqlar VALUES (?, 33188, 1700000000, ?, ?)");
-    put.run("docs/guide/intro.md", 2, enc.encode("hi"));
-    put.run("docs/readme.md", 3, enc.encode("abc"));
+    const put = "INSERT INTO sqlar VALUES (?, 33188, 1700000000, ?, ?)";
+    await db.query(put, ["docs/guide/intro.md", 2, enc.encode("hi")]);
+    await db.query(put, ["docs/readme.md", 3, enc.encode("abc")]);
     return { db, files };
   }
 
@@ -111,7 +111,7 @@ describe("time", () => {
   it("reports lastModified as the stored seconds times 1000", async () => {
     const { db, files } = await newArchive();
     await files.write("/a.txt", [enc.encode("x")]);
-    db.prepare("UPDATE sqlar SET mtime = 1600000000 WHERE name = 'a.txt'").run();
+    await db.query("UPDATE sqlar SET mtime = 1600000000 WHERE name = 'a.txt'");
     expect(await files.stats("/a.txt")).toEqual({
       kind: "file",
       size: 1,
@@ -133,13 +133,13 @@ describe("copy", () => {
   it("copies stored rows verbatim, with a fresh mtime", async () => {
     const { db, files } = await newArchive();
     await files.write("/src.txt", [enc.encode("payload")]);
-    db.prepare("UPDATE sqlar SET mtime = 1, mode = 33152 WHERE name = 'src.txt'").run();
+    await db.query("UPDATE sqlar SET mtime = 1, mode = 33152 WHERE name = 'src.txt'");
     await files.copy("/src.txt", "/dst/copy.txt");
-    const row = rawRow(db, "dst/copy.txt");
+    const row = await rawRow(db, "dst/copy.txt");
     expect(row?.mode).toBe(33152);
     expect(row?.sz).toBe(7);
     expect(row?.mtime).toBeGreaterThan(1);
-    expect(rawRow(db, "dst")?.dtype).toBe("null");
+    expect((await rawRow(db, "dst"))?.dtype).toBe("null");
   });
 
   it("returns false for a missing source", async () => {

@@ -1,9 +1,9 @@
 # webrun-files
 
 This repository holds `FilesApi`, one small interface for file storage, and its implementations:
-memory, Node.js, the browser File System Access API, S3, SQLite (node:sqlite, Cloudflare Durable
-Objects, D1) and HTTP. A set of decorators mounts, guards, filters and layers them. Application
-code is written once against `FilesApi`; the backend is picked where the code runs. All public
+memory, Node.js, the browser File System Access API, S3, SQLite (over `@statewalker/db-api`:
+node:sqlite, the browser, Cloudflare Durable Objects) and HTTP. A set of decorators mounts, guards,
+filters and layers them. Application code is written once against `FilesApi`; the backend is picked where the code runs. All public
 packages are published to npm under `@statewalker/`.
 
 ## The shape: one interface, one package per backend
@@ -15,13 +15,14 @@ packages/
   webrun-files-node       node:fs/promises backend, rooted at a directory
   webrun-files-browser    File System Access API backend (user directories, OPFS)
   webrun-files-s3         S3 / S3-compatible backend (peer: @aws-sdk/client-s3)
-  webrun-files-sqlite     two SQLite backends + drivers for node:sqlite, Durable Objects, D1
+  webrun-files-sqlite     two SQLite backends over a `Db` (node:sqlite, browser, Durable Objects)
   webrun-files-http       FilesApi served over HTTP and consumed again, fetch primitives only
   webrun-files-composite  decorators: mounts, guards, filters, read-only, overlay, copy-on-write
   webrun-files-tests      shared Vitest suites every backend runs (private, not published)
 
   every backend -----> @statewalker/webrun-files <----- webrun-files-tests (peer)
   webrun-files-http -> webrun-files-mem (default staging for chunked uploads)
+  webrun-files-sqlite -> @statewalker/db-api, db-sqlite
 ```
 
 | Package | What it gives | npm |
