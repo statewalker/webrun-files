@@ -34,8 +34,11 @@ Use `SqliteFilesApi` by default.
 ## How to use
 
 ```bash
-pnpm add @statewalker/webrun-files-sqlite @statewalker/webrun-files
+pnpm add @statewalker/webrun-files-sqlite @statewalker/webrun-files @statewalker/db-sqlite-node
 ```
+
+Pick the driver for your runtime: `@statewalker/db-sqlite-node` on Node, `@statewalker/db-sqlite-do` in a
+Durable Object, `@statewalker/db-sqlite-browser` in the browser.
 
 `pako` is not a dependency: pass the module to `pakoCodec` / `pakoDeflateCodec` if you use them.
 
@@ -45,11 +48,11 @@ database driver itself; you pass a `Db` in, so it bundles for any runtime.
 
 ```typescript
 import { newNodeSqliteDb } from '@statewalker/db-sqlite-node';
-import { newDoSqliteDb } from '@statewalker/db-sqlite-do';
 import { SqliteFilesApi } from '@statewalker/webrun-files-sqlite';
 
 const db = await newNodeSqliteDb({ path: 'files.db' }); // node:sqlite
 // or, in a Durable Object (ctx.storage, not ctx.storage.sql):
+// import { newDoSqliteDb } from '@statewalker/db-sqlite-do';
 // const db = newDoSqliteDb(this.ctx.storage);
 
 const files = new SqliteFilesApi(db, { blockSize: 1024 * 1024 });
@@ -237,6 +240,9 @@ does. A dangling link, or a chain longer than 8, behaves as a missing path. `rem
 - `@statewalker/db-api` — the `Db` contract both implementations run on.
 - `@statewalker/db-sqlite` — `inTransaction`, for `SqliteFilesApi`'s atomic steps.
 - `@statewalker/webrun-files` — the `FilesApi` contract and path helpers.
+
+The browser driver (`@statewalker/db-sqlite-browser`) is supported through the same `Db` contract, but this
+package's tests run on `node:sqlite` and the Durable Object fake only.
 
 The drivers (`@statewalker/db-sqlite-node`, `@statewalker/db-sqlite-do`, …) are the caller's
 choice and are not dependencies; neither is `pako`, which is passed in.
