@@ -1,5 +1,13 @@
 # @statewalker/webrun-files
 
+## 0.10.3
+
+### Patch Changes
+
+- Release of the changes since the last published version:
+  
+  - files changed: dist/index.d.ts, src/index.ts
+
 ## 0.10.2
 
 ### Patch Changes

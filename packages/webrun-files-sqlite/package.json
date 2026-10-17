@@ -1,6 +1,6 @@
 {
   "name": "@statewalker/webrun-files-sqlite",
-  "version": "0.10.3",
+  "version": "0.11.0",
   "private": false,
   "type": "module",
   "description": "SQLite-backed FilesApi implementations",
