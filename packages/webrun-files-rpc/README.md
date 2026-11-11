@@ -223,14 +223,23 @@ await server.closeRead(r);
   end of the file.
   - A served FilesApi with an `append(path, content)` method (`AppendableFilesApi`) appends
     through it, with whatever atomicity it gives.
-  - Any other FilesApi is appended to with `read`, `write` and `remove` only. The old content and
-    the chunks are written to a temporary sibling, `.<name>.append-<streamId>`, which is then
-    written back over the file and removed. It never reads and writes one path at once, so a
-    FilesApi that empties a file when a write starts is safe.
-  - The emulation copies the file twice, shows the temporary sibling in listings while it runs,
-    and is not atomic against other writers of the file. A failure or an abort before the
-    write-back leaves the file as it was. A file that does not exist is simply written; appending
-    to a directory is `INVALID`.
+  - Any other FilesApi is appended to with `read`, `write` and `remove` only, in two steps:
+    1. the file's content and the chunks are written to a temporary sibling,
+       `.<name>.append-<id>` (the name cut to 64 characters, the stream id to 16);
+    2. the sibling is written back over the file, then removed.
+  - It never reads and writes one path at once, so a FilesApi that empties a file when a write
+    starts is safe. Only a directory is refused (`INVALID`); `stats` saying the file is missing is
+    not trusted, since reading a missing file yields nothing and the file is created all the same.
+  - A failure or an abort during step 1 leaves the file as it was and removes the sibling. An
+    abort counts until step 2 starts, even after every chunk was sent. A failure during step 2
+    may leave the file incomplete, so the sibling, the only complete copy, is kept and its path
+    is in the error.
+  - Appends to one file (by its normal path) through one server run one after the other. Other
+    writers are not excluded. The emulation copies the file twice and shows the sibling in
+    listings while it runs.
+  - `close()` and expiry leave a write whose outcome is the FilesApi's alone (every chunk handed
+    over, or an emulated append writing back), so a `closeWrite` waiting on it gets the real
+    outcome.
 - **Ended streams:** ids that ended are remembered for `idleTimeout`. Within that time, an open
   delivered after its stream ended does not reopen it, and a `closeWrite` delivered again gets the
   first answer.
@@ -275,7 +284,7 @@ encoding come from `webrun-files-tests`.
 | `protocol.test.ts` | caller-chosen keys (opens and `closeWrite` delivered twice, after the end), what is refused, waiting requests failed by a close, error codes across a structured clone, many streams at once, release never dropping an undelivered chunk, metadata calls delivered twice |
 | `robustness.test.ts` | the window (huge chunk ids refused at once, bounded pulls), busy streams not swept, writes too far ahead refused, writes waiting for the holder swept, the sweep timer, a failing write's error reaching the client, a late abort not undoing a commit, a source yielding non-bytes, waiters past the count, aborting a hanging read, `close()` not hanging, listing with a FilesApi that ignores `after` |
 | `client.test.ts` | the `FilesApi` round trip, iterables, ranges, pipelining depth, early stop and abort, failing sources, write depth, listing; delayed, reordered and duplicated calls (five seeds) |
-| `append.test.ts` | appends through the FilesApi's own `append` and through the emulation: existing and missing files, large files, aborts and failing sources leaving the file unchanged and no temporary file, directories refused, a FilesApi that empties a file when a write starts; over the transport simulator; an open delivered twice |
+| `append.test.ts` | appends through the FilesApi's own `append` and through the emulation, also on a FilesApi that writes as it goes: existing and missing files, large files, aborts (also after every chunk was sent) and failing sources leaving the file unchanged and no temporary file, a failed write-back keeping the temporary copy, `close()` during the write-back, two appends at once, `stats` not trusted, odd paths and long names, directories refused; over the transport simulator; an open delivered twice |
 | `conformance.test.ts` | the repository's `FilesApi` suite (`webrun-files-tests`) on the client over the server: directly, and through the transport simulator (cloned, reordered, every call but `remove`/`move`/`copy` delivered twice at random) |
 | `big-files.test.ts` | the repository's big-file suite (64 MiB) on the client over the server, every call structured-cloned |
 | `readme.test.ts` | the examples above |

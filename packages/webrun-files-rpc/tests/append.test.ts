@@ -5,7 +5,7 @@ import type { FilesApi } from "@statewalker/webrun-files";
 import { MemFilesApi } from "@statewalker/webrun-files-mem";
 import { describe, expect, it } from "vitest";
 import { type AppendableFilesApi, newFilesRpcClient, newFilesRpcServer } from "../src/index.js";
-import { bytes, collect, concat, sleep, text, transport } from "./helpers.js";
+import { bytes, collect, concat, deferred, sleep, text, transport } from "./helpers.js";
 
 const str = async (fs: FilesApi, path: string) =>
   new TextDecoder().decode(await collect(fs.read(path)));
@@ -158,5 +158,171 @@ describe("append: over a transport", () => {
     await server.writeChunk(id, 0, text("b"));
     await server.closeWrite(id, 1);
     expect(await str(fs, "/log.txt")).toBe("ab");
+  });
+});
+
+/**
+ * A FilesApi that writes as it goes, like a file on disk: a write empties the file at once and
+ * every chunk lands as it arrives. `hooks.beforeChunk(path, k)` may delay or fail chunk k.
+ */
+function incremental(
+  initialFiles: Record<string, string> = {},
+  hooks: { beforeChunk?: (path: string, k: number) => Promise<void> | void } = {},
+) {
+  const inner = new MemFilesApi({ initialFiles });
+  const fs: FilesApi = Object.create(inner);
+  fs.write = async (path, content) => {
+    const parts: Uint8Array[] = [];
+    await inner.write(path, []);
+    let k = 0;
+    for await (const c of content) {
+      await hooks.beforeChunk?.(path, k++);
+      parts.push(c);
+      await inner.write(path, [concat(parts)]);
+    }
+  };
+  return { fs, inner };
+}
+
+describe("append: emulated on a FilesApi that writes as it goes", () => {
+  it("an aborted append changes nothing and leaves no temporary file", async () => {
+    const { fs, inner } = incremental({ "/log.txt": "old" });
+    const server = newFilesRpcServer({ fs });
+    const { streamId } = await server.openWrite("/log.txt", { append: true });
+    await server.writeChunk(streamId, 0, text("new"));
+    await sleep(5);
+    await server.abortWrite(streamId, "no");
+    await sleep(10);
+    expect(await str(inner, "/log.txt")).toBe("old");
+    expect(await paths(inner)).toEqual(["/log.txt"]);
+  });
+
+  it("a failing source fails the append: the file keeps what it had, no temporary file", async () => {
+    const { fs, inner } = incremental({ "/log.txt": "old" });
+    const client = newFilesRpcClient({ rpc: newFilesRpcServer({ fs }), chunkSize: 2 });
+    async function* broken() {
+      yield text("ne");
+      await sleep(5);
+      throw new Error("source broke");
+    }
+    await expect(client.append("/log.txt", broken())).rejects.toThrow("source broke");
+    await sleep(10);
+    expect(await str(inner, "/log.txt")).toBe("old");
+    expect(await paths(inner)).toEqual(["/log.txt"]);
+  });
+
+  it("a failed write-back keeps the temporary file, which holds old and new content", async () => {
+    const { fs, inner } = incremental(
+      { "/log.txt": "precious|" },
+      {
+        beforeChunk: (path) => {
+          if (path === "/log.txt") throw new Error("disk full");
+        },
+      },
+    );
+    const client = newFilesRpcClient({ rpc: newFilesRpcServer({ fs }) });
+    const failure = await client.append("/log.txt", [text("added")]).catch((e) => e);
+    expect(String(failure?.message)).toMatch(/disk full/);
+    const kept = (await paths(inner)).filter((p) => p.includes(".append-"));
+    expect(kept.length).toBe(1);
+    expect(String(failure.message)).toContain(kept[0]);
+    expect(await str(inner, kept[0] as string)).toBe("precious|added");
+  });
+
+  it("an abort after every chunk was sent, before the write-back, is honoured", async () => {
+    const gate = deferred();
+    const { fs, inner } = incremental(
+      { "/log.txt": "old" },
+      // Held after the temporary file got the old content (chunk 0) and the new chunk (1): every
+      // chunk has been handed over, the write-back has not started.
+      {
+        beforeChunk: (path, k) => (path.includes(".append-") && k === 1 ? gate.promise : undefined),
+      },
+    );
+    const server = newFilesRpcServer({ fs });
+    const { streamId } = await server.openWrite("/log.txt", { append: true });
+    await server.writeChunk(streamId, 0, text("new"));
+    const closing = server.closeWrite(streamId, 1).catch((e) => e);
+    await sleep(5);
+    await server.abortWrite(streamId, "changed my mind");
+    gate.resolve();
+    expect(await closing).toMatchObject({ code: "ABORTED" });
+    await sleep(10);
+    expect(await str(inner, "/log.txt")).toBe("old");
+    expect(await paths(inner)).toEqual(["/log.txt"]);
+  });
+
+  it("close() during the write-back does not report an append that succeeded as failed", async () => {
+    const gate = deferred();
+    const { fs, inner } = incremental(
+      { "/log.txt": "old" },
+      { beforeChunk: (path) => (path === "/log.txt" ? gate.promise : undefined) },
+    );
+    const server = newFilesRpcServer({ fs });
+    const { streamId } = await server.openWrite("/log.txt", { append: true });
+    await server.writeChunk(streamId, 0, text("new"));
+    const closing = server.closeWrite(streamId, 1);
+    await sleep(10); // the write-back has started and waits
+    const closed = server.close();
+    gate.resolve();
+    await expect(closing).resolves.toBeUndefined();
+    await closed;
+    expect(await str(inner, "/log.txt")).toBe("oldnew");
+  });
+});
+
+describe("append: emulated, concurrency and odd inputs", () => {
+  it("two appends to one file through one server both land", async () => {
+    const { fs, inner } = incremental({ "/log.txt": "0" });
+    const client = newFilesRpcClient({ rpc: newFilesRpcServer({ fs }) });
+    await Promise.all([
+      client.append("/log.txt", [text("a")]),
+      client.append("log.txt/", [text("b")]),
+    ]);
+    const out = await str(inner, "/log.txt");
+    expect(["0ab", "0ba"]).toContain(out);
+    expect(await paths(inner)).toEqual(["/log.txt"]);
+  });
+
+  it("does not trust `stats` saying the file is missing", async () => {
+    const inner = new MemFilesApi({ initialFiles: { "/log.txt": "old" } });
+    const lying: FilesApi = Object.create(inner);
+    lying.stats = async () => undefined;
+    const client = newFilesRpcClient({ rpc: newFilesRpcServer({ fs: lying }) });
+    await client.append("/log.txt", [text("new")]);
+    expect(await str(inner, "/log.txt")).toBe("oldnew");
+  });
+
+  it("a path with a trailing slash or dot segments appends to the file, temp beside it", async () => {
+    const seen: string[] = [];
+    const inner = new MemFilesApi({ initialFiles: { "/d/f": "a" } });
+    const fs: FilesApi = Object.create(inner);
+    fs.write = async (path, content) => {
+      seen.push(path);
+      return inner.write(path, content);
+    };
+    const client = newFilesRpcClient({ rpc: newFilesRpcServer({ fs }) });
+    await client.append("/d/./f/", [text("b")]);
+    expect(await str(inner, "/d/f")).toBe("ab");
+    expect(seen.every((p) => p === "/d/f" || /^\/d\/\.f\.append-[\w-]+$/.test(p))).toBe(true);
+  });
+
+  it("a long file name gets a temporary name of bounded length", async () => {
+    const name = "n".repeat(200);
+    const seen: string[] = [];
+    const inner = new MemFilesApi({ initialFiles: { [`/${name}`]: "a" } });
+    const fs: FilesApi = Object.create(inner);
+    fs.write = async (path, content) => {
+      seen.push(path);
+      return inner.write(path, content);
+    };
+    const server = newFilesRpcServer({ fs });
+    const id = "x".repeat(128);
+    await server.openWrite(`/${name}`, { streamId: id, append: true });
+    await server.writeChunk(id, 0, text("b"));
+    await server.closeWrite(id, 1);
+    const temp = seen.find((p) => p !== `/${name}`) as string;
+    expect(temp.slice(1).length).toBeLessThanOrEqual(120);
+    expect(await str(inner, `/${name}`)).toBe("ab");
   });
 });

@@ -97,9 +97,32 @@ interface WriteStream {
   room: { chunkId: number; resolve: () => void; reject: (e: unknown) => void }[];
   failure?: unknown;
   done: Promise<void>;
+  /** An append the server emulates; `committing` once it writes the file back. */
+  emulated?: boolean;
+  committing?: boolean;
 }
 
 type Stream = ReadStream | WriteStream;
+
+/**
+ * Whether a write's outcome is the FilesApi's alone: every chunk was handed to it (an emulated
+ * append, until its write-back starts, can still be cancelled).
+ */
+const committed = (s: WriteStream): boolean =>
+  s.total !== undefined && s.next >= s.total && (!s.emulated || s.committing === true);
+
+/** `path` in normal form: one leading slash, no empty, "." or ".." segments, no trailing slash. */
+function normalPath(path: string): string {
+  const out: string[] = [];
+  for (const seg of String(path).split("/")) {
+    if (!seg || seg === ".") continue;
+    if (seg === "..") out.pop();
+    else out.push(seg);
+  }
+  return `/${out.join("/")}`;
+}
+
+const messageOf = (e: unknown) => String((e as Error)?.message ?? e);
 
 const EMPTY = new Uint8Array();
 const STREAM_ID = /^[A-Za-z0-9_-]{16,128}$/;
@@ -319,37 +342,69 @@ export function newFilesRpcServer(options: FilesRpcServerOptions): FilesRpcServe
     }
   }
 
+  /** Emulated appends in progress, by normal path: one at a time per file. */
+  const appending = new Map<string, Promise<void>>();
+
   /**
    * Appends `content` to `path`: through the FilesApi's own `append`, or with read, write and
-   * remove only. The emulation never reads and writes one path at once (a FilesApi may truncate a
-   * file when a write starts): old content and new chunks go to a temporary sibling, which is then
-   * written back over the file. It is not atomic against other writers of the file.
+   * remove only. The emulation never reads and writes one path at once (a FilesApi may empty a
+   * file when a write starts):
+   *  1. the file's content and the chunks go to a temporary sibling;
+   *  2. that sibling is written back over the file, then removed.
+   * A failure or an abort in step 1 leaves the file as it was and removes the sibling. A failure
+   * in step 2 keeps the sibling (the only complete copy) and names it in the error. Appends to
+   * one file through this server run one after the other; other writers are not excluded.
    */
   const append = async (
     path: string,
     content: AsyncIterable<Uint8Array>,
     id: string,
+    s: WriteStream,
   ): Promise<void> => {
     const own = (fs as Partial<AppendableFilesApi>).append;
     if (typeof own === "function") return own.call(fs, path, content);
-    const st = await fs.stats(path);
-    if (st?.kind === "directory")
-      throw new FilesRpcError("INVALID", `cannot append to a directory: ${path}`);
-    if (!st) return fs.write(path, content);
-    const slash = path.lastIndexOf("/");
-    const temp = `${path.slice(0, slash + 1)}.${path.slice(slash + 1)}.append-${id}`;
-    try {
-      await fs.write(
-        temp,
-        (async function* () {
-          yield* fs.read(path);
-          yield* content;
-        })(),
-      );
-      await fs.write(path, fs.read(temp));
-    } finally {
+    s.emulated = true;
+    const file = normalPath(path);
+    const previous = appending.get(file) ?? Promise.resolve();
+    const run = previous.then(async () => {
+      // Only a directory is refused: whether the file exists is not trusted (reading a missing
+      // file yields nothing, so a missing file is created all the same).
+      if ((await fs.stats(file))?.kind === "directory")
+        throw new FilesRpcError("INVALID", `cannot append to a directory: ${file}`);
+      const slash = file.lastIndexOf("/");
+      const temp = `${file.slice(0, slash + 1)}.${file.slice(slash + 1, slash + 65)}.append-${id.slice(0, 16)}`;
+      try {
+        await fs.write(
+          temp,
+          (async function* () {
+            yield* fs.read(file);
+            yield* content;
+          })(),
+        );
+        if (s.failure !== undefined) throw s.failure; // aborted before the write-back
+      } catch (e) {
+        await fs.remove(temp).catch(() => {});
+        throw e;
+      }
+      s.committing = true;
+      try {
+        await fs.write(file, fs.read(temp));
+      } catch (e) {
+        throw Object.assign(
+          new Error(
+            `${messageOf(e)} (the append failed while writing ${file} back: it may be incomplete; its content and the appended chunks are kept in ${temp})`,
+          ),
+          { cause: e },
+        );
+      }
       await fs.remove(temp).catch(() => {});
-    }
+    });
+    const settled = run.catch(() => {});
+    appending.set(file, settled);
+    void settled.then(() => {
+      if (appending.get(file) === settled) appending.delete(file);
+    });
+    return run;
   };
 
   const failWrite = (s: WriteStream, failure: unknown) => {
@@ -482,7 +537,7 @@ export function newFilesRpcServer(options: FilesRpcServerOptions): FilesRpcServe
         room: [],
         done: Promise.resolve(),
       };
-      s.done = (opts.append ? append(path, ordered(s), id) : fs.write(path, ordered(s))).then(
+      s.done = (opts.append ? append(path, ordered(s), id, s) : fs.write(path, ordered(s))).then(
         () => {
           if (s.failure !== undefined) throw s.failure;
         },
@@ -571,8 +626,9 @@ export function newFilesRpcServer(options: FilesRpcServerOptions): FilesRpcServe
       const id = String(streamId);
       const s = streams.get(id);
       if (s?.kind !== "write") return;
-      // Every chunk was handed to the FilesApi: the commit is under way; an abort is too late.
-      if (s.total !== undefined && s.next >= s.total) return;
+      // The outcome is the FilesApi's now (every chunk handed over; an emulated append already
+      // writing back): an abort is too late.
+      if (committed(s)) return;
       const error = new FilesRpcError("ABORTED", reason ? String(reason) : "the write was aborted");
       finish(id, error);
       failWrite(s, error);
@@ -609,6 +665,11 @@ export function newFilesRpcServer(options: FilesRpcServerOptions): FilesRpcServe
       if (timer) clearInterval(timer);
       const sources: Promise<unknown>[] = [];
       for (const [id, s] of [...streams]) {
+        // A write whose outcome is the FilesApi's keeps it: a closeWrite waiting on it gets that.
+        if (s.kind === "write" && committed(s)) {
+          streams.delete(id);
+          continue;
+        }
         const error = new FilesRpcError("ABORTED", "the server closed");
         finish(id, error);
         if (s.kind === "read") sources.push(closeSource(s));
