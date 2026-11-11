@@ -37,10 +37,13 @@ Keys make the calls safe on real transports:
   - a chunk read twice is answered twice;
   - an open with the same `streamId` opens one stream;
   - a `closeWrite` delivered again answers as the first did.
-  - Metadata calls carry no key. Delivered twice with no other write in between, `mkdir`,
-    `remove`, `move` and `copy` end in the same state, but each answers for the state it finds: a
-    `remove`, `move` or `copy` delivered twice may report `false` though the first one did it. A
-    `copy` retried after something else wrote to the target copies again.
+  - a metadata call (`mkdir`, `remove`, `move`, `copy`) with a `requestId` runs once: delivered
+    again, concurrently or later, it gets the first answer (or failure). The server keeps answers
+    for `idleTimeout`, at most `maxRequests` of them. The client sends a fresh `requestId` with
+    every such call.
+  - Without a `requestId`, a metadata call delivered twice runs twice: the end state is the same
+    when nothing else writes in between, but the second may report `false` though the first did
+    it, and a late `copy` retry copies again.
 
 ## How to use
 
@@ -59,7 +62,7 @@ Exports:
 - `FilesRpcError` and `errorCode`;
 - types `FilesRpc`, `FilesRpcServer`, `FilesRpcServerOptions`, `FilesRpcClientOptions`,
   `AppendableFilesApi`, `ReadResult`, `ListPage`, `ListPageOptions`, `OpenOptions`,
-  `OpenReadOptions`, `OpenWriteOptions`, `FilesRpcErrorCode`.
+  `OpenReadOptions`, `OpenWriteOptions`, `RequestOptions`, `FilesRpcErrorCode`.
 
 ### `newFilesRpcServer(options)`
 
@@ -75,6 +78,7 @@ Exports:
 | `idleTimeout` | 2 min | A stream not used for this long is dropped (a read closed, a write aborted). |
 | `maxStreams` | 256 | Open streams at most (`TOO_MANY_STREAMS` beyond). |
 | `maxPageSize` | 256 | Largest listing page. |
+| `maxRequests` | 1024 | Answers of metadata calls kept by `requestId` (oldest dropped beyond). |
 | `sweepInterval` | none | Sweep idle streams every this many ms. Without it, opening a stream sweeps; a server that stops receiving opens needs this (or calls to `sweep()`). |
 | `now` | `Date.now` | The clock (tests). |
 
@@ -112,7 +116,8 @@ Every argument and result is a plain value: strings, numbers, booleans, plain ob
 | `closeWrite(streamId, chunks)` | resolves once all `chunks` chunks are written |
 | `abortWrite(streamId, reason?)` | cancels the write (unknown or ended: nothing happens) |
 | `list(path, {recursive?, after?, limit?})` | `{entries, more}`; ask again with `after` = the last path |
-| `stats`, `exists`, `mkdir`, `remove`, `move`, `copy` | as the `FilesApi` |
+| `stats`, `exists` | as the `FilesApi` |
+| `mkdir(path, {requestId?})`, `remove(path, {requestId?})`, `move(source, target, {requestId?})`, `copy(source, target, {requestId?})` | as the `FilesApi`; with a `requestId`, once (a call delivered again gets the first answer) |
 
 - **Stream ids:** `streamId` may be chosen by the caller: 16 to 128 characters of `[A-Za-z0-9_-]`,
   random, such as `crypto.randomUUID()` without dashes. Then an open delivered twice opens one
@@ -281,10 +286,10 @@ encoding come from `webrun-files-tests`.
 | `server-read.test.ts` | numbered chunks with `done`, out-of-order and concurrent requests, ranges, missing files, retries, release, bounded read-ahead, closing, failing sources |
 | `server-write.test.ts` | in-order and out-of-order chunks, duplicates, backpressure, `closeWrite` waiting for a gap or refusing a wrong count, empty files, abort, failing writes, byte types |
 | `server-lifecycle.test.ts` | idle expiry, the stream limit, `close()`, unguessable ids, paged listing, metadata |
-| `protocol.test.ts` | caller-chosen keys (opens and `closeWrite` delivered twice, after the end), what is refused, waiting requests failed by a close, error codes across a structured clone, many streams at once, release never dropping an undelivered chunk, metadata calls delivered twice |
+| `protocol.test.ts` | caller-chosen keys (opens and `closeWrite` delivered twice, after the end), what is refused, waiting requests failed by a close, error codes across a structured clone, many streams at once, release never dropping an undelivered chunk, metadata calls delivered twice (with a `requestId`: once, the same answer, failures too, kept for `idleTimeout` and `maxRequests`; without: the same end state) |
 | `robustness.test.ts` | the window (huge chunk ids refused at once, bounded pulls), busy streams not swept, writes too far ahead refused, writes waiting for the holder swept, the sweep timer, a failing write's error reaching the client, a late abort not undoing a commit, a source yielding non-bytes, waiters past the count, aborting a hanging read, `close()` not hanging, listing with a FilesApi that ignores `after` |
 | `client.test.ts` | the `FilesApi` round trip, iterables, ranges, pipelining depth, early stop and abort, failing sources, write depth, listing; delayed, reordered and duplicated calls (five seeds) |
 | `append.test.ts` | appends through the FilesApi's own `append` and through the emulation, also on a FilesApi that writes as it goes: existing and missing files, large files, aborts (also after every chunk was sent) and failing sources leaving the file unchanged and no temporary file, a failed write-back keeping the temporary copy, `close()` during the write-back, two appends at once, `stats` not trusted, odd paths and long names, directories refused; over the transport simulator; an open delivered twice |
-| `conformance.test.ts` | the repository's `FilesApi` suite (`webrun-files-tests`) on the client over the server: directly, and through the transport simulator (cloned, reordered, every call but `remove`/`move`/`copy` delivered twice at random) |
+| `conformance.test.ts` | the repository's `FilesApi` suite (`webrun-files-tests`) on the client over the server: directly, and through the transport simulator (cloned, reordered, every call delivered twice at random) |
 | `big-files.test.ts` | the repository's big-file suite (64 MiB) on the client over the server, every call structured-cloned |
 | `readme.test.ts` | the examples above |

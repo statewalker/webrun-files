@@ -9,6 +9,7 @@ import type {
   OpenReadOptions,
   OpenWriteOptions,
   ReadResult,
+  RequestOptions,
 } from "./types.js";
 
 export interface FilesRpcServerOptions {
@@ -38,6 +39,8 @@ export interface FilesRpcServerOptions {
   maxStreams?: number;
   /** Largest listing page. Default 256. */
   maxPageSize?: number;
+  /** Answers of metadata calls kept by their `requestId` at most (default 1024). */
+  maxRequests?: number;
   /** Sweeps idle streams every this many ms (default: only when a stream is opened). */
   sweepInterval?: number;
   /** The clock (tests). Default `Date.now`. */
@@ -195,6 +198,37 @@ export function newFilesRpcServer(options: FilesRpcServerOptions): FilesRpcServe
    * open it anew, and a closeWrite delivered again answers as the first one did.
    */
   const ended = new Map<string, { at: number; failure?: unknown }>();
+
+  /** Answers of metadata calls, by method and requestId, oldest first. */
+  const requests = new Map<string, { at: number; answer: Promise<unknown> }>();
+  const maxRequests = Math.max(1, options.maxRequests ?? 1024);
+  /** Runs `call` once per requestId (within idleTimeout): a call delivered again gets its answer. */
+  const once = <T>(method: string, opts: RequestOptions | undefined, call: () => Promise<T>) => {
+    const id = opts?.requestId;
+    if (id === undefined) return call();
+    if (typeof id !== "string" || !STREAM_ID.test(id))
+      return Promise.reject(
+        new FilesRpcError("INVALID", "a requestId is 16 to 128 characters of [A-Za-z0-9_-]"),
+      );
+    const key = `${method} ${id}`;
+    const kept = requests.get(key);
+    if (kept) return kept.answer as Promise<T>;
+    const answer = call();
+    answer.catch(() => {});
+    requests.set(key, { at: now(), answer });
+    void answer.then(
+      () => {
+        const r = requests.get(key);
+        if (r) r.at = now(); // kept for idleTimeout after it settled
+      },
+      () => {
+        const r = requests.get(key);
+        if (r) r.at = now();
+      },
+    );
+    while (requests.size > maxRequests) requests.delete(requests.keys().next().value as string);
+    return answer;
+  };
 
   const finish = (id: string, failure?: unknown) => {
     streams.delete(id);
@@ -420,17 +454,17 @@ export function newFilesRpcServer(options: FilesRpcServerOptions): FilesRpcServe
     async exists(path) {
       return fs.exists(path);
     },
-    async mkdir(path) {
-      await fs.mkdir(path);
+    async mkdir(path, opts?: RequestOptions) {
+      await once("mkdir", opts, () => fs.mkdir(path));
     },
-    async remove(path) {
-      return fs.remove(path);
+    async remove(path, opts?: RequestOptions) {
+      return once("remove", opts, () => fs.remove(path));
     },
-    async move(source, target) {
-      return fs.move(source, target);
+    async move(source, target, opts?: RequestOptions) {
+      return once("move", opts, () => fs.move(source, target));
     },
-    async copy(source, target) {
-      return fs.copy(source, target);
+    async copy(source, target, opts?: RequestOptions) {
+      return once("copy", opts, () => fs.copy(source, target));
     },
     async list(path, opts = {}): Promise<ListPage> {
       const limit = Math.min(
@@ -654,6 +688,7 @@ export function newFilesRpcServer(options: FilesRpcServerOptions): FilesRpcServe
         else failWrite(s, error);
       }
       for (const [id, e] of [...ended]) if (t - e.at > idleTimeout) ended.delete(id);
+      for (const [key, r] of [...requests]) if (t - r.at > idleTimeout) requests.delete(key);
       return dropped;
     },
 

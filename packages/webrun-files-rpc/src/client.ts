@@ -181,7 +181,7 @@ export class FilesRpcClient implements FilesApi {
   }
 
   async mkdir(path: string): Promise<void> {
-    await this.#rpc.mkdir(path);
+    await this.#rpc.mkdir(path, { requestId: newStreamId() });
   }
 
   /** Pages of `pageSize`, each asked after the last path of the one before. */
@@ -206,13 +206,13 @@ export class FilesRpcClient implements FilesApi {
     return this.#rpc.exists(path);
   }
   remove(path: string): Promise<boolean> {
-    return this.#rpc.remove(path);
+    return this.#rpc.remove(path, { requestId: newStreamId() });
   }
   move(source: string, target: string): Promise<boolean> {
-    return this.#rpc.move(source, target);
+    return this.#rpc.move(source, target, { requestId: newStreamId() });
   }
   copy(source: string, target: string): Promise<boolean> {
-    return this.#rpc.copy(source, target);
+    return this.#rpc.copy(source, target, { requestId: newStreamId() });
   }
 }
 

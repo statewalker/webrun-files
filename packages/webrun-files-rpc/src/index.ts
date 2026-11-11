@@ -17,4 +17,5 @@ export type {
   OpenReadOptions,
   OpenWriteOptions,
   ReadResult,
+  RequestOptions,
 } from "./types.js";

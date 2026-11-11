@@ -29,6 +29,16 @@ export interface OpenOptions {
   streamId?: string;
 }
 
+/** Options of the calls that change metadata (`mkdir`, `remove`, `move`, `copy`). */
+export interface RequestOptions {
+  /**
+   * The call's id, chosen by the caller (the same form as a stream id). The server keeps each
+   * id's answer for `idleTimeout` (at most `maxRequests` of them): the same call delivered again
+   * gets that answer and does not run again.
+   */
+  requestId?: string;
+}
+
 export interface OpenWriteOptions extends OpenOptions {
   /**
    * Add the stream's chunks to the end of the file instead of replacing it (a file that does not
@@ -68,10 +78,10 @@ export interface OpenReadOptions extends OpenOptions {
 export interface FilesRpc {
   stats(path: string): Promise<FileStats | undefined>;
   exists(path: string): Promise<boolean>;
-  mkdir(path: string): Promise<void>;
-  remove(path: string): Promise<boolean>;
-  move(source: string, target: string): Promise<boolean>;
-  copy(source: string, target: string): Promise<boolean>;
+  mkdir(path: string, options?: RequestOptions): Promise<void>;
+  remove(path: string, options?: RequestOptions): Promise<boolean>;
+  move(source: string, target: string, options?: RequestOptions): Promise<boolean>;
+  copy(source: string, target: string, options?: RequestOptions): Promise<boolean>;
   list(path: string, options?: ListPageOptions): Promise<ListPage>;
 
   /** Opens `path` for reading. A file that does not exist reads as nothing. */
