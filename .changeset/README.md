@@ -7,5 +7,6 @@ A changeset records a package release: which packages, which bump, and the chang
 - Without one, the release planner writes a patch changeset for every package whose published
   contents changed since npm's `latest` (a minor, on 0.x, when a dependency moved to another
   breaking line).
-- Releases are made by a maintainer from a local checkout: the changesets are applied (versions,
-  `CHANGELOG.md`), the packages published to npm, and the version commit pushed to `main`.
+- On every push to `main`, CI applies the changesets in a "chore: version packages" pull request
+  (versions, `CHANGELOG.md`); merging it publishes the bumped packages after a maintainer approves
+  the `publish` job. See [PUBLISHING.md](../PUBLISHING.md).

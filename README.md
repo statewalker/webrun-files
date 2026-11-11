@@ -150,11 +150,12 @@ dependency-reference checks (`workspace:^` inside the repo, `catalog:` for every
 `lint:check`, `format:check`, build, typecheck, tests, and checks of export targets, dist imports
 and packed manifests.
 
-CI publishes nothing. Packages are published to npm with changesets by a maintainer, from a local
-checkout: packages whose packed contents differ from npm get a changeset, the versions and
-changelogs are written, the packages published and the version commit pushed to `main`. To choose
-the bump or the changelog text yourself, run `pnpm changeset` in your pull request. Dependabot opens
-the dependency updates (`.github/dependabot.yml`), checked by CI and merged by hand. See
+Packages are published to npm from CI with changesets. After CI passes on `main`, a job writes a
+changeset for every package whose packed contents differ from npm and opens a "chore: version
+packages" pull request; merging it packs the new versions, and a maintainer's approval on the `npm`
+environment publishes them with trusted publishing (no npm token in GitHub). To choose the bump or
+the changelog text yourself, run `pnpm changeset` in your pull request. Dependabot opens the
+dependency updates (`.github/dependabot.yml`), checked by CI and merged by hand. See
 [PUBLISHING.md](./PUBLISHING.md).
 
 ### License
