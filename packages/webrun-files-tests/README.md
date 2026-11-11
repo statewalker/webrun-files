@@ -201,6 +201,25 @@ createFilesApiTests("MemFilesApi", async () => ({ api: new MemFilesApi() }));
 createBigFilesApiTests("MemFilesApi", async () => ({ api: new MemFilesApi() }));
 ```
 
+### A transport: the client over its server
+
+A transport (a client and the server it talks to) is tested as one `FilesApi`: the client is the
+`api`, served from any backend. Run it through the transport you ship, or a simulated one that
+clones, delays and duplicates calls, so the suite also covers what the transport does to them.
+
+```typescript
+import { MemFilesApi } from "@statewalker/webrun-files-mem";
+import { newFilesRpcClient, newFilesRpcServer } from "@statewalker/webrun-files-rpc";
+import { createFilesApiTests } from "@statewalker/webrun-files-tests";
+
+createFilesApiTests("FilesRpcClient over FilesRpcServer", async () => {
+  const server = newFilesRpcServer({ fs: new MemFilesApi() });
+  return { api: newFilesRpcClient({ rpc: server }), cleanup: () => server.close() };
+});
+```
+
+`webrun-files-http` and `webrun-files-rpc` test themselves this way.
+
 Keep `createBigFilesApiTests` in its own test file (this repository uses `tests/big-files.test.ts`):
 Vitest runs test files in parallel, and a 256 MiB suite competes for CPU and memory.
 

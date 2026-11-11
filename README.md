@@ -2,7 +2,7 @@
 
 This repository holds `FilesApi`, one small interface for file storage, and its implementations:
 memory, Node.js, the browser File System Access API, S3, SQLite (over `@statewalker/db-api`:
-node:sqlite, the browser, Cloudflare Durable Objects) and HTTP. A set of decorators mounts, guards,
+node:sqlite, the browser, Cloudflare Durable Objects), HTTP and any RPC. A set of decorators mounts, guards,
 filters and layers them. Application code is written once against `FilesApi`; the backend is picked where the code runs. All public
 packages are published to npm under `@statewalker/`.
 
@@ -17,6 +17,7 @@ packages/
   webrun-files-s3         S3 / S3-compatible backend (peer: @aws-sdk/client-s3)
   webrun-files-sqlite     two SQLite backends over a `Db` (node:sqlite, browser, Durable Objects)
   webrun-files-http       FilesApi served over HTTP and consumed again, fetch primitives only
+  webrun-files-rpc        FilesApi over any RPC: streams as chunks keyed by (streamId, chunkId)
   webrun-files-composite  decorators: mounts, guards, filters, read-only, overlay, copy-on-write
   webrun-files-tests      shared Vitest suites every backend runs (private, not published)
 
@@ -34,6 +35,7 @@ packages/
 | [`@statewalker/webrun-files-s3`](./packages/webrun-files-s3) | Amazon S3 and S3-compatible stores. | [npm](https://www.npmjs.com/package/@statewalker/webrun-files-s3) |
 | [`@statewalker/webrun-files-sqlite`](./packages/webrun-files-sqlite) | Block store and SQLite Archive backends. | [npm](https://www.npmjs.com/package/@statewalker/webrun-files-sqlite) |
 | [`@statewalker/webrun-files-http`](./packages/webrun-files-http) | HTTP server stub and client stub. | [npm](https://www.npmjs.com/package/@statewalker/webrun-files-http) |
+| [`@statewalker/webrun-files-rpc`](./packages/webrun-files-rpc) | FilesApi over any RPC (Durable Object RPC, postMessage, …): server and client, streaming in keyed chunks. | [npm](https://www.npmjs.com/package/@statewalker/webrun-files-rpc) |
 | [`@statewalker/webrun-files-composite`](./packages/webrun-files-composite) | Decorators over any `FilesApi`. | [npm](https://www.npmjs.com/package/@statewalker/webrun-files-composite) |
 | [`@statewalker/webrun-files-tests`](./packages/webrun-files-tests) | Shared test suites. Private. | - |
 
@@ -108,8 +110,8 @@ iterator open. JavaScript's `<` is not this order above U+FFFF, so compare paths
 `comparePaths`.
 
 **One shared test suite.** `webrun-files-tests` holds the contract as executable tests (77 for the
-interface, 11 for a 256 MiB file). Every backend here runs them, which is what keeps the
-implementations in agreement.
+interface, 11 for a 256 MiB file). Every backend here runs them, and so do the transports (the HTTP
+stubs, the RPC client over its server), which is what keeps the implementations in agreement.
 
 ## What will surprise you
 
@@ -117,8 +119,8 @@ implementations in agreement.
   built `dist/`. A change in one package's `src/` is invisible to the others until `pnpm build`
   runs again. A test that "ignores" your fix is usually this.
 - **`pnpm test` is heavy.** It includes the 256 MiB big-file suite for every in-process backend,
-  and for the HTTP stubs both directly and over a real `@hono/node-server` connection. The
-  `webrun-files-sqlite` run peaks at about 2.5 GB of memory, because `SqlarFilesApi` holds whole
+  for the HTTP stubs both directly and over a real `@hono/node-server` connection, and a 64 MiB run
+  for the RPC client over its server. The `webrun-files-sqlite` run peaks at about 2.5 GB of memory, because `SqlarFilesApi` holds whole
   files by design. Under a tight memory limit it dies as an out-of-memory crash, not a test failure.
 - **`pnpm test` barely tests `webrun-files-s3`.** It runs only the listing-order tests against a
   fake client. The real suites run against an S3 server and need Docker:
