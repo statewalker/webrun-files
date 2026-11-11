@@ -100,6 +100,19 @@ describe("client: a FilesApi over the RPC", () => {
     expect(server.openStreams()).toBe(0);
   });
 
+  it("a read does not leave a listener on its signal once it ends", async () => {
+    const { getEventListeners } = await import("node:events");
+    const { client } = pair();
+    await client.write("/a.bin", [bytes(5 * KB)]);
+    const ac = new AbortController();
+    for (let i = 0; i < 3; i++) await collect(client.read("/a.bin", { signal: ac.signal }));
+    for await (const _ of client.read("/a.bin", { signal: ac.signal })) break;
+    await expect(
+      collect(client.read("/missing", { signal: ac.signal, start: 0 })),
+    ).resolves.toHaveLength(0);
+    expect(getEventListeners(ac.signal, "abort")).toHaveLength(0);
+  });
+
   it("a failing source aborts the write: the file keeps what it had", async () => {
     const { client, fs, calls, server } = pair();
     await client.write("/a.txt", [text("old")]);

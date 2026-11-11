@@ -1,7 +1,7 @@
 import { MemFilesApi } from "@statewalker/webrun-files-mem";
 import { describe, expect, it } from "vitest";
 import { errorCode, FilesRpcError, newFilesRpcClient, newFilesRpcServer } from "../src/index.js";
-import { bytes, collect, sleep, text, transport } from "./helpers.js";
+import { bytes, collect, deferred, sleep, text, transport } from "./helpers.js";
 
 const ID = "0123456789abcdef0123";
 
@@ -112,6 +112,15 @@ describe("protocol: what is refused", () => {
     expect(cloned).not.toHaveProperty("code");
     expect(errorCode(cloned)).toBe("CHUNK_RELEASED");
     expect(errorCode(new Error("other"))).toBeUndefined();
+  });
+
+  it("errorCode reads only protocol codes, not the code of any other error", async () => {
+    const enoent = Object.assign(new Error("no such file"), { code: "ENOENT" });
+    expect(errorCode(enoent)).toBeUndefined();
+    expect(errorCode({ code: 42 })).toBeUndefined();
+    // A code the error carries is read; one it lost is read from the message.
+    expect(errorCode(new FilesRpcError("ABORTED", "x"))).toBe("ABORTED");
+    expect(errorCode(Object.assign(new Error("INVALID: bad"), { code: "ENOENT" }))).toBe("INVALID");
   });
 });
 
@@ -244,6 +253,39 @@ describe("protocol: metadata calls with a requestId answer once", () => {
     await fs.remove("/x");
     await server.mkdir("/x", { requestId: `${RID}-x` });
     expect(await fs.exists("/x")).toBe(true);
+  });
+
+  it("a call still running after idleTimeout keeps its requestId: a retry does not run it again", async () => {
+    let now = 0;
+    const fs = new MemFilesApi({ initialFiles: { "/a": "a" } });
+    const slow = deferred();
+    let calls = 0;
+    const copy = fs.copy.bind(fs);
+    fs.copy = async (source, target) => {
+      calls++;
+      await slow.promise;
+      return copy(source, target);
+    };
+    const server = newFilesRpcServer({ fs, idleTimeout: 1000, now: () => now });
+    const first = server.copy("/a", "/b", { requestId: RID });
+    await sleep(1);
+    // The copy takes longer than idleTimeout; the transport retries it meanwhile.
+    now += 5000;
+    server.sweep();
+    const retry = server.copy("/a", "/b", { requestId: RID });
+    slow.resolve();
+    expect(await first).toBe(true);
+    expect(await retry).toBe(true);
+    expect(calls).toBe(1);
+    // Once settled, the answer is kept for idleTimeout from then, and forgotten after.
+    now += 500;
+    server.sweep();
+    expect(await server.copy("/a", "/b", { requestId: RID })).toBe(true);
+    expect(calls).toBe(1);
+    now += 2000;
+    server.sweep();
+    await server.copy("/a", "/b", { requestId: RID });
+    expect(calls).toBe(2);
   });
 
   it("a requestId is checked like a stream id", async () => {

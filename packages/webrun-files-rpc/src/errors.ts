@@ -16,10 +16,19 @@ export class FilesRpcError extends Error {
 
 /** The FilesRpcError code of an error, also after it crossed a transport; undefined otherwise. */
 export function errorCode(e: unknown): FilesRpcErrorCode | undefined {
+  // Only a protocol code: other errors carry codes of their own (a file system's `ENOENT`).
   const code = (e as { code?: unknown })?.code;
-  if (typeof code === "string") return code as FilesRpcErrorCode;
+  if (typeof code === "string" && CODES.has(code)) return code as FilesRpcErrorCode;
   const m = /^(UNKNOWN_STREAM|CHUNK_RELEASED|TOO_MANY_STREAMS|ABORTED|INVALID):/.exec(
     String((e as Error)?.message ?? ""),
   );
   return m?.[1] as FilesRpcErrorCode | undefined;
 }
+
+const CODES: ReadonlySet<string> = new Set<FilesRpcErrorCode>([
+  "UNKNOWN_STREAM",
+  "CHUNK_RELEASED",
+  "TOO_MANY_STREAMS",
+  "ABORTED",
+  "INVALID",
+]);
