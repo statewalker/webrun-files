@@ -1,15 +1,18 @@
 # Publishing
 
-Packages are published to npm from CI with changesets. Nobody runs `changeset version` or
-`changeset publish` by hand.
+Packages are published to npm with changesets, by a maintainer from a local checkout (the
+umbrella's release tool). CI checks every change but publishes nothing.
 
-1. CI runs on every push to `main`.
-2. After CI passes, a job compares each public package's packed contents with the version on npm.
-   For every package that differs it writes a changeset: a patch bump, or a minor bump on a 0.x
-   package when one of its dependencies crosses a breaking line.
-3. The job opens (or updates) a "chore: version packages" pull request with the version bumps and
-   `CHANGELOG.md` entries.
-4. Merging that pull request publishes the bumped packages to npm with provenance.
+1. Pull requests carry changesets (`pnpm changeset`), or none.
+2. For a release, the planner writes a patch changeset for every public package whose packed
+   contents differ from npm's `latest` and that has no changeset yet (a minor bump on a 0.x
+   package when one of its dependencies moved to another breaking line).
+3. The changesets are applied: versions and `CHANGELOG.md` entries.
+4. The bumped packages are published to npm, and the version commit ("chore: version packages")
+   is pushed to `main`.
+
+A package that has never been published goes out with its first release, at the version its
+changeset gives it.
 
 ## Choosing the bump or the changelog text yourself
 

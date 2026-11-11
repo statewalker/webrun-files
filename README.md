@@ -150,11 +150,12 @@ dependency-reference checks (`workspace:^` inside the repo, `catalog:` for every
 `lint:check`, `format:check`, build, typecheck, tests, and checks of export targets, dist imports
 and packed manifests.
 
-Packages are published to npm from CI with changesets. After CI passes on `main`, a job adds a
-changeset for each package whose packed contents differ from npm and opens a
-"chore: version packages" pull request; merging it publishes with provenance. To choose the bump or
-the changelog text yourself, run `pnpm changeset` in your pull request. Renovate opens the
-dependency updates. See [PUBLISHING.md](./PUBLISHING.md).
+CI publishes nothing. Packages are published to npm with changesets by a maintainer, from a local
+checkout: packages whose packed contents differ from npm get a changeset, the versions and
+changelogs are written, the packages published and the version commit pushed to `main`. To choose
+the bump or the changelog text yourself, run `pnpm changeset` in your pull request. Dependabot opens
+the dependency updates (`.github/dependabot.yml`), checked by CI and merged by hand. See
+[PUBLISHING.md](./PUBLISHING.md).
 
 ### License
 
