@@ -9,12 +9,13 @@ every implementation follows. It contains no storage backend.
 ## Why it exists
 
 Code that reads and writes files should not care whether the files live in memory, on disk, in a
-browser directory, in S3, in SQLite or behind an HTTP endpoint. This package is the contract those
+browser directory, in S3, in SQLite, behind an HTTP endpoint or across an RPC. This package is the contract those
 backends implement, so application code, tests and decorators are written once against it. Keeping
 it backend-free means depending on it pulls in nothing runtime-specific.
 
-Backends: `@statewalker/webrun-files-mem`, `-node`, `-browser`, `-s3`, `-sqlite`, `-http`; mounts,
-guards and layers: `@statewalker/webrun-files-composite`.
+Backends: `@statewalker/webrun-files-mem`, `-node`, `-browser`, `-s3`, `-sqlite`, `-http`; any
+`FilesApi` over an RPC (Durable Object RPC, postMessage, …): `-rpc`; mounts, guards and layers:
+`@statewalker/webrun-files-composite`.
 
 ## How to use
 

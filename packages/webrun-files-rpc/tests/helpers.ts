@@ -1,7 +1,14 @@
 import type { FilesApi, ReadOptions } from "@statewalker/webrun-files";
+import { collectStream, toBytes } from "@statewalker/webrun-files-tests";
 import type { FilesRpc } from "../src/index.js";
 
-/** `n` deterministic bytes from `seed`. */
+// The repository's shared test helpers, under the names these tests use.
+export { collectStream as collect, toBytes as text };
+
+/**
+ * `n` deterministic pseudo-random bytes from `seed`. (Not the shared `patternContent`: it repeats
+ * every 256 bytes, so chunks swapped at a multiple of 256 would still compare equal.)
+ */
 export function bytes(n: number, seed = 1): Uint8Array {
   const out = new Uint8Array(n);
   let x = seed >>> 0;
@@ -22,13 +29,6 @@ export function concat(parts: Uint8Array[]): Uint8Array {
   return out;
 }
 
-export async function collect(it: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
-  const parts: Uint8Array[] = [];
-  for await (const p of it) parts.push(p);
-  return concat(parts);
-}
-
-export const text = (s: string) => new TextEncoder().encode(s);
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** A FilesApi whose reads are counted chunk by chunk (to see how far ahead a server pulls). */

@@ -1,8 +1,8 @@
 // The repository's FilesApi conformance suites, run against the client over the server, through
 // the transport simulator (structured clones, calls delayed and delivered out of order, stream
-// calls delivered twice).
+// calls delivered twice). The big-file run is in big-files.test.ts.
 import { MemFilesApi } from "@statewalker/webrun-files-mem";
-import { createBigFilesApiTests, createFilesApiTests } from "@statewalker/webrun-files-tests";
+import { createFilesApiTests } from "@statewalker/webrun-files-tests";
 import { newFilesRpcClient, newFilesRpcServer } from "../src/index.js";
 import { transport } from "./helpers.js";
 
@@ -27,14 +27,4 @@ createFilesApiTests(
       cleanup: () => server.close(),
     };
   },
-);
-
-createBigFilesApiTests(
-  "FilesRpcClient over FilesRpcServer",
-  async () => {
-    const server = newFilesRpcServer({ fs: new MemFilesApi() });
-    const { rpc } = transport(server);
-    return { api: newFilesRpcClient({ rpc }), cleanup: () => server.close() };
-  },
-  { size: 64 * 1024 * 1024 },
 );

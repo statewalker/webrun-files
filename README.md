@@ -110,8 +110,8 @@ iterator open. JavaScript's `<` is not this order above U+FFFF, so compare paths
 `comparePaths`.
 
 **One shared test suite.** `webrun-files-tests` holds the contract as executable tests (77 for the
-interface, 11 for a 256 MiB file). Every backend here runs them, which is what keeps the
-implementations in agreement.
+interface, 11 for a 256 MiB file). Every backend here runs them, and so do the transports (the HTTP
+stubs, the RPC client over its server), which is what keeps the implementations in agreement.
 
 ## What will surprise you
 
@@ -119,7 +119,8 @@ implementations in agreement.
   built `dist/`. A change in one package's `src/` is invisible to the others until `pnpm build`
   runs again. A test that "ignores" your fix is usually this.
 - **`pnpm test` is heavy.** It includes the 256 MiB big-file suite for every in-process backend,
-  and for the HTTP stubs both directly and over a real `@hono/node-server` connection. The
+  for the HTTP stubs both directly and over a real `@hono/node-server` connection, and a 64 MiB run
+for the RPC client over its transport simulator. The
   `webrun-files-sqlite` run peaks at about 2.5 GB of memory, because `SqlarFilesApi` holds whole
   files by design. Under a tight memory limit it dies as an out-of-memory crash, not a test failure.
 - **`pnpm test` barely tests `webrun-files-s3`.** It runs only the listing-order tests against a

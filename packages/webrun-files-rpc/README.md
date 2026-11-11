@@ -43,7 +43,11 @@ Keys make the calls safe on real transports:
 
 ## How to use
 
-Inside this workspace, depend on it with `"@statewalker/webrun-files-rpc": "workspace:^"`.
+```bash
+pnpm add @statewalker/webrun-files-rpc @statewalker/webrun-files
+```
+
+Inside this repository, depend on it with `"@statewalker/webrun-files-rpc": "workspace:^"`.
 
 One entry point: ESM (`dist/esm/index.js`), CommonJS (`dist/cjs/index.cjs`), types
 (`dist/index.d.ts`); sources in `src/`. The bundle has no imports: `@statewalker/webrun-files` is
@@ -242,7 +246,10 @@ await server.closeRead(r);
 
 ## Tests
 
-`pnpm test` (vitest):
+`pnpm --filter @statewalker/webrun-files-rpc test` (Vitest; build the workspace first, the
+shared suites are imported from `webrun-files-tests`' `dist/`). The protocol tests use their own
+pseudo-random bytes and the transport simulator in `tests/helpers.ts`; byte collection and text
+encoding come from `webrun-files-tests`.
 
 | File | Covers |
 |---|---|
@@ -252,5 +259,6 @@ await server.closeRead(r);
 | `protocol.test.ts` | caller-chosen keys (opens and `closeWrite` delivered twice, after the end), what is refused, waiting requests failed by a close, error codes across a structured clone, many streams at once, release never dropping an undelivered chunk, metadata calls delivered twice |
 | `robustness.test.ts` | the window (huge chunk ids refused at once, bounded pulls), busy streams not swept, writes too far ahead refused, writes waiting for the holder swept, the sweep timer, a failing write's error reaching the client, a late abort not undoing a commit, a source yielding non-bytes, waiters past the count, aborting a hanging read, `close()` not hanging, listing with a FilesApi that ignores `after` |
 | `client.test.ts` | the `FilesApi` round trip, iterables, ranges, pipelining depth, early stop and abort, failing sources, write depth, listing; delayed, reordered and duplicated calls (five seeds) |
-| `conformance.test.ts` | the repository's `FilesApi` suites (`webrun-files-tests`) on the client over the server: directly, and through the transport simulator (cloned, reordered, stream calls duplicated); a 64 MiB big-file run |
+| `conformance.test.ts` | the repository's `FilesApi` suite (`webrun-files-tests`) on the client over the server: directly, and through the transport simulator (cloned, reordered, stream calls duplicated) |
+| `big-files.test.ts` | the repository's big-file suite (64 MiB) on the client over the server, through the transport simulator |
 | `readme.test.ts` | the examples above |
