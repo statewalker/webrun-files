@@ -6,8 +6,9 @@ Packages are published to npm from CI with changesets. Nobody runs `changeset ve
 1. CI runs on every push to `main`.
 2. After CI passes, a job writes a changeset for every public package whose packed files or
    published manifest (dependency ranges, `exports`) differ from npm's `latest`: a patch, or a minor
-   on a 0.x package when one of its dependencies moves to another breaking line. A package with a
-   changeset you wrote keeps yours.
+   on a 0.x package when one of its dependencies moves to another breaking line. Dependents of a
+   package that crosses a breaking line get the same minor. A package with a changeset you wrote
+   keeps yours.
 3. The job opens (or updates) a "chore: version packages" pull request with the version bumps and
    `CHANGELOG.md` entries.
 4. Merging that pull request packs every public package whose version is not on npm yet. Nothing is
@@ -52,7 +53,34 @@ Add a changeset in your pull request:
 pnpm changeset
 ```
 
-Pick the packages, the bump (`patch`, `minor`, `major`) and write the summary.
+Pick the packages, the bump and write the summary.
+
+## On a 0.x line, a breaking change is a minor bump
+
+Every package here is below 1.0. npm's caret range treats `0.x` specially: `^0.10.3` allows
+`0.10.4` but not `0.11.0`. On a `0.x` line the minor position is what carries a break, and it is the
+position consumers' ranges protect them against. A `major` bump would declare 1.0, a stability
+commitment none of these packages makes yet. So:
+
+- **`0.x` breaking change: `minor`** (`0.10.3` -> `0.11.0`), with the break stated in the changeset
+  summary and the commit marked `!` (for example `feat(webrun-files)!:`).
+- `major` applies once a package reaches `1.0.0`.
+
+## Why a break in `webrun-files` bumps every backend by minor
+
+Every backend depends on `@statewalker/webrun-files` through `workspace:^`.
+`.changeset/config.json` keeps `updateInternalDependencies` at the changesets default `patch`: when
+a package is released, changesets moves its dependents' ranges to the new version and gives each of
+them a patch release. On its own, that would let a breaking `webrun-files` release reach every
+backend as a patch, which a consumer on `^0.x.y` installs automatically, carrying an incompatible
+`FilesApi`.
+
+The changeset job prevents this. When a package crosses a breaking line (a `minor` on 0.x, whether
+the job wrote that changeset or you did), every package that depends on it through `workspace:`, as
+a runtime or peer dependency, gets the same breaking bump. The break stays outside its consumers'
+ranges, so they have to opt in. If you write the changeset for a break yourself, you do not need to
+bump the dependents: the job adds their `minor` changesets (`.changeset/auto-*.md`) to the version
+pull request.
 
 ## Configuration
 
