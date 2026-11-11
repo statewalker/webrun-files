@@ -100,6 +100,42 @@ describe("client: a FilesApi over the RPC", () => {
     expect(server.openStreams()).toBe(0);
   });
 
+  it("a read does not leave a listener on its signal once it ends", async () => {
+    const { getEventListeners } = await import("node:events");
+    const { client } = pair();
+    await client.write("/a.bin", [bytes(5 * KB)]);
+    const ac = new AbortController();
+    for (let i = 0; i < 3; i++) await collect(client.read("/a.bin", { signal: ac.signal }));
+    for await (const _ of client.read("/a.bin", { signal: ac.signal })) break;
+    await expect(
+      collect(client.read("/missing", { signal: ac.signal, start: 0 })),
+    ).resolves.toHaveLength(0);
+    expect(getEventListeners(ac.signal, "abort")).toHaveLength(0);
+  });
+
+  it("a read that fails, or is aborted, does not leave a listener on its signal", async () => {
+    const { getEventListeners } = await import("node:events");
+    const fs = new MemFilesApi({ initialFiles: { "/a.bin": bytes(5 * KB) } });
+    const server = newFilesRpcServer({ fs, chunkSize: KB });
+    const rpc = Object.create(server) as typeof server;
+    rpc.readChunk = async () => {
+      throw new Error("transport down");
+    };
+    const failing = newFilesRpcClient({ rpc, chunkSize: KB });
+    const ac = new AbortController();
+    await expect(collect(failing.read("/a.bin", { signal: ac.signal }))).rejects.toThrow(
+      "transport down",
+    );
+    expect(getEventListeners(ac.signal, "abort")).toHaveLength(0);
+
+    const client = newFilesRpcClient({ rpc: server, chunkSize: KB });
+    const it = client.read("/a.bin", { signal: ac.signal })[Symbol.asyncIterator]();
+    await it.next();
+    ac.abort();
+    await expect(it.next()).rejects.toThrow();
+    expect(getEventListeners(ac.signal, "abort")).toHaveLength(0);
+  });
+
   it("a failing source aborts the write: the file keeps what it had", async () => {
     const { client, fs, calls, server } = pair();
     await client.write("/a.txt", [text("old")]);

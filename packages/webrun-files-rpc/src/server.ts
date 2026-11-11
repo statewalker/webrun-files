@@ -200,7 +200,7 @@ export function newFilesRpcServer(options: FilesRpcServerOptions): FilesRpcServe
   const ended = new Map<string, { at: number; failure?: unknown }>();
 
   /** Answers of metadata calls, by method and requestId, oldest first. */
-  const requests = new Map<string, { at: number; answer: Promise<unknown> }>();
+  const requests = new Map<string, { at: number; settled: boolean; answer: Promise<unknown> }>();
   const maxRequests = Math.max(1, options.maxRequests ?? 1024);
   /** Runs `call` once per requestId (within idleTimeout): a call delivered again gets its answer. */
   const once = <T>(method: string, opts: RequestOptions | undefined, call: () => Promise<T>) => {
@@ -215,18 +215,25 @@ export function newFilesRpcServer(options: FilesRpcServerOptions): FilesRpcServe
     if (kept) return kept.answer as Promise<T>;
     const answer = call();
     answer.catch(() => {});
-    requests.set(key, { at: now(), answer });
-    void answer.then(
-      () => {
-        const r = requests.get(key);
-        if (r) r.at = now(); // kept for idleTimeout after it settled
-      },
-      () => {
-        const r = requests.get(key);
-        if (r) r.at = now();
-      },
-    );
-    while (requests.size > maxRequests) requests.delete(requests.keys().next().value as string);
+    const entry = { at: now(), settled: false, answer };
+    requests.set(key, entry);
+    // Kept for idleTimeout after it settled (a call still running is not forgotten).
+    const settle = () => {
+      entry.at = now();
+      entry.settled = true;
+    };
+    void answer.then(settle, settle);
+    // Past the cap, the oldest settled answer goes: forgetting a call still running would let a
+    // retry run it again. Only when every call is running does the oldest of them go.
+    while (requests.size > maxRequests) {
+      let victim: string | undefined;
+      for (const [k, r] of requests)
+        if (r.settled) {
+          victim = k;
+          break;
+        }
+      requests.delete(victim ?? (requests.keys().next().value as string));
+    }
     return answer;
   };
 
@@ -688,7 +695,8 @@ export function newFilesRpcServer(options: FilesRpcServerOptions): FilesRpcServe
         else failWrite(s, error);
       }
       for (const [id, e] of [...ended]) if (t - e.at > idleTimeout) ended.delete(id);
-      for (const [key, r] of [...requests]) if (t - r.at > idleTimeout) requests.delete(key);
+      for (const [key, r] of [...requests])
+        if (r.settled && t - r.at > idleTimeout) requests.delete(key);
       return dropped;
     },
 

@@ -90,9 +90,10 @@ export class FilesRpcClient implements FilesApi {
     });
     const pending = new Map<number, Promise<ReadResult>>();
     // An abort interrupts the wait for an answer, not only the loop between answers.
+    let fail: (() => void) | undefined;
     const aborted = signal
       ? new Promise<never>((_, reject) => {
-          const fail = () => reject(signal.reason ?? new Error("aborted"));
+          fail = () => reject(signal.reason ?? new Error("aborted"));
           if (signal.aborted) fail();
           else signal.addEventListener("abort", fail, { once: true });
         })
@@ -118,6 +119,8 @@ export class FilesRpcClient implements FilesApi {
         signal?.throwIfAborted();
       }
     } finally {
+      // A signal may outlive many reads: each takes its listener away.
+      if (fail) signal?.removeEventListener("abort", fail);
       await this.#rpc.closeRead(streamId).catch(() => {});
     }
   }
