@@ -177,5 +177,18 @@ describe("protocol: metadata calls delivered twice", () => {
     const [m1, m2] = await Promise.all([server.move("/b", "/x/b"), server.move("/b", "/x/b")]);
     expect(m1 || m2).toBe(true);
     expect(new TextDecoder().decode(await collect(fs.read("/x/b")))).toBe("b");
+    const [c1, c2] = await Promise.all([server.copy("/x/b", "/c"), server.copy("/x/b", "/c")]);
+    expect(c1 || c2).toBe(true);
+    expect(new TextDecoder().decode(await collect(fs.read("/c")))).toBe("b");
+  });
+
+  it("a retry after the first finished answers for the state it finds", async () => {
+    const fs = new MemFilesApi({ initialFiles: { "/a": "a", "/b": "b" } });
+    const server = newFilesRpcServer({ fs });
+    expect(await server.remove("/a")).toBe(true);
+    expect(await server.remove("/a")).toBe(false);
+    expect(await server.move("/b", "/m")).toBe(true);
+    expect(await server.move("/b", "/m")).toBe(false);
+    expect(new TextDecoder().decode(await collect(fs.read("/m")))).toBe("b");
   });
 });

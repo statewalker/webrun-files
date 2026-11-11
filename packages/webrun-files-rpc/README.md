@@ -20,8 +20,8 @@ twice, and every byte still lands in order.
 ## Why it exists
 
 A `FilesApi` streams: `read()` yields chunks and `write()` takes them. An RPC usually doesn't:
-- Durable Object RPC refuses a `ReadableStream` on cellb (Node) and on celld ("RPC streams cannot
-  cross isolate boundaries"); only workerd carries it.
+- Durable Object RPC carries a `ReadableStream` only on workerd; other Workers-compatible runtimes
+  refuse it ("RPC streams cannot cross isolate boundaries").
 - JSON and message-based transports have no streams at all.
 
 `@statewalker/webrun-files-http` solves this for HTTP, where request and response bodies stream.
@@ -37,9 +37,10 @@ Keys make the calls safe on real transports:
   - a chunk read twice is answered twice;
   - an open with the same `streamId` opens one stream;
   - a `closeWrite` delivered again answers as the first did.
-  - Metadata calls carry no key. Their effect is the same delivered twice (`mkdir`, `remove`,
-    `move` and `copy` end in the same state), but each answers for the state it finds: a
-    `remove`, `move` or `copy` delivered twice may report `false` though the first one did it.
+  - Metadata calls carry no key. Delivered twice with no other write in between, `mkdir`,
+    `remove`, `move` and `copy` end in the same state, but each answers for the state it finds: a
+    `remove`, `move` or `copy` delivered twice may report `false` though the first one did it. A
+    `copy` retried after something else wrote to the target copies again.
 
 ## How to use
 
@@ -259,6 +260,6 @@ encoding come from `webrun-files-tests`.
 | `protocol.test.ts` | caller-chosen keys (opens and `closeWrite` delivered twice, after the end), what is refused, waiting requests failed by a close, error codes across a structured clone, many streams at once, release never dropping an undelivered chunk, metadata calls delivered twice |
 | `robustness.test.ts` | the window (huge chunk ids refused at once, bounded pulls), busy streams not swept, writes too far ahead refused, writes waiting for the holder swept, the sweep timer, a failing write's error reaching the client, a late abort not undoing a commit, a source yielding non-bytes, waiters past the count, aborting a hanging read, `close()` not hanging, listing with a FilesApi that ignores `after` |
 | `client.test.ts` | the `FilesApi` round trip, iterables, ranges, pipelining depth, early stop and abort, failing sources, write depth, listing; delayed, reordered and duplicated calls (five seeds) |
-| `conformance.test.ts` | the repository's `FilesApi` suite (`webrun-files-tests`) on the client over the server: directly, and through the transport simulator (cloned, reordered, stream calls duplicated) |
-| `big-files.test.ts` | the repository's big-file suite (64 MiB) on the client over the server, through the transport simulator |
+| `conformance.test.ts` | the repository's `FilesApi` suite (`webrun-files-tests`) on the client over the server: directly, and through the transport simulator (cloned, reordered, every call but `remove`/`move`/`copy` delivered twice at random) |
+| `big-files.test.ts` | the repository's big-file suite (64 MiB) on the client over the server, every call structured-cloned |
 | `readme.test.ts` | the examples above |

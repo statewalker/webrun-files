@@ -120,8 +120,7 @@ stubs, the RPC client over its server), which is what keeps the implementations 
   runs again. A test that "ignores" your fix is usually this.
 - **`pnpm test` is heavy.** It includes the 256 MiB big-file suite for every in-process backend,
   for the HTTP stubs both directly and over a real `@hono/node-server` connection, and a 64 MiB run
-for the RPC client over its transport simulator. The
-  `webrun-files-sqlite` run peaks at about 2.5 GB of memory, because `SqlarFilesApi` holds whole
+  for the RPC client over its server. The `webrun-files-sqlite` run peaks at about 2.5 GB of memory, because `SqlarFilesApi` holds whole
   files by design. Under a tight memory limit it dies as an out-of-memory crash, not a test failure.
 - **`pnpm test` barely tests `webrun-files-s3`.** It runs only the listing-order tests against a
   fake client. The real suites run against an S3 server and need Docker:
