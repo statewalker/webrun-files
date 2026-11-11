@@ -288,6 +288,47 @@ describe("protocol: metadata calls with a requestId answer once", () => {
     expect(calls).toBe(2);
   });
 
+  it("past maxRequests a settled answer goes first, not that of a call still running", async () => {
+    const fs = new MemFilesApi({ initialFiles: { "/a": "a" } });
+    const slow = deferred();
+    let calls = 0;
+    const copy = fs.copy.bind(fs);
+    fs.copy = async (source, target) => {
+      calls++;
+      await slow.promise;
+      return copy(source, target);
+    };
+    const server = newFilesRpcServer({ fs, maxRequests: 2 });
+    const first = server.copy("/a", "/b", { requestId: `${RID}-c` });
+    await server.mkdir("/x", { requestId: `${RID}-x` });
+    await server.mkdir("/y", { requestId: `${RID}-y` });
+    const retry = server.copy("/a", "/b", { requestId: `${RID}-c` });
+    slow.resolve();
+    expect(await first).toBe(true);
+    expect(await retry).toBe(true);
+    expect(calls).toBe(1);
+  });
+
+  it("past maxRequests with every call running, the oldest goes (the cap holds)", async () => {
+    const fs = new MemFilesApi({ initialFiles: { "/a": "a" } });
+    const slow = deferred();
+    let calls = 0;
+    const copy = fs.copy.bind(fs);
+    fs.copy = async (source, target) => {
+      calls++;
+      await slow.promise;
+      return copy(source, target);
+    };
+    const server = newFilesRpcServer({ fs, maxRequests: 2 });
+    const running = [1, 2, 3].map((i) => server.copy("/a", `/b${i}`, { requestId: `${RID}-${i}` }));
+    // The first was forgotten: a retry of it runs again; the last two are still known.
+    running.push(server.copy("/a", "/b1", { requestId: `${RID}-1` }));
+    running.push(server.copy("/a", "/b3", { requestId: `${RID}-3` }));
+    slow.resolve();
+    await Promise.all(running);
+    expect(calls).toBe(4);
+  });
+
   it("a requestId is checked like a stream id", async () => {
     const server = newFilesRpcServer({ fs: new MemFilesApi() });
     await expect(server.remove("/a", { requestId: "short" })).rejects.toMatchObject({

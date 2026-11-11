@@ -223,7 +223,17 @@ export function newFilesRpcServer(options: FilesRpcServerOptions): FilesRpcServe
       entry.settled = true;
     };
     void answer.then(settle, settle);
-    while (requests.size > maxRequests) requests.delete(requests.keys().next().value as string);
+    // Past the cap, the oldest settled answer goes: forgetting a call still running would let a
+    // retry run it again. Only when every call is running does the oldest of them go.
+    while (requests.size > maxRequests) {
+      let victim: string | undefined;
+      for (const [k, r] of requests)
+        if (r.settled) {
+          victim = k;
+          break;
+        }
+      requests.delete(victim ?? (requests.keys().next().value as string));
+    }
     return answer;
   };
 
