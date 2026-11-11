@@ -130,7 +130,29 @@ export class FilesRpcClient implements FilesApi {
     path: string,
     content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
   ): Promise<void> {
-    const { streamId } = await this.#rpc.openWrite(path, { streamId: newStreamId() });
+    return this.#send(path, content, false);
+  }
+
+  /**
+   * Adds `content` to the end of `path` (creating it if it does not exist), streamed as `write`
+   * streams. The server appends through the served FilesApi's own `append`, or emulates it.
+   */
+  async append(
+    path: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  ): Promise<void> {
+    return this.#send(path, content, true);
+  }
+
+  async #send(
+    path: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+    append: boolean,
+  ): Promise<void> {
+    const { streamId } = await this.#rpc.openWrite(path, {
+      streamId: newStreamId(),
+      ...(append ? { append: true } : {}),
+    });
     const inFlight = new Set<Promise<void>>();
     let failure: { error: unknown } | undefined;
     let count = 0;
@@ -159,7 +181,7 @@ export class FilesRpcClient implements FilesApi {
   }
 
   async mkdir(path: string): Promise<void> {
-    await this.#rpc.mkdir(path);
+    await this.#rpc.mkdir(path, { requestId: newStreamId() });
   }
 
   /** Pages of `pageSize`, each asked after the last path of the one before. */
@@ -184,13 +206,13 @@ export class FilesRpcClient implements FilesApi {
     return this.#rpc.exists(path);
   }
   remove(path: string): Promise<boolean> {
-    return this.#rpc.remove(path);
+    return this.#rpc.remove(path, { requestId: newStreamId() });
   }
   move(source: string, target: string): Promise<boolean> {
-    return this.#rpc.move(source, target);
+    return this.#rpc.move(source, target, { requestId: newStreamId() });
   }
   copy(source: string, target: string): Promise<boolean> {
-    return this.#rpc.copy(source, target);
+    return this.#rpc.copy(source, target, { requestId: newStreamId() });
   }
 }
 

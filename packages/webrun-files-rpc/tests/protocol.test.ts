@@ -1,7 +1,7 @@
 import { MemFilesApi } from "@statewalker/webrun-files-mem";
 import { describe, expect, it } from "vitest";
 import { errorCode, FilesRpcError, newFilesRpcClient, newFilesRpcServer } from "../src/index.js";
-import { bytes, collect, sleep, text } from "./helpers.js";
+import { bytes, collect, sleep, text, transport } from "./helpers.js";
 
 const ID = "0123456789abcdef0123";
 
@@ -190,5 +190,99 @@ describe("protocol: metadata calls delivered twice", () => {
     expect(await server.move("/b", "/m")).toBe(true);
     expect(await server.move("/b", "/m")).toBe(false);
     expect(new TextDecoder().decode(await collect(fs.read("/m")))).toBe("b");
+  });
+});
+
+describe("protocol: metadata calls with a requestId answer once", () => {
+  const RID = "req-0123456789abcdef";
+
+  it("remove, move and copy delivered twice with one requestId run once and answer the same", async () => {
+    const fs = new MemFilesApi({ initialFiles: { "/d/a": "a", "/b": "b", "/c": "c" } });
+    const server = newFilesRpcServer({ fs });
+    // Concurrently (a duplicate in flight) and after the first finished (a late retry).
+    const r = await Promise.all([
+      server.remove("/d", { requestId: `${RID}-1` }),
+      server.remove("/d", { requestId: `${RID}-1` }),
+    ]);
+    expect(r).toEqual([true, true]);
+    expect(await server.remove("/d", { requestId: `${RID}-1` })).toBe(true);
+    expect(await server.move("/b", "/m", { requestId: `${RID}-2` })).toBe(true);
+    expect(await server.move("/b", "/m", { requestId: `${RID}-2` })).toBe(true);
+    expect(await server.copy("/c", "/k", { requestId: `${RID}-3` })).toBe(true);
+    await fs.write("/k", [text("changed")]);
+    // A late copy retry does not copy again over what was written since.
+    expect(await server.copy("/c", "/k", { requestId: `${RID}-3` })).toBe(true);
+    expect(new TextDecoder().decode(await collect(fs.read("/k")))).toBe("changed");
+    // A new requestId is a new call.
+    expect(await server.remove("/d", { requestId: `${RID}-4` })).toBe(false);
+  });
+
+  it("a failed call answers its failure again", async () => {
+    const fs = new MemFilesApi();
+    let calls = 0;
+    fs.remove = async () => {
+      calls++;
+      throw new Error("disk on fire");
+    };
+    const server = newFilesRpcServer({ fs });
+    await expect(server.remove("/x", { requestId: RID })).rejects.toThrow("disk on fire");
+    await expect(server.remove("/x", { requestId: RID })).rejects.toThrow("disk on fire");
+    expect(calls).toBe(1);
+  });
+
+  it("answers are kept for idleTimeout and at most maxRequests of them", async () => {
+    let now = 0;
+    const fs = new MemFilesApi({ initialFiles: { "/a": "a" } });
+    const server = newFilesRpcServer({ fs, idleTimeout: 1000, maxRequests: 2, now: () => now });
+    expect(await server.remove("/a", { requestId: `${RID}-a` })).toBe(true);
+    now += 2000;
+    server.sweep();
+    expect(await server.remove("/a", { requestId: `${RID}-a` })).toBe(false); // forgotten: runs again
+    await server.mkdir("/x", { requestId: `${RID}-x` });
+    await server.mkdir("/y", { requestId: `${RID}-y` });
+    await server.mkdir("/z", { requestId: `${RID}-z` }); // the oldest answer goes
+    await fs.remove("/x");
+    await server.mkdir("/x", { requestId: `${RID}-x` });
+    expect(await fs.exists("/x")).toBe(true);
+  });
+
+  it("a requestId is checked like a stream id", async () => {
+    const server = newFilesRpcServer({ fs: new MemFilesApi() });
+    await expect(server.remove("/a", { requestId: "short" })).rejects.toMatchObject({
+      code: "INVALID",
+    });
+  });
+
+  it("the client gives every remove, move, copy and mkdir a requestId", async () => {
+    const fs = new MemFilesApi({ initialFiles: { "/d/a": "a" } });
+    const server = newFilesRpcServer({ fs });
+    const seen: unknown[] = [];
+    const rpc = new Proxy(server, {
+      get(target, key) {
+        const v = Reflect.get(target, key);
+        if (typeof v !== "function") return v;
+        return (...args: unknown[]) => {
+          if (["remove", "move", "copy", "mkdir"].includes(String(key))) seen.push(args.at(-1));
+          return v.apply(target, args);
+        };
+      },
+    });
+    const client = newFilesRpcClient({ rpc });
+    await client.mkdir("/e");
+    await client.copy("/d/a", "/e/a");
+    await client.move("/e/a", "/e/b");
+    await client.remove("/d");
+    expect(seen).toHaveLength(4);
+    for (const o of seen)
+      expect((o as { requestId?: string }).requestId).toMatch(/^[A-Za-z0-9_-]{16,}$/);
+  });
+
+  it("duplicated delivery of every call now keeps the conformance answers (remove reports true once done)", async () => {
+    const fs = new MemFilesApi({ initialFiles: { "/d/a": "a" } });
+    const server = newFilesRpcServer({ fs });
+    const { rpc } = transport(server, { duplicate: 1, maxDelay: 2 });
+    const client = newFilesRpcClient({ rpc });
+    expect(await client.remove("/d")).toBe(true);
+    expect(await client.copy("/none", "/x")).toBe(false);
   });
 });
