@@ -7,7 +7,7 @@ A `FilesApi` (from `@statewalker/webrun-files`) over any RPC, with streamed read
 - **Server** (`newFilesRpcServer({ fs })`): serves any `FilesApi` as plain method calls.
 - **Client** (`newFilesRpcClient({ rpc })`): a `FilesApi` whose every call goes through those
   methods: a Durable Object or Workers RPC stub, comlink, `@statewalker/webrun-rpc`, or the server
-  object itself.
+  object itself. It also appends (`append(path, content)`), which `FilesApi` does not.
 
 Content moves as **chunks keyed by `(streamId, chunkId)`**. Both sides keep chunks by their key
 and wait for the ones still on their way:
@@ -58,8 +58,8 @@ Exports:
 - `newFilesRpcServer`, `newFilesRpcClient`, `FilesRpcClient`;
 - `FilesRpcError` and `errorCode`;
 - types `FilesRpc`, `FilesRpcServer`, `FilesRpcServerOptions`, `FilesRpcClientOptions`,
-  `ReadResult`, `ListPage`, `ListPageOptions`, `OpenOptions`, `OpenReadOptions`,
-  `FilesRpcErrorCode`.
+  `AppendableFilesApi`, `ReadResult`, `ListPage`, `ListPageOptions`, `OpenOptions`,
+  `OpenReadOptions`, `OpenWriteOptions`, `FilesRpcErrorCode`.
 
 ### `newFilesRpcServer(options)`
 
@@ -94,6 +94,9 @@ The server is a `FilesRpc` plus:
 | `writeAhead` | 4 | `writeChunk` calls not yet answered while writing. |
 | `pageSize` | 256 | Listing page size. |
 
+Besides the `FilesApi` methods, the client has `append(path, content)`: it adds `content` to the
+end of `path` (creating it if it does not exist), streamed exactly as `write` streams.
+
 ### The protocol (`FilesRpc`)
 
 Every argument and result is a plain value: strings, numbers, booleans, plain objects and
@@ -104,7 +107,7 @@ Every argument and result is a plain value: strings, numbers, booleans, plain ob
 | `openRead(path, {start?, length?, streamId?})` | `{streamId}`; a file that does not exist reads as nothing |
 | `readChunk(streamId, chunkId)` | `{data, done}` once chunk `chunkId` exists; past the end `{data: empty, done: true}` |
 | `closeRead(streamId)` | ends the stream (unknown or ended: nothing happens) |
-| `openWrite(path, {streamId?})` | `{streamId}`; the `FilesApi`'s `write` starts consuming chunks in order |
+| `openWrite(path, {streamId?, append?})` | `{streamId}`; the `FilesApi`'s `write` (or, with `append`, the append) starts consuming chunks in order |
 | `writeChunk(streamId, chunkId, data)` | resolves once the chunk is kept (within `writeWindow` of the next to write: at once) |
 | `closeWrite(streamId, chunks)` | resolves once all `chunks` chunks are written |
 | `abortWrite(streamId, reason?)` | cancels the write (unknown or ended: nothing happens) |
@@ -216,6 +219,18 @@ await server.closeRead(r);
     keeps what it had.
   - `write()` starts at `openWrite`, not at the first chunk. A FilesApi that truncates when a
     write starts has emptied the file already if the write is then aborted.
+- **Appends:** `openWrite(path, { append: true })` streams like a write, and the chunks go to the
+  end of the file.
+  - A served FilesApi with an `append(path, content)` method (`AppendableFilesApi`) appends
+    through it, with whatever atomicity it gives.
+  - Any other FilesApi is appended to with `read`, `write` and `remove` only. The old content and
+    the chunks are written to a temporary sibling, `.<name>.append-<streamId>`, which is then
+    written back over the file and removed. It never reads and writes one path at once, so a
+    FilesApi that empties a file when a write starts is safe.
+  - The emulation copies the file twice, shows the temporary sibling in listings while it runs,
+    and is not atomic against other writers of the file. A failure or an abort before the
+    write-back leaves the file as it was. A file that does not exist is simply written; appending
+    to a directory is `INVALID`.
 - **Ended streams:** ids that ended are remembered for `idleTimeout`. Within that time, an open
   delivered after its stream ended does not reopen it, and a `closeWrite` delivered again gets the
   first answer.
@@ -235,8 +250,8 @@ await server.closeRead(r);
 - **The client:**
   - **Read:** it keeps `readAhead` `readChunk` calls in flight and yields the answers in key
     order. Breaking out of the loop, or aborting through `signal`, closes the stream.
-  - **Write:** it cuts any sequence of byte arrays into chunks of exactly `chunkSize` and keeps
-    `writeAhead` unanswered. Any failure (of the source, or of a call) aborts the write.
+  - **Write and append:** it cuts any sequence of byte arrays into chunks of exactly `chunkSize`
+    and keeps `writeAhead` unanswered. Any failure (of the source, or of a call) aborts the write.
   - **List:** it asks page after page with `after`. The server also applies `after` itself, in
     code-point order, so a FilesApi that ignores it cannot make pages repeat.
 - **Not covered:**
@@ -260,6 +275,7 @@ encoding come from `webrun-files-tests`.
 | `protocol.test.ts` | caller-chosen keys (opens and `closeWrite` delivered twice, after the end), what is refused, waiting requests failed by a close, error codes across a structured clone, many streams at once, release never dropping an undelivered chunk, metadata calls delivered twice |
 | `robustness.test.ts` | the window (huge chunk ids refused at once, bounded pulls), busy streams not swept, writes too far ahead refused, writes waiting for the holder swept, the sweep timer, a failing write's error reaching the client, a late abort not undoing a commit, a source yielding non-bytes, waiters past the count, aborting a hanging read, `close()` not hanging, listing with a FilesApi that ignores `after` |
 | `client.test.ts` | the `FilesApi` round trip, iterables, ranges, pipelining depth, early stop and abort, failing sources, write depth, listing; delayed, reordered and duplicated calls (five seeds) |
+| `append.test.ts` | appends through the FilesApi's own `append` and through the emulation: existing and missing files, large files, aborts and failing sources leaving the file unchanged and no temporary file, directories refused, a FilesApi that empties a file when a write starts; over the transport simulator; an open delivered twice |
 | `conformance.test.ts` | the repository's `FilesApi` suite (`webrun-files-tests`) on the client over the server: directly, and through the transport simulator (cloned, reordered, every call but `remove`/`move`/`copy` delivered twice at random) |
 | `big-files.test.ts` | the repository's big-file suite (64 MiB) on the client over the server, every call structured-cloned |
 | `readme.test.ts` | the examples above |

@@ -1,4 +1,4 @@
-import type { FileInfo, FileStats } from "@statewalker/webrun-files";
+import type { FileInfo, FileStats, FilesApi } from "@statewalker/webrun-files";
 
 /** One chunk of a read stream: its bytes, and whether it is the last. */
 export interface ReadResult {
@@ -27,6 +27,24 @@ export interface OpenOptions {
    * server chooses one.
    */
   streamId?: string;
+}
+
+export interface OpenWriteOptions extends OpenOptions {
+  /**
+   * Add the stream's chunks to the end of the file instead of replacing it (a file that does not
+   * exist is created). See `AppendableFilesApi` for how the server appends.
+   */
+  append?: boolean;
+}
+
+/**
+ * A FilesApi that can append itself. `FilesApi` has no append; a served FilesApi with this method
+ * gets appends through it. Any other is appended to with read, write and remove only: the old
+ * content and the new chunks go to a temporary sibling (`.<name>.append-<streamId>`), which is
+ * then written back over the file and removed.
+ */
+export interface AppendableFilesApi extends FilesApi {
+  append(path: string, content: AsyncIterable<Uint8Array>): Promise<void>;
 }
 
 export interface OpenReadOptions extends OpenOptions {
@@ -66,8 +84,11 @@ export interface FilesRpc {
   /** Ends the stream (unknown or closed: nothing happens). */
   closeRead(streamId: string): Promise<void>;
 
-  /** Opens `path` for writing; the FilesApi's `write` consumes the chunks in order. */
-  openWrite(path: string, options?: OpenOptions): Promise<{ streamId: string }>;
+  /**
+   * Opens `path` for writing (or, with `append`, for appending); the FilesApi consumes the chunks
+   * in order.
+   */
+  openWrite(path: string, options?: OpenWriteOptions): Promise<{ streamId: string }>;
   /**
    * Hands over chunk `chunkId`. Resolves once it is kept (not yet written): at once if it is
    * within `writeWindow` chunks of the next to write, else when it is. A chunk already received

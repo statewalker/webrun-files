@@ -1,7 +1,15 @@
 import type { FileInfo, FilesApi } from "@statewalker/webrun-files";
 import { FilesRpcError } from "./errors.js";
 import { Keyed } from "./keyed.js";
-import type { FilesRpc, ListPage, OpenOptions, OpenReadOptions, ReadResult } from "./types.js";
+import type {
+  AppendableFilesApi,
+  FilesRpc,
+  ListPage,
+  OpenOptions,
+  OpenReadOptions,
+  OpenWriteOptions,
+  ReadResult,
+} from "./types.js";
 
 export interface FilesRpcServerOptions {
   /** The file system served. */
@@ -311,6 +319,39 @@ export function newFilesRpcServer(options: FilesRpcServerOptions): FilesRpcServe
     }
   }
 
+  /**
+   * Appends `content` to `path`: through the FilesApi's own `append`, or with read, write and
+   * remove only. The emulation never reads and writes one path at once (a FilesApi may truncate a
+   * file when a write starts): old content and new chunks go to a temporary sibling, which is then
+   * written back over the file. It is not atomic against other writers of the file.
+   */
+  const append = async (
+    path: string,
+    content: AsyncIterable<Uint8Array>,
+    id: string,
+  ): Promise<void> => {
+    const own = (fs as Partial<AppendableFilesApi>).append;
+    if (typeof own === "function") return own.call(fs, path, content);
+    const st = await fs.stats(path);
+    if (st?.kind === "directory")
+      throw new FilesRpcError("INVALID", `cannot append to a directory: ${path}`);
+    if (!st) return fs.write(path, content);
+    const slash = path.lastIndexOf("/");
+    const temp = `${path.slice(0, slash + 1)}.${path.slice(slash + 1)}.append-${id}`;
+    try {
+      await fs.write(
+        temp,
+        (async function* () {
+          yield* fs.read(path);
+          yield* content;
+        })(),
+      );
+      await fs.write(path, fs.read(temp));
+    } finally {
+      await fs.remove(temp).catch(() => {});
+    }
+  };
+
   const failWrite = (s: WriteStream, failure: unknown) => {
     s.failure ??= failure;
     for (const r of s.room.splice(0)) r.reject(s.failure);
@@ -429,7 +470,7 @@ export function newFilesRpcServer(options: FilesRpcServerOptions): FilesRpcServe
       await closeSource(s);
     },
 
-    async openWrite(path, opts: OpenOptions = {}) {
+    async openWrite(path, opts: OpenWriteOptions = {}) {
       const { id, existing } = claim(opts, "write");
       if (existing) return { streamId: id };
       const s: WriteStream = {
@@ -441,7 +482,7 @@ export function newFilesRpcServer(options: FilesRpcServerOptions): FilesRpcServe
         room: [],
         done: Promise.resolve(),
       };
-      s.done = fs.write(path, ordered(s)).then(
+      s.done = (opts.append ? append(path, ordered(s), id) : fs.write(path, ordered(s))).then(
         () => {
           if (s.failure !== undefined) throw s.failure;
         },

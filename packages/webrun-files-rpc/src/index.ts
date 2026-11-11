@@ -8,11 +8,13 @@ export { FilesRpcClient, type FilesRpcClientOptions, newFilesRpcClient } from ".
 export { errorCode, FilesRpcError } from "./errors.js";
 export { type FilesRpcServer, type FilesRpcServerOptions, newFilesRpcServer } from "./server.js";
 export type {
+  AppendableFilesApi,
   FilesRpc,
   FilesRpcErrorCode,
   ListPage,
   ListPageOptions,
   OpenOptions,
   OpenReadOptions,
+  OpenWriteOptions,
   ReadResult,
 } from "./types.js";

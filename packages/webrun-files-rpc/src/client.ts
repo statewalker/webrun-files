@@ -130,7 +130,29 @@ export class FilesRpcClient implements FilesApi {
     path: string,
     content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
   ): Promise<void> {
-    const { streamId } = await this.#rpc.openWrite(path, { streamId: newStreamId() });
+    return this.#send(path, content, false);
+  }
+
+  /**
+   * Adds `content` to the end of `path` (creating it if it does not exist), streamed as `write`
+   * streams. The server appends through the served FilesApi's own `append`, or emulates it.
+   */
+  async append(
+    path: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  ): Promise<void> {
+    return this.#send(path, content, true);
+  }
+
+  async #send(
+    path: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+    append: boolean,
+  ): Promise<void> {
+    const { streamId } = await this.#rpc.openWrite(path, {
+      streamId: newStreamId(),
+      ...(append ? { append: true } : {}),
+    });
     const inFlight = new Set<Promise<void>>();
     let failure: { error: unknown } | undefined;
     let count = 0;
