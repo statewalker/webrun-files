@@ -1,5 +1,13 @@
 # @statewalker/webrun-files-rpc
 
+## 0.1.1
+
+### Patch Changes
+
+- Release of the changes since the last published version:
+  
+  - files changed: README.md, dist/cjs/index.cjs, dist/client.d.ts, dist/client.d.ts.map, dist/errors.d.ts.map, 12 more
+
 ## 0.1.0
 
 ### Minor Changes

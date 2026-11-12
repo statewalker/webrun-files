@@ -1,5 +1,13 @@
 # @statewalker/webrun-files-sqlite
 
+## 0.11.1
+
+### Patch Changes
+
+- Release of the changes since the last published version:
+  
+  - @statewalker/webrun-files ^0.10.3 -> ^0.10.4
+
 ## 0.11.0
 
 ### Minor Changes
