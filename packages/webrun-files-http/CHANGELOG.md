@@ -1,5 +1,17 @@
 # @statewalker/webrun-files-http
 
+## 0.10.4
+
+### Patch Changes
+
+- Release of the changes since the last published version:
+  
+  - @statewalker/webrun-files ^0.10.2 -> ^0.10.3
+- Updated dependencies
+- Updated dependencies
+  - @statewalker/webrun-files-mem@0.10.4
+  - @statewalker/webrun-files@0.10.4
+
 ## 0.10.3
 
 ### Patch Changes
