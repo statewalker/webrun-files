@@ -1,6 +1,6 @@
 {
   "name": "@statewalker/webrun-files-rpc",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": false,
   "type": "module",
   "description": "FilesApi over any RPC: streamed reads and writes as chunks kept and awaited by (streamId, chunkId)",
