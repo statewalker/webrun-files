@@ -22,9 +22,14 @@ catalog:
   tsx: ^4.23.15
   turbo: ^2.11.7
   typescript: ^7.0.2
+  # vitest's peer: declared so it resolves past 8.3.2 (security fixes in 8.3.3)
+  vite: ^8.3.8
   vitest: ^4.1.4 || ^5.0.3
 
 catalogs:
   peers:
     "@aws-sdk/client-s3": "^3.1032.0"
     "vitest": "^4.1.4 || ^5.0.3"
+
+# Security: glob <14.0.2 and minimatch <11.0.1 remain under testcontainers' archiver-utils
+# (webrun-files-s3 tests only), which needs glob ^10; the fixes are majors (14, 11).

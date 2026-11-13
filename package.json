@@ -37,6 +37,7 @@
     "tsx": "catalog:",
     "turbo": "catalog:",
     "typescript": "catalog:",
+    "vite": "catalog:",
     "vitest": "catalog:"
   },
   "version": ""
