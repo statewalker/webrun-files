@@ -1,5 +1,13 @@
 # @statewalker/webrun-files
 
+## 0.10.5
+
+### Patch Changes
+
+- Release of the changes since the last published version:
+  
+  - files changed: dist/cjs/index.cjs, dist/esm/index.js
+
 ## 0.10.4
 
 ### Patch Changes

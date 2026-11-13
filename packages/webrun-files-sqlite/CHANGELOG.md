@@ -1,5 +1,15 @@
 # @statewalker/webrun-files-sqlite
 
+## 0.11.2
+
+### Patch Changes
+
+- Release of the changes since the last published version:
+  
+  - files changed: dist/cjs/index.cjs, dist/esm/index.js
+- Updated dependencies
+  - @statewalker/webrun-files@0.10.5
+
 ## 0.11.1
 
 ### Patch Changes
