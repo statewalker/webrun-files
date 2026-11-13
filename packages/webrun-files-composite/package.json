@@ -1,6 +1,6 @@
 {
   "name": "@statewalker/webrun-files-composite",
-  "version": "0.10.4",
+  "version": "0.10.5",
   "private": false,
   "type": "module",
   "description": "Composite FilesApi with mount points and access guards",
