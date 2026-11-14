@@ -10,17 +10,19 @@ jobs:
     uses: statewalker/statewalker-ci/.github/workflows/ci.yml@main
 
   # Releases to npm in three jobs: `version` opens the version pull request, `pack` packs what
-  # npm lacks once it is merged, `publish` uploads the tarballs after a maintainer approves.
+  # npm lacks once it is merged, `publish` uploads the tarballs. Nobody approves the upload:
+  # merging the version pull request is the release decision.
   #
   # No npm token is stored in GitHub: `publish` authenticates with trusted publishing (OIDC),
   # and its provenance attestation ties each tarball to this commit. npm's trusted publishers
-  # name this file (ci.yml) and the `npm` environment, so a run that skips the approval cannot
-  # publish. Only `publish` may request an identity token, and it never checks out, installs or
-  # builds: no build tool or dependency runs where a publish token can be obtained.
+  # name this file (ci.yml) and the `npm` environment, which admits only `main`, so a run from
+  # another branch cannot publish. Only `publish` may request an identity token, and it never
+  # checks out, installs or builds: no build tool or dependency runs where a publish token can
+  # be obtained.
   #
   # A trusted publisher can only be added to a package that exists, so a package's first
-  # version is published by hand, with the maintainer's 2FA, before `publish` is approved; `pack`
-  # or `publish` then skips it.
+  # version is published by hand, with the maintainer's 2FA, before the version pull request
+  # that releases it merges; `pack` or `publish` then skips it.
 
   # Writes the changesets nobody wrote by hand (statewalker/statewalker-ci's
   # scripts/release-changesets.mjs: a patch for every package whose packed files or published
@@ -140,8 +142,8 @@ jobs:
           name: packages
           path: ${{ runner.temp }}/out/*.tgz
 
-  # Waits for a maintainer's approval (the `npm` environment), then publishes the tarballs packed
-  # above with OIDC and tags each one as a GitHub release.
+  # Runs in the `npm` environment (only `main`, no approval) and publishes the tarballs packed
+  # above with OIDC, tagging each one as a GitHub release.
   publish:
     needs: pack
     if: needs.pack.outputs.any == 'true'
@@ -165,10 +167,10 @@ jobs:
           name: packages
           path: packages
 
-      # Skips a version already on npm: a first version published by hand while this job waited
-      # for approval, or what an earlier attempt of a re-run job published. Publishes in dependency
+      # Skips a version already on npm: a first version published by hand after the tarballs were
+      # packed, or what an earlier attempt of a re-run job published. Publishes in dependency
       # order, so a package never reaches npm before a new version it depends on.
-      # A version older than npm's `latest` (an old run approved after a newer release) is
+      # A version older than npm's `latest` (an old run re-run after a newer release) is
       # published under the `backport` dist-tag, and a prerelease under `next`, so `latest` never
       # moves backwards. Only npm's "not found" (E404) counts as no `latest`; any other failure to
       # read it stops the step rather than publish blind.
