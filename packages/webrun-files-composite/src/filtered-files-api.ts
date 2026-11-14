@@ -6,6 +6,7 @@ import type {
   ReadOptions,
 } from "@statewalker/webrun-files";
 import { normalizePath } from "@statewalker/webrun-files";
+import { followCreateExclusive } from "./follow-create-exclusive.js";
 import { globToRegExp } from "./glob-to-regexp.js";
 
 /**
@@ -139,7 +140,8 @@ export function newGlobPathFilter(...pathGlobs: string[]): PathFilter {
  * - `remove` returns `false` (no error, nothing changed).
  * - `move` / `copy` return `false` if either endpoint is hidden.
  * - `write` / `mkdir` reject with an `Error` (since silently dropping a
- *   write would lose data).
+ *   write would lose data), and so does `createExclusive`, which the
+ *   decorator has only when the source has it.
  * - `list` recursively skips entries whose paths are hidden, so iterating a
  *   visible parent never reveals a hidden child.
  *
@@ -190,6 +192,26 @@ export class FilteredFilesApi implements FilesApi {
   constructor(source: FilesApi, pathFilter: PathFilter) {
     this.source = source;
     this.pathFilter = pathFilter;
+    // biome-ignore lint/correctness/noConstructorReturn: the proxy shows `createExclusive` only while the source has it
+    return followCreateExclusive(this, () => typeof source.createExclusive === "function");
+  }
+
+  /**
+   * Present only while the source has it, checked at each access (`in` and `typeof`
+   * included), so it follows a source whose methods change, such as a
+   * `CompositeFilesApi` after `mount()`. The exclusion is the source's own.
+   */
+  async createExclusive?(
+    path: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  ): Promise<boolean> {
+    if (await this.isHidden(path)) {
+      throw new Error(`Path is hidden: ${path}`);
+    }
+    if (!this.source.createExclusive) {
+      throw new Error(`createExclusive is not supported by the source for ${path}`);
+    }
+    return this.source.createExclusive(path, content);
   }
 
   protected async isHidden(path: string): Promise<boolean> {

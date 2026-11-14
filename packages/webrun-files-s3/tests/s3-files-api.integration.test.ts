@@ -193,5 +193,23 @@ describe("S3FilesApi with RustFS", () => {
 
       await api.remove("/");
     });
+
+    it("creates exclusively through a multipart upload: one of two concurrent calls wins", async () => {
+      const prefix = `multipart-exclusive-test-${Date.now()}`;
+      const api = new S3FilesApi({ client: s3Client, bucket: bucketName, prefix });
+      const size = 6 * 1024 * 1024;
+      const results = await Promise.all(
+        [1, 2].map((fill) => api.createExclusive("/big.lock", [new Uint8Array(size).fill(fill)])),
+      );
+      expect(results.filter(Boolean)).toHaveLength(1);
+      const winner = results[0] ? 1 : 2;
+      const content = await readFile(api, "/big.lock");
+      expect(content.length).toBe(size);
+      expect(content[0]).toBe(winner);
+      expect(content[size - 1]).toBe(winner);
+      expect(await api.createExclusive("/big.lock", [new Uint8Array(size)])).toBe(false);
+
+      await api.remove("/");
+    });
   });
 });

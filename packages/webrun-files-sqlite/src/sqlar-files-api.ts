@@ -81,14 +81,45 @@ export class SqlarFilesApi implements FilesApi {
     const name = toName(path);
     const bytes = await concat(content);
     await this.mkdir(parentName(name));
+    await this.#put(name, FILE_MODE, bytes.byteLength, await this.#stored(bytes));
+  }
 
-    let data: Uint8Array = bytes;
+  /**
+   * One `INSERT ... ON CONFLICT DO NOTHING RETURNING`, which SQLite runs atomically:
+   * exclusive against every connection to the database file, in any process. The
+   * statement inserts nothing when a row has the name — a file, a directory or a
+   * symlink, dangling or not — or when names below it make it an implicit directory.
+   * The content is collected (and compressed) before the statement runs, so nothing is
+   * visible until it is complete and a failing source writes nothing.
+   */
+  async createExclusive(
+    path: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  ): Promise<boolean> {
+    const name = toName(path);
+    if (name === "") return false; // the root always exists
+    const bytes = await concat(content);
+    const data = await this.#stored(bytes);
+    await this.mkdir(parentName(name));
+    const below = descendants(name);
+    const rows = await this.#db.query(
+      `INSERT INTO sqlar (name, mode, mtime, sz, data)
+       SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM sqlar WHERE ${below.where})
+       ON CONFLICT(name) DO NOTHING
+       RETURNING name`,
+      [name, FILE_MODE, Math.floor(Date.now() / 1000), bytes.byteLength, data, ...below.params],
+    );
+    return rows.length > 0;
+  }
+
+  /** The `data` stored for `bytes`: deflated when that is strictly shorter. */
+  async #stored(bytes: Uint8Array): Promise<Uint8Array> {
     if (bytes.byteLength >= this.#codec.minSize) {
       const deflated = await this.#codec.deflate(bytes);
       // Strictly shorter only: equal length is the plaintext marker.
-      if (deflated.byteLength < bytes.byteLength) data = deflated;
+      if (deflated.byteLength < bytes.byteLength) return deflated;
     }
-    await this.#put(name, FILE_MODE, bytes.byteLength, data);
+    return bytes;
   }
 
   /** `sz = 0` with `data IS NULL` is the format's only marker for a directory. */

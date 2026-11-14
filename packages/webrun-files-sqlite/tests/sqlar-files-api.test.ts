@@ -148,3 +148,33 @@ describe("copy", () => {
     expect(await files.move("/nope", "/x")).toBe(false);
   });
 });
+
+describe("createExclusive", () => {
+  it("returns false for a symlink, even a dangling one", async () => {
+    const { files } = await newArchive();
+    await files.symlink("/dangling.lock", "./missing");
+    expect(await files.createExclusive("/dangling.lock", [enc.encode("x")])).toBe(false);
+    expect(await files.readlink("/dangling.lock")).toBe("./missing");
+    expect(await files.exists("/missing")).toBe(false);
+  });
+
+  it("returns false for a name that only exists as a prefix of others", async () => {
+    const { db, files } = await newArchive();
+    // A directory with no row of its own, as other SQLAR tools may write it.
+    await files.write("/implicit/child.txt", [enc.encode("c")]);
+    await db.query("DELETE FROM sqlar WHERE name = 'implicit'");
+    expect(await files.createExclusive("/implicit", [enc.encode("x")])).toBe(false);
+    expect(await rawRow(db, "implicit")).toBeUndefined();
+  });
+
+  it("stores the content as write does, compressed when shorter", async () => {
+    const { db, files } = await newArchive();
+    const text = "abc".repeat(1000);
+    expect(await files.createExclusive("/big.lock", [enc.encode(text)])).toBe(true);
+    const row = await rawRow(db, "big.lock");
+    expect(row?.sz).toBe(3000);
+    expect(row?.mode).toBe(0o100644);
+    expect(row?.len).toBeLessThan(3000);
+    expect(dec.decode(await collectStream(files.read("/big.lock")))).toBe(text);
+  });
+});

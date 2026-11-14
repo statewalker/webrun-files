@@ -6,6 +6,7 @@ import type {
   ReadOptions,
 } from "@statewalker/webrun-files";
 import { comparePaths, joinPath, mergeInPathOrder, normalizePath } from "@statewalker/webrun-files";
+import { followCreateExclusive } from "./follow-create-exclusive.js";
 
 interface MountEntry {
   prefix: string;
@@ -52,6 +53,38 @@ export class CompositeFilesApi implements FilesApi {
    */
   constructor(root: FilesApi, rootPath?: string) {
     this.mounts = [{ prefix: "/", api: root, basePath: normalizePath(rootPath ?? "/") }];
+    // biome-ignore lint/correctness/noConstructorReturn: the proxy shows `createExclusive` only while every backend has it
+    return followCreateExclusive(this, () =>
+      this.mounts.every((m) => typeof m.api.createExclusive === "function"),
+    );
+  }
+
+  /**
+   * Present only while EVERY backend — the root and each mount — has its own
+   * `createExclusive`, so feature detection on the composite tells the truth for
+   * any path: `"createExclusive" in composite` and `typeof composite.createExclusive`
+   * are checked against the mounts at each access. Mounting a backend without it hides
+   * the method; it is never shown and then refused for some paths. (A reference taken
+   * before such a mount still calls; it throws for paths on a backend without it.)
+   * It is a prototype method, so a subclass overrides it as usual.
+   *
+   * A call goes to the backend owning the path, so the exclusion reaches as far
+   * as that backend's does. A mount point, and a directory that exists only
+   * because a mount lies under it, count as existing.
+   */
+  async createExclusive?(
+    path: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  ): Promise<boolean> {
+    const normalized = normalizePath(path);
+    if (this.mounts.some((m) => m.prefix !== "/" && isInsideOrSame(m.prefix, normalized))) {
+      return false;
+    }
+    const { api, resolvedPath } = this.resolve(normalized);
+    if (!api.createExclusive) {
+      throw new Error(`createExclusive is not supported by the backend for ${normalized}`);
+    }
+    return api.createExclusive(resolvedPath, content);
   }
 
   /**
@@ -372,6 +405,10 @@ function translateAfter(
   // Every descendant of `from` lies between `from + "/"` and `from + "0"`.
   if (comparePaths(after, `${fromPrefix}/`) < 0) return undefined;
   return SKIP;
+}
+
+function isInsideOrSame(path: string, ancestor: string): boolean {
+  return path === ancestor || isStrictlyInside(path, ancestor);
 }
 
 function isStrictlyInside(path: string, ancestor: string): boolean {

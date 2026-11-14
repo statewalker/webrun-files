@@ -107,6 +107,50 @@ for (;;) {
 }
 ```
 
+### Take a lock: create a file only if it is absent
+
+```typescript
+const lock = '/repo/.git/index.lock';
+if (!files.createExclusive) throw new Error('this storage cannot hold a lock');
+
+if (!(await files.createExclusive(lock, [new TextEncoder().encode(String(Date.now()))]))) {
+  throw new Error('index.lock exists: another writer holds the lock');
+}
+try {
+  await files.write('/repo/.git/index.new', newIndex);
+  await files.move('/repo/.git/index.new', '/repo/.git/index');
+} finally {
+  await files.remove(lock);
+}
+```
+
+`createExclusive(path, content)` creates the file and returns `true` only if nothing exists at
+the path; of several concurrent calls for one path at most one wins (none, if the winner's source
+fails). It returns `false`, writing no file, for an existing file, directory or link. Parent
+directories are created, and may stay created even when the call returns `false`; a source that
+fails part way leaves no file and rethrows. Checking `exists()` and then calling `write()` cannot
+do this: another process, tab or connection can create the file between the two calls.
+
+Only the creation is atomic, not the content. On some backends (node) the file is visible while
+its content is written, so a reader can see it empty or partial until the call completes. When
+readers must see the whole content at once, create a temporary file and `move` it into place.
+
+The method is optional, because not every storage can create atomically. Feature-detect it as
+above and decide what to do without it: refuse, or fall back to check-then-write where a single
+writer is guaranteed anyway. How far the exclusion reaches is the implementation's:
+
+| Package | Mechanism | Excludes |
+| --- | --- | --- |
+| `webrun-files-mem` | synchronous check and reservation | callers sharing the instance |
+| `webrun-files-node` | `open(path, "wx")` (`O_CREAT \| O_EXCL`) | every process on the filesystem |
+| `webrun-files-browser` | Web Lock around check and create | every tab and worker of the origin |
+| `webrun-files-sqlite` | `INSERT ... ON CONFLICT DO NOTHING` | every connection to the database |
+| `webrun-files-s3` | `PutObject` with `If-None-Match: *` | every client of the bucket |
+| `webrun-files-composite` | the owning backend's method | as far as that backend's does |
+
+`webrun-files-http` and `webrun-files-rpc` do not offer it yet: neither protocol has a
+conditional create.
+
 ### Paths
 
 ```typescript
@@ -186,8 +230,11 @@ Two consequences:
 - Return exactly one metadata variant: a file with both numbers, a directory with only `kind`.
 - List in the order above and honour `after` exactly: the entries after a path are the same, in
   the same order, as the matching suffix of the full listing.
+- Define `createExclusive` only if the storage can keep its promise, and document how far the
+  exclusion reaches. A wrapper defines it only when what it wraps does, so feature detection on
+  the wrapper stays truthful.
 
-The shared suites in `@statewalker/webrun-files-tests` (a private workspace package) check both at
+The shared suites in `@statewalker/webrun-files-tests` (a private workspace package) check these at
 runtime. `listInPathOrder` gives both properties to a backend that can read one directory at a
 time.
 

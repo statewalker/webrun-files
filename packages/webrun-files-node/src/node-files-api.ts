@@ -143,26 +143,7 @@ export class NodeFilesApi implements FilesApi {
     const handle = await fs.open(tmp, "wx");
     let done = false;
     try {
-      const batch: Uint8Array[] = [];
-      let batched = 0;
-      const flush = async () => {
-        if (batched === 0) return;
-        const bytes = batch.length === 1 ? (batch[0] as Uint8Array) : Buffer.concat(batch);
-        let offset = 0;
-        while (offset < bytes.length) {
-          const { bytesWritten } = await handle.write(bytes, offset, bytes.length - offset);
-          offset += bytesWritten;
-        }
-        batch.length = 0;
-        batched = 0;
-      };
-      for await (const chunk of content) {
-        if (chunk.length === 0) continue;
-        batch.push(chunk);
-        batched += chunk.length;
-        if (batched >= WRITE_BATCH) await flush();
-      }
-      await flush();
+      await writeBatched(handle, content);
       if (mode !== undefined) await handle.chmod(mode);
       await handle.close();
       await replaceFile(tmp, realPath);
@@ -171,6 +152,46 @@ export class NodeFilesApi implements FilesApi {
       if (!done) {
         await handle.close().catch(() => {});
         await fs.rm(tmp, { force: true }).catch(() => {});
+      }
+    }
+  }
+
+  /**
+   * `open(path, "wx")` — `O_CREAT | O_EXCL` — so the operating system decides: exclusive
+   * against every process on the machine using the same filesystem, and on most network
+   * filesystems (NFSv3 and later) across machines too. Anything at the path counts as
+   * existing, a symbolic link included, even a dangling one. The file is visible, growing,
+   * while its content is streamed in (64 KiB batches), as git's lock files are; a source
+   * that fails removes it again.
+   */
+  async createExclusive(
+    path: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  ): Promise<boolean> {
+    const resolved = this.resolvePath(path);
+    if (resolved === this.rootDir) return false; // the root always exists
+    await fs.mkdir(this.resolvePath(dirname(normalizePath(path))), { recursive: true });
+
+    let handle: fs.FileHandle;
+    try {
+      handle = await fs.open(resolved, "wx");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+      throw error;
+    }
+    let done = false;
+    try {
+      await writeBatched(handle, content);
+      await handle.close();
+      done = true;
+      return true;
+    } finally {
+      if (!done) {
+        await handle.close().catch(() => {});
+        // Unlinks by path, not by handle: if another process removed our file meanwhile
+        // (taking it for a stale lock) and created its own, this removes theirs. Git's
+        // lock files behave the same.
+        await fs.unlink(resolved).catch(() => {});
       }
     }
   }
@@ -307,4 +328,31 @@ export class NodeFilesApi implements FilesApi {
       return false;
     }
   }
+}
+
+/** Write the content to the handle, small chunks gathered into {@link WRITE_BATCH} writes. */
+async function writeBatched(
+  handle: fs.FileHandle,
+  content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+): Promise<void> {
+  const batch: Uint8Array[] = [];
+  let batched = 0;
+  const flush = async () => {
+    if (batched === 0) return;
+    const bytes = batch.length === 1 ? (batch[0] as Uint8Array) : Buffer.concat(batch);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesWritten } = await handle.write(bytes, offset, bytes.length - offset);
+      offset += bytesWritten;
+    }
+    batch.length = 0;
+    batched = 0;
+  };
+  for await (const chunk of content) {
+    if (chunk.length === 0) continue;
+    batch.push(chunk);
+    batched += chunk.length;
+    if (batched >= WRITE_BATCH) await flush();
+  }
+  await flush();
 }

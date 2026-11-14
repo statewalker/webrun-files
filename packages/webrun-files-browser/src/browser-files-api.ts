@@ -31,6 +31,15 @@ export interface BrowserFilesApiOptions {
    * Can be obtained via showDirectoryPicker(), navigator.storage.getDirectory(), etc.
    */
   rootHandle: FileSystemDirectoryHandle;
+  /**
+   * Names a directory outside the Origin Private File System in the locks
+   * `createExclusive` takes, so that separately created `BrowserFilesApi` instances over
+   * it exclude each other. Give every instance over the same directory the same value,
+   * and different directories different values. Without it, such a directory is named by
+   * its handle object (see `createExclusive`). Ignored for a root inside the Origin
+   * Private File System: there the lock is named by the file's full path in it.
+   */
+  lockScope?: string;
 }
 
 /**
@@ -42,9 +51,12 @@ export interface BrowserFilesApiOptions {
  */
 export class BrowserFilesApi implements FilesApi {
   private rootHandle: FileSystemDirectoryHandle;
+  private readonly lockScope: string | undefined;
+  private lockNamer: Promise<(path: string) => string> | undefined;
 
   constructor(options: BrowserFilesApiOptions) {
     this.rootHandle = options.rootHandle;
+    this.lockScope = options.lockScope;
   }
 
   private async getDirectoryHandle(
@@ -166,6 +178,72 @@ export class BrowserFilesApi implements FilesApi {
       }
       throw error;
     }
+  }
+
+  /**
+   * The File System Access API has no exclusive create, so the check and the create run
+   * under a lock named after this directory and the path:
+   *
+   * - With the Web Locks API (`navigator.locks`, in every current browser), the lock is
+   *   shared by all tabs and workers of the origin, so calls from any of them exclude
+   *   each other.
+   * - Without it (some test environments and polyfills), an in-memory mutex stands in,
+   *   which excludes calls within this JavaScript realm only; another tab or worker is
+   *   then excluded only by the existence check, which can race.
+   *
+   * The lock is asked for `ifAvailable`: a call that finds it held returns false at once
+   * instead of waiting, since the path is being taken. (Should the holder's content then
+   * fail, the path stays free, though this call has returned false.)
+   *
+   * When the root lies in the Origin Private File System, the lock is named by the file's
+   * full path there, `webrun-files:opfs:/repo/HEAD.lock`, so instances rooted at
+   * different OPFS directories take the same lock for the same file. Outside it, the
+   * lock names the directory by `lockScope` when one was given, else by the handle
+   * object, which only instances built on that same object share. Two instances over
+   * one picked directory, from separately obtained handles, then exclude each other only
+   * through the existence check: pass them the same `lockScope`.
+   *
+   * Writers that do not take the lock — `write`, or other programs — are not excluded.
+   * The file exists, empty, while its content is written, and is removed again if the
+   * content fails.
+   */
+  async createExclusive(
+    path: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  ): Promise<boolean> {
+    const normalized = normalizePath(path);
+    if (normalized === "/") return false;
+    const parentPath = dirname(normalized);
+    const fileName = basename(normalized);
+    const lockName = (await this.getLockNamer())(normalized);
+
+    return withLockIfAvailable(lockName, false, async () => {
+      const existing = await this.getDirectoryHandle(parentPath);
+      if (existing && (await hasEntry(existing, fileName))) return false;
+      const parent = existing ?? (await this.getDirectoryHandle(parentPath, { create: true }));
+      if (!parent) throw new Error(`Cannot create directory: ${parentPath}`);
+      await this.writeFileIn(parent, fileName, content);
+      return true;
+    });
+  }
+
+  /** Names the lock for a normalized path; see {@link createExclusive}. */
+  private getLockNamer(): Promise<(path: string) => string> {
+    this.lockNamer ??= (async () => {
+      try {
+        const opfsRoot = await globalThis.navigator?.storage?.getDirectory?.();
+        const names = opfsRoot && (await opfsRoot.resolve(this.rootHandle));
+        if (names) {
+          const rootPath = names.map((name) => `/${name}`).join("");
+          return (path: string) => `webrun-files:opfs:${rootPath}${path}`;
+        }
+      } catch {
+        // not available here, or not permitted: fall back to the scope or the handle
+      }
+      const scope = this.lockScope ?? `handle:${handleId(this.rootHandle)}`;
+      return (path: string) => `webrun-files:${scope}:${path}`;
+    })();
+    return this.lockNamer;
   }
 
   async mkdir(path: string): Promise<void> {
@@ -367,5 +445,59 @@ async function* fileChunks(file: File): AsyncGenerator<Uint8Array> {
   } finally {
     // stopped early or done: cancel, so the file's stream does not keep buffering
     await reader.cancel().catch(() => {});
+  }
+}
+
+/** Whether `parent` holds a file or a directory called `name`. */
+async function hasEntry(parent: FileSystemDirectoryHandle, name: string): Promise<boolean> {
+  for (const get of [
+    () => parent.getFileHandle(name),
+    () => parent.getDirectoryHandle(name),
+  ] as const) {
+    try {
+      await get();
+      return true;
+    } catch (error) {
+      // A file asked for as a directory, or a directory as a file, is still an entry.
+      if ((error as { name?: string })?.name === "TypeMismatchError") return true;
+    }
+  }
+  return false;
+}
+
+/** Ids of root handles, for lock names; instances built on one handle object share it. */
+const handleIds = new WeakMap<FileSystemDirectoryHandle, string>();
+
+function handleId(handle: FileSystemDirectoryHandle): string {
+  let id = handleIds.get(handle);
+  if (id === undefined) {
+    id = crypto.randomUUID();
+    handleIds.set(handle, id);
+  }
+  return id;
+}
+
+/** Names of the in-memory locks standing in for Web Locks that are held now. */
+const localLocks = new Set<string>();
+
+/**
+ * Run `task` holding the exclusive lock `name`, or return `busy` at once when someone
+ * else holds it: a Web Lock asked for `ifAvailable` when `navigator.locks` exists
+ * (origin-wide), else an in-memory lock (this realm only).
+ */
+async function withLockIfAvailable<T>(name: string, busy: T, task: () => Promise<T>): Promise<T> {
+  const locks = globalThis.navigator?.locks;
+  if (locks) {
+    return locks.request(name, { mode: "exclusive", ifAvailable: true }, (lock) =>
+      lock ? task() : busy,
+    ) as Promise<T>;
+  }
+
+  if (localLocks.has(name)) return busy;
+  localLocks.add(name);
+  try {
+    return await task();
+  } finally {
+    localLocks.delete(name);
   }
 }

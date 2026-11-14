@@ -25,9 +25,10 @@ Call a suite factory at the top level of a test file with a name and a factory t
 
 | Export | Registers |
 | --- | --- |
-| `createFilesApiTests(name, factory)` | 77 tests: the interface contract, including the two suites below |
+| `createFilesApiTests(name, factory)` | 87 tests: the interface contract, including the three suites below |
 | `createFileStatsConformanceTests(name, factory)` | 12 tests of the `FileStats` union |
 | `createListOrderTests(name, factory)` | 8 tests of listing order and `after` |
+| `createCreateExclusiveTests(name, factory)` | 10 tests of `createExclusive`, each skipped when the API lacks it |
 | `createBigFilesApiTests(name, factory, options?)` | 11 tests on one big (256 MiB by default) streamed file |
 
 ## What each suite checks
@@ -50,9 +51,9 @@ createFilesApiTests("MyCustomFilesApi", async () => {
 ```
 
 The factory runs before each test, so every test gets a fresh, isolated instance. One call
-registers 77 tests: 57 covering every `FilesApi` method, plus the 12 of
-`createFileStatsConformanceTests` and the 8 of `createListOrderTests` (both below), which it always
-includes.
+registers 87 tests: 57 covering every `FilesApi` method, plus the 12 of
+`createFileStatsConformanceTests`, the 8 of `createListOrderTests` and the 10 of
+`createCreateExclusiveTests` (all below), which it always includes.
 
 | Category | Tests | What's covered |
 |----------|-------|----------------|
@@ -87,6 +88,29 @@ The 8 tests check:
   unnormalised ones like `/order/./z` — yield exactly the entries after them;
 - paging in chunks of three with `after` reassembles the full listing;
 - the root lists in order.
+
+### `createCreateExclusiveTests` — the optional `createExclusive`
+
+```typescript
+const results = await Promise.all(
+  Array.from({ length: 10 }, (_, i) => api.createExclusive('/race/index.lock', slowly(`writer ${i}`))),
+);
+// exactly one `true`, and the file holds that writer's content
+```
+
+`createExclusive` is optional, so each of these 10 tests skips itself when the instance under
+test has no such method, and an implementation that adds it is checked without any change to its
+test file. They check that:
+
+- the first call returns `true` and the content reads back, also for an empty file and an async
+  source of several chunks;
+- a second call returns `false` and leaves the content as it was, as does a file made by `write()`;
+- an existing directory, empty or holding files, makes it return `false`;
+- missing parent directories are created;
+- a source that fails part way rejects with its own error and leaves no file, and the path can be
+  created afterwards;
+- of 10 concurrent calls on one path, whose sources yield after macrotasks so that they
+  interleave, exactly one returns `true`, and the stored content is that call's.
 
 ### `createFileStatsConformanceTests` — the `FileStats` union
 

@@ -83,6 +83,20 @@ for await (const chunk of files.read('/data/large.bin', { start: 1000, length: 5
 }
 ```
 
+### A lock object, shared by every client of the bucket
+
+```typescript
+const locked = await files.createExclusive('/jobs/rebuild.lock', [new TextEncoder().encode(host)]);
+if (!locked) return; // another client created it first
+```
+
+`createExclusive` sends the request that makes the object visible, `PutObject` or, above
+5 MiB, `CompleteMultipartUpload`, with `If-None-Match: *`. The service creates the key only if no
+object has it and answers `412 Precondition Failed` otherwise, which the method returns as
+`false`. Every client of the bucket is excluded. AWS S3 has supported conditional writes since
+August 2024, and RustFS, which the integration tests use, honours them. A service that ignores
+the header gives no exclusion at all: check yours before relying on it.
+
 ## Internals
 
 ### How calls map to S3
@@ -95,6 +109,7 @@ path "/docs/file.txt" + prefix "my-app/data"  ->  key "my-app/data/docs/file.txt
 | --- | --- |
 | `read` | `GetObject`, with `Range: bytes=start-end` when `start`/`length` are given; streams the body |
 | `write` | under 5 MiB: one `PutObject`; otherwise `CreateMultipartUpload` + one `UploadPart` per `multipartPartSize` + `CompleteMultipartUpload`; `AbortMultipartUpload` on any error |
+| `createExclusive` | a `stats` check (any object or prefix at the path returns `false`), then as `write`, with `If-None-Match: *` on the final `PutObject` or `CompleteMultipartUpload`; `412` returns `false`, a `409 ConditionalRequestConflict` (another conditional write in flight) is retried up to four times |
 | `mkdir` | `PutObject` of an empty `dir/` marker key |
 | `list` | `ListObjectsV2` with `Delimiter: "/"` (or none when recursive), `StartAfter` for `after` |
 | `copy` | `CopyObject` per object, server-side |
@@ -128,6 +143,10 @@ under `a/` both exist, `/a` is listed once, as the file, the same answer `stats(
   calls; a failure midway leaves some objects copied and the source partly removed.
 - **Writing zero chunks creates nothing.** `write(path, [])` sends no request, so the path does not
   exist afterwards. Pass `[new Uint8Array(0)]` to create an empty file.
+- **Only the key is exclusive.** A directory is a key prefix, so an existing one makes
+  `createExclusive` return `false` through the check before the upload, but a directory created
+  concurrently with the call is not excluded. Unlike `write`, `createExclusive(path, [])`
+  creates an empty object.
 - **Single-request copies.** Each object is copied with one `CopyObject`, which S3 limits to 5 GB
   per object.
 - **Errors other than not-found propagate.** `read` treats `404` and `416` as an empty read; any
@@ -135,11 +154,13 @@ under `a/` both exist, `/a` is listed once, as the file, the same answer `stats(
 
 ### Testing
 
-`pnpm test` runs only unit tests (a fake client exercises listing order across pages).
+`pnpm test` runs only unit tests, against fake clients: listing order across pages, and how
+`createExclusive` handles `412` (returns `false`, also from `CompleteMultipartUpload`) and `409`
+(retried, then thrown).
 `pnpm test:integration` needs Docker: it starts
 [RustFS](https://github.com/rustfs/rustfs) through testcontainers (`rustfs/rustfs:latest`, override
 with `RUSTFS_IMAGE`) and runs the shared `createFilesApiTests` and `createBigFilesApiTests` suites
-against it.
+against it, the `createExclusive` cases included.
 
 ### Dependencies
 

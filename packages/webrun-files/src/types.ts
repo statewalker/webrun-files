@@ -129,6 +129,43 @@ export interface FilesApi {
   write(path: string, content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>): Promise<void>;
 
   /**
+   * Create `path` with `content` only if nothing exists there, atomically: of two
+   * concurrent calls for one path, at most one returns true. Returns false, and writes no
+   * file, when the path already exists, whether as a file, a directory or a link.
+   * Parent directories are created as needed, and may be left created even when the call
+   * returns false. If the content fails part way, the file is removed again and the
+   * error is thrown.
+   *
+   * Only the creation is atomic, not the content: on some backends (node) the file is
+   * visible while its content is written, so a reader can see it empty or partial until
+   * the call completes. Callers that need readers to see the whole content at once
+   * should create a temporary file and `move` it into place.
+   *
+   * This is the primitive behind lock files (git's `index.lock`, `refs/heads/main.lock`):
+   * take the lock by creating the file, release it by removing or renaming it.
+   *
+   * OPTIONAL. Storages that cannot create atomically leave it out, so code written
+   * against an older `FilesApi` keeps compiling and an implementation never claims a
+   * guarantee it cannot keep. Callers feature-detect it and choose their own fallback:
+   *
+   * @example
+   * if (!api.createExclusive) throw new Error("this storage cannot hold a lock");
+   * const locked = await api.createExclusive("/repo/.git/index.lock", [bytes]);
+   * if (!locked) throw new Error("index.lock exists: another process holds the lock");
+   *
+   * How far the exclusion reaches depends on the implementation, and each one
+   * documents it: an in-memory store excludes callers sharing that instance, a local
+   * filesystem every process on the machine, the browser every tab and worker of the
+   * origin, a database every connection to it, an object store every client of the
+   * bucket. Two different `FilesApi` instances over the same storage exclude each other
+   * only as far as that reach extends.
+   */
+  createExclusive?(
+    path: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  ): Promise<boolean>;
+
+  /**
    * Create a directory and all parent directories.
    * No-op if directory already exists.
    */

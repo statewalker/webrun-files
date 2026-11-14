@@ -2,11 +2,11 @@
  * Tests for BrowserFilesApi implementation using native-file-system-adapter's memory backend
  */
 
-import { createFilesApiTests } from "@statewalker/webrun-files-tests";
+import { collectStream, createFilesApiTests } from "@statewalker/webrun-files-tests";
 import { getOriginPrivateDirectory } from "native-file-system-adapter";
 // @ts-expect-error - no type declarations for this module
 import * as driver from "native-file-system-adapter/src/adapters/memory.js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BrowserFilesApi } from "../src/browser-files-api.js";
 
 describe("BrowserFilesApi with Memory Backend", () => {
@@ -136,5 +136,204 @@ describe("BrowserFilesApi.write when the commit fails", () => {
     );
     rootHandle.getFileHandle = getFileHandle;
     expect(await api.exists("/q.txt")).toBe(false);
+  });
+});
+
+describe("BrowserFilesApi.createExclusive across tabs", () => {
+  const bytes = (s: string) => [new TextEncoder().encode(s)];
+
+  /** Chunks arriving after macrotasks, so unserialized calls would interleave. */
+  async function* slowly(text: string) {
+    for (const part of [text, ` ${text}`]) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      yield new TextEncoder().encode(part);
+    }
+  }
+
+  /** A `navigator.locks` that runs the callbacks of one name one at a time, as browsers do. */
+  function fakeLocks() {
+    const requests: { name: string; mode: string | undefined; ifAvailable?: boolean }[] = [];
+    const tails = new Map<string, Promise<unknown>>();
+    // Requests per name that hold the lock or wait for it.
+    const pending = new Map<string, number>();
+    let running = 0;
+    let maxRunning = 0;
+    const locks = {
+      request(
+        name: string,
+        options: { mode?: string; ifAvailable?: boolean },
+        callback: (lock: object | null) => Promise<unknown>,
+      ) {
+        requests.push({ name, mode: options.mode, ifAvailable: options.ifAvailable });
+        // `ifAvailable`: granted only if nobody holds or waits for the lock, else null.
+        if (options.ifAvailable && (pending.get(name) ?? 0) > 0) {
+          return Promise.resolve().then(() => callback(null));
+        }
+        pending.set(name, (pending.get(name) ?? 0) + 1);
+        const run = (tails.get(name) ?? Promise.resolve()).then(async () => {
+          running++;
+          maxRunning = Math.max(maxRunning, running);
+          try {
+            return await callback({ name });
+          } finally {
+            running--;
+            pending.set(name, (pending.get(name) ?? 1) - 1);
+          }
+        });
+        tails.set(
+          name,
+          run.catch(() => {}),
+        );
+        return run;
+      },
+    };
+    return { locks, requests, maxRunning: () => maxRunning };
+  }
+
+  async function newRoot() {
+    return (await getOriginPrivateDirectory(driver)) as FileSystemDirectoryHandle;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("takes an exclusive Web Lock per directory and path", async () => {
+    const fake = fakeLocks();
+    vi.stubGlobal("navigator", { locks: fake.locks });
+    const rootHandle = await newRoot();
+    const api = new BrowserFilesApi({ rootHandle });
+
+    const results = await Promise.all(
+      Array.from({ length: 10 }, (_, i) => api.createExclusive("/a/index.lock", slowly(`w${i}`))),
+    );
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(fake.requests).toHaveLength(10);
+    expect(fake.maxRunning()).toBe(1);
+    const names = new Set(fake.requests.map((r) => r.name));
+    expect(names.size).toBe(1);
+    expect([...names][0]).toMatch(/^webrun-files:handle:.+:\/a\/index\.lock$/);
+    expect(fake.requests.every((r) => r.mode === "exclusive")).toBe(true);
+  });
+
+  it("lets instances with one lockScope exclude each other, as tabs would", async () => {
+    const fake = fakeLocks();
+    vi.stubGlobal("navigator", { locks: fake.locks });
+    const rootHandle = await newRoot();
+    // Two "tabs": separate instances over the same directory.
+    const tabA = new BrowserFilesApi({ rootHandle, lockScope: "repo" });
+    const tabB = new BrowserFilesApi({ rootHandle, lockScope: "repo" });
+
+    const results = await Promise.all([
+      tabA.createExclusive("/HEAD.lock", slowly("a")),
+      tabB.createExclusive("/HEAD.lock", slowly("b")),
+    ]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(fake.requests.map((r) => r.name)).toEqual([
+      "webrun-files:repo:/HEAD.lock",
+      "webrun-files:repo:/HEAD.lock",
+    ]);
+  });
+
+  it("names a directory in the Origin Private File System by its path there", async () => {
+    const fake = fakeLocks();
+    const rootHandle = await newRoot();
+    vi.stubGlobal("navigator", {
+      locks: fake.locks,
+      storage: { getDirectory: async () => ({ resolve: async () => ["repos", "one"] }) },
+    });
+    const api = new BrowserFilesApi({ rootHandle });
+    expect(await api.createExclusive("/x.lock", bytes("x"))).toBe(true);
+    expect(fake.requests[0]?.name).toBe("webrun-files:opfs:/repos/one/x.lock");
+  });
+
+  it("serializes calls in memory without navigator.locks", async () => {
+    vi.stubGlobal("navigator", {});
+    const rootHandle = await newRoot();
+    const api = new BrowserFilesApi({ rootHandle });
+
+    const results = await Promise.all(
+      Array.from({ length: 10 }, (_, i) => api.createExclusive("/index.lock", slowly(`w${i}`))),
+    );
+    const winner = results.indexOf(true);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    const content = await collectStream(api.read("/index.lock"));
+    expect(new TextDecoder().decode(content)).toBe(`w${winner} w${winner}`);
+    // The mutex is released after each call: later calls proceed.
+    expect(await api.createExclusive("/index.lock", bytes("again"))).toBe(false);
+    expect(await api.createExclusive("/other.lock", bytes("other"))).toBe(true);
+  });
+  it("names an OPFS lock by the file's full OPFS path, whatever the instance's root", async () => {
+    const fake = fakeLocks();
+    const opfsRoot = await newRoot();
+    const repo = await opfsRoot.getDirectoryHandle("repo", { create: true });
+    const paths = new Map<FileSystemDirectoryHandle, string[]>([
+      [opfsRoot, []],
+      [repo, ["repo"]],
+    ]);
+    vi.stubGlobal("navigator", {
+      locks: fake.locks,
+      storage: {
+        getDirectory: async () => ({
+          resolve: async (h: FileSystemDirectoryHandle) => paths.get(h) ?? null,
+        }),
+      },
+    });
+    // One instance rooted at OPFS `/repo`, one at OPFS `/`: the same file.
+    const inRepo = new BrowserFilesApi({ rootHandle: repo });
+    const atRoot = new BrowserFilesApi({ rootHandle: opfsRoot, lockScope: "ignored-in-opfs" });
+
+    const results = await Promise.all([
+      inRepo.createExclusive("/HEAD.lock", slowly("a")),
+      atRoot.createExclusive("/repo/HEAD.lock", slowly("b")),
+    ]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(fake.requests.map((r) => r.name)).toEqual([
+      "webrun-files:opfs:/repo/HEAD.lock",
+      "webrun-files:opfs:/repo/HEAD.lock",
+    ]);
+  });
+
+  describe("does not wait for a winner whose source stalls", () => {
+    function stalled() {
+      let release = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      async function* source() {
+        yield new TextEncoder().encode("first");
+        await gate;
+        yield new TextEncoder().encode(" last");
+      }
+      return { source: source(), release };
+    }
+
+    async function loserReturnsAtOnce(api: BrowserFilesApi) {
+      // The memory adapter's roots share one tree: a path of its own for each run.
+      const path = `/stalled-${crypto.randomUUID()}.lock`;
+      const { source, release } = stalled();
+      const winner = api.createExclusive(path, source);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const loser = await Promise.race([
+        api.createExclusive(path, bytes("other")),
+        new Promise((resolve) => setTimeout(() => resolve("blocked"), 200)),
+      ]);
+      release();
+      expect(loser).toBe(false);
+      expect(await winner).toBe(true);
+      expect(new TextDecoder().decode(await collectStream(api.read(path)))).toBe("first last");
+    }
+
+    it("with Web Locks, asking ifAvailable", async () => {
+      const fake = fakeLocks();
+      vi.stubGlobal("navigator", { locks: fake.locks });
+      await loserReturnsAtOnce(new BrowserFilesApi({ rootHandle: await newRoot() }));
+      expect(fake.requests.every((r) => r.ifAvailable === true)).toBe(true);
+    });
+
+    it("with the in-memory mutex", async () => {
+      vi.stubGlobal("navigator", {});
+      await loserReturnsAtOnce(new BrowserFilesApi({ rootHandle: await newRoot() }));
+    });
   });
 });
