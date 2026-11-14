@@ -15,8 +15,12 @@ Packages are published to npm from CI with changesets. Nobody runs `changeset ve
    published until a maintainer approves the `publish` job on the `npm` GitHub environment; it then
    publishes the tarballs with provenance and creates a GitHub release per package.
 
-The checks do not run on the version pull request itself (GitHub Actions opened it); they run
-again on `main` after the merge, before anything is packed.
+The job opens that pull request with the `statewalker-release` GitHub App's token, not
+`GITHUB_TOKEN`, so the checks run on it like on any pull request: GitHub does not run CI on what
+`GITHUB_TOKEN` pushes (the run waits as "action_required" for a maintainer). The App's client id
+and key come from the organization's `RELEASE_APP_CLIENT_ID` variable and `RELEASE_APP_KEY`
+secret; if either is missing, the `Release token` step fails and no version pull request is opened.
+The checks run again on `main` after the merge, before anything is packed.
 
 ## No npm token: trusted publishing
 
