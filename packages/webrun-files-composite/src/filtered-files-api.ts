@@ -139,7 +139,8 @@ export function newGlobPathFilter(...pathGlobs: string[]): PathFilter {
  * - `remove` returns `false` (no error, nothing changed).
  * - `move` / `copy` return `false` if either endpoint is hidden.
  * - `write` / `mkdir` reject with an `Error` (since silently dropping a
- *   write would lose data).
+ *   write would lose data), and so does `createExclusive`, which the
+ *   decorator has only when the source has it.
  * - `list` recursively skips entries whose paths are hidden, so iterating a
  *   visible parent never reveals a hidden child.
  *
@@ -187,9 +188,24 @@ export class FilteredFilesApi implements FilesApi {
    * @param pathFilter Predicate that decides per-call whether a normalized
    *   path is visible. See {@link PathFilter}.
    */
+  /** Present only when the source has it; the exclusion is the source's own. */
+  declare createExclusive?: (
+    path: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  ) => Promise<boolean>;
+
   constructor(source: FilesApi, pathFilter: PathFilter) {
     this.source = source;
     this.pathFilter = pathFilter;
+    const createExclusive = source.createExclusive?.bind(source);
+    if (createExclusive) {
+      this.createExclusive = async (path, content) => {
+        if (await this.isHidden(path)) {
+          throw new Error(`Path is hidden: ${path}`);
+        }
+        return createExclusive(path, content);
+      };
+    }
   }
 
   protected async isHidden(path: string): Promise<boolean> {

@@ -56,3 +56,54 @@ describe("NodeFilesApi keeps every path inside rootDir", () => {
     }
   });
 });
+
+describe("NodeFilesApi.createExclusive", () => {
+  const bytes = (s: string) => [new TextEncoder().encode(s)];
+
+  it("treats a symbolic link as existing, even a dangling one", async () => {
+    const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "webrun-files-excl-"));
+    const api = new NodeFilesApi({ rootDir });
+    try {
+      await fs.writeFile(path.join(rootDir, "target.txt"), "target");
+      await fs.symlink("target.txt", path.join(rootDir, "link.txt"));
+      await fs.symlink("missing.txt", path.join(rootDir, "dangling.txt"));
+      expect(await api.createExclusive("/link.txt", bytes("x"))).toBe(false);
+      expect(await api.createExclusive("/dangling.txt", bytes("x"))).toBe(false);
+      expect(await fs.readFile(path.join(rootDir, "target.txt"), "utf8")).toBe("target");
+      await expect(fs.access(path.join(rootDir, "missing.txt"))).rejects.toThrow();
+    } finally {
+      await fs.rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses paths outside rootDir and reports the root as existing", async () => {
+    const parent = await fs.mkdtemp(path.join(os.tmpdir(), "webrun-files-excl-"));
+    const rootDir = path.join(parent, "root");
+    await fs.mkdir(rootDir);
+    const api = new NodeFilesApi({ rootDir });
+    try {
+      await expect(api.createExclusive("/../outside.lock", bytes("x"))).rejects.toThrow(
+        /outside rootDir/,
+      );
+      await expect(fs.access(path.join(parent, "outside.lock"))).rejects.toThrow();
+      expect(await api.createExclusive("/", bytes("x"))).toBe(false);
+    } finally {
+      await fs.rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it("excludes a second NodeFilesApi over the same directory", async () => {
+    const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "webrun-files-excl-"));
+    const a = new NodeFilesApi({ rootDir });
+    const b = new NodeFilesApi({ rootDir });
+    try {
+      const results = await Promise.all([
+        a.createExclusive("/index.lock", bytes("a")),
+        b.createExclusive("/index.lock", bytes("b")),
+      ]);
+      expect(results.filter(Boolean)).toHaveLength(1);
+    } finally {
+      await fs.rm(rootDir, { recursive: true, force: true });
+    }
+  });
+});

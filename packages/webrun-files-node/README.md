@@ -59,6 +59,26 @@ for await (const chunk of files.read('/large-file.bin', { start: 1000, length: 5
 }
 ```
 
+### A lock file, safe across processes
+
+```typescript
+const content = [new TextEncoder().encode(`${process.pid}\n`)];
+if (await files.createExclusive('/repo/.git/index.lock', content)) {
+  try {
+    // ... only this process gets here until the lock is removed
+  } finally {
+    await files.remove('/repo/.git/index.lock');
+  }
+} else {
+  // another process holds the lock
+}
+```
+
+`createExclusive` opens the file with `O_CREAT | O_EXCL`, so the operating system decides who
+wins: every process on the machine using that filesystem is excluded, and on network file systems
+that honour `O_EXCL` (NFSv3 and later) other machines are too. Anything already at the path,
+including a symbolic link, dangling or not, makes it return `false`.
+
 ### A temporary directory per test
 
 ```typescript
@@ -84,6 +104,7 @@ try {
 | --- | --- |
 | `read` | `fs.open` + positioned `handle.read` in 8 KiB buffers, only the requested range |
 | `write` | `fs.mkdir(parent, { recursive: true })`, then streams the chunks (batched to 64 KiB) into a temporary `.webrun-tmp-<random>` beside the file and renames it over the file |
+| `createExclusive` | `fs.mkdir(parent, { recursive: true })`, then `fs.open(path, "wx")`; `EEXIST` returns `false`, otherwise the chunks are streamed (batched to 64 KiB) straight into the new file, which is unlinked again if the source fails |
 | `list` | `fs.readdir` + `fs.stat` per entry, walked through `listInPathOrder` |
 | `move` | `fs.rename` after creating the target's parent |
 | `copy` | `fs.cp(..., { recursive: true })` |
@@ -123,6 +144,9 @@ directory whose whole subtree sorts at or before `after`.
   bind-mounted file in a container, `EBUSY`) or on another device (`EXDEV`) is written in
   place instead: the temporary is copied into it, keeping its owner and mode, so readers may
   see it half-written, and a failure part way (a full disk) leaves it partial.
+- **A lock file is visible while it is written.** Unlike `write`, `createExclusive` writes in
+  place, as git does with its lock files: other readers see the file grow until the content
+  ends. A crash part way leaves the partial file, and with it the lock, behind.
 - **`move` across devices returns `false`.** It is a single `fs.rename`; when that fails (`EXDEV`,
   permissions) the method returns `false` instead of falling back to copy and delete.
 - **Unreadable reads look like missing files.** `read` swallows every error (missing file,

@@ -22,6 +22,7 @@ import type { FileGuard, FileOperation } from "./types.js";
  * | ------------- | --------------------------------------------------- |
  * | `read`        | `read`                                              |
  * | `write`       | `write`                                             |
+ * | `createExclusive` | `write`                                         |
  * | `mkdir`       | `mkdir`                                             |
  * | `remove`      | `remove`                                            |
  * | `list`        | `list` on the path AND on each directory entry      |
@@ -58,9 +59,25 @@ export class GuardedFilesApi implements FilesApi {
    *   defensive copy, so mutating the array afterwards has no effect.
    *   An empty list disables every check (the wrapper becomes a passthrough).
    */
+  /**
+   * Present only when the source has it: a `write`-guarded pass-through, so the
+   * exclusion is the source's own.
+   */
+  declare createExclusive?: (
+    path: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  ) => Promise<boolean>;
+
   constructor(source: FilesApi, guards: FileGuard[]) {
     this.source = source;
     this.guards = [...guards];
+    const createExclusive = source.createExclusive?.bind(source);
+    if (createExclusive) {
+      this.createExclusive = async (path, content) => {
+        this.checkGuard(path, "write");
+        return createExclusive(path, content);
+      };
+    }
   }
 
   private checkGuard(path: string, ...operations: FileOperation[]): void {

@@ -1,7 +1,14 @@
+import type { FilesApi } from "@statewalker/webrun-files";
 import { MemFilesApi } from "@statewalker/webrun-files-mem";
 import { createFilesApiTests } from "@statewalker/webrun-files-tests";
 import { beforeEach, describe, expect, it } from "vitest";
-import { CompositeFilesApi } from "../src/index.js";
+import {
+  CompositeFilesApi,
+  FilteredFilesApi,
+  GuardedFilesApi,
+  newPathFilter,
+  readOnly,
+} from "../src/index.js";
 
 // --- Shared test suite: single mount (composite wrapping one MemFilesApi) ---
 
@@ -528,5 +535,54 @@ describe("CompositeFilesApi - nested mounts with fsPath", () => {
 
     await composite.write("/a/file.txt", [toBytes("shallow-content")]);
     expect(await readAll(shallow.read("/base-a/file.txt"))).toBe("shallow-content");
+  });
+});
+
+describe("CompositeFilesApi.createExclusive", () => {
+  /** A MemFilesApi without createExclusive, as a backend that cannot honour it. */
+  function withoutCreateExclusive(): FilesApi {
+    const api = new MemFilesApi();
+    Object.defineProperty(api, "createExclusive", { value: undefined });
+    return api;
+  }
+
+  it("is defined only while every backend has it", () => {
+    const composite = new CompositeFilesApi(new MemFilesApi()).mount("/m", new MemFilesApi());
+    expect(typeof composite.createExclusive).toBe("function");
+    composite.mount("/plain", withoutCreateExclusive());
+    expect(composite.createExclusive).toBeUndefined();
+    expect(new CompositeFilesApi(withoutCreateExclusive()).createExclusive).toBeUndefined();
+  });
+
+  it("delegates to the owning mount, under its fsPath", async () => {
+    const root = new MemFilesApi();
+    const mounted = new MemFilesApi();
+    const composite = new CompositeFilesApi(root).mount("/data", mounted, "/base");
+    expect(await composite.createExclusive?.("/data/x.lock", [toBytes("x")])).toBe(true);
+    expect(await readAll(mounted.read("/base/x.lock"))).toBe("x");
+    expect(await root.exists("/data/x.lock")).toBe(false);
+    expect(await composite.createExclusive?.("/data/x.lock", [toBytes("y")])).toBe(false);
+  });
+
+  it("treats mount points and their synthetic parents as existing", async () => {
+    const root = new MemFilesApi();
+    const composite = new CompositeFilesApi(root).mount("/a/b", new MemFilesApi());
+    expect(await composite.createExclusive?.("/a/b", [toBytes("x")])).toBe(false);
+    expect(await composite.createExclusive?.("/a", [toBytes("x")])).toBe(false);
+    expect(await root.exists("/a")).toBe(false);
+  });
+
+  it("is guarded as a write, and refused on hidden paths", async () => {
+    const ro = readOnly(new MemFilesApi());
+    await expect(ro.createExclusive?.("/x.lock", [toBytes("x")])).rejects.toThrow(/read-only/);
+    const filtered = new FilteredFilesApi(new MemFilesApi(), newPathFilter("/.hidden"));
+    await expect(filtered.createExclusive?.("/.hidden/x", [toBytes("x")])).rejects.toThrow(
+      /hidden/,
+    );
+    expect(await filtered.createExclusive?.("/x.lock", [toBytes("x")])).toBe(true);
+    expect(new GuardedFilesApi(withoutCreateExclusive(), []).createExclusive).toBeUndefined();
+    expect(
+      new FilteredFilesApi(withoutCreateExclusive(), () => true).createExclusive,
+    ).toBeUndefined();
   });
 });

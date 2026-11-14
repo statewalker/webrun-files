@@ -61,6 +61,21 @@ const files = new MemFilesApi({
 });
 ```
 
+### Exclusive create, for code that takes lock files
+
+```typescript
+const results = await Promise.all([
+  files.createExclusive('/index.lock', [new TextEncoder().encode('a')]),
+  files.createExclusive('/index.lock', [new TextEncoder().encode('b')]),
+]);
+console.log(results); // [true, false]: exactly one call wins
+```
+
+`createExclusive` checks the path and reserves it in one synchronous step, with no `await` in
+between, so concurrent calls on one `MemFilesApi` exclude each other. Two instances share nothing
+and never exclude each other. Code that uses lock files on a real storage can run its tests
+against this.
+
 ### A fresh file system per test
 
 ```typescript
@@ -95,6 +110,11 @@ directory. `write` collects all chunks and stores one `Uint8Array`; `read` yield
 - **Shared buffers.** A `Uint8Array` passed in `initialFiles` is stored as is, and the chunk
   `read()` yields is a view of the stored bytes. Mutating either changes the stored file. Copy
   first if you need to modify them.
+- **An exclusive create is hidden until it is complete.** The reservation lives outside the
+  map, so `read`, `stats`, `exists` and `list` see nothing until the content has been collected,
+  and then the whole file. A failing source drops the reservation. If `write` or `mkdir` puts
+  something at the path in the meantime, that wins: nothing is stored and the call returns
+  `false`.
 - **`move` is copy then remove**, in memory, so it is cheap but not atomic against concurrent
   calls on the same instance.
 - Everything lives in the JavaScript heap; a large file costs its size in memory.

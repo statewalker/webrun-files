@@ -42,6 +42,21 @@ export class CompositeFilesApi implements FilesApi {
   private mounts: MountEntry[];
 
   /**
+   * Present only while EVERY backend — the root and each mount — has its own
+   * `createExclusive`, so feature detection on the composite tells the truth for
+   * any path. Mounting a backend without it removes the method; it is never
+   * defined and then refused for some paths.
+   *
+   * A call goes to the backend owning the path, so the exclusion reaches as far
+   * as that backend's does. A mount point, and a directory that exists only
+   * because a mount lies under it, count as existing.
+   */
+  declare createExclusive?: (
+    path: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  ) => Promise<boolean>;
+
+  /**
    * @param root Default backend used for any path that does not match a
    *   more specific mount. All paths are routed here unless `mount()`
    *   intercepts them.
@@ -52,6 +67,31 @@ export class CompositeFilesApi implements FilesApi {
    */
   constructor(root: FilesApi, rootPath?: string) {
     this.mounts = [{ prefix: "/", api: root, basePath: normalizePath(rootPath ?? "/") }];
+    this.updateCreateExclusive();
+  }
+
+  /** Defines or removes `createExclusive`, as the current mounts allow. */
+  private updateCreateExclusive(): void {
+    if (this.mounts.every((m) => typeof m.api.createExclusive === "function")) {
+      this.createExclusive = (path, content) => this.createExclusiveIn(path, content);
+    } else {
+      delete this.createExclusive;
+    }
+  }
+
+  private async createExclusiveIn(
+    path: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  ): Promise<boolean> {
+    const normalized = normalizePath(path);
+    if (this.mounts.some((m) => m.prefix !== "/" && isInsideOrSame(m.prefix, normalized))) {
+      return false;
+    }
+    const { api, resolvedPath } = this.resolve(normalized);
+    if (!api.createExclusive) {
+      throw new Error(`createExclusive is not supported by the backend for ${normalized}`);
+    }
+    return api.createExclusive(resolvedPath, content);
   }
 
   /**
@@ -78,6 +118,7 @@ export class CompositeFilesApi implements FilesApi {
     this.mounts.push({ prefix, api, basePath: normalizePath(fsPath ?? "/") });
     // Sort by prefix length descending so longest match comes first
     this.mounts.sort((a, b) => b.prefix.length - a.prefix.length);
+    this.updateCreateExclusive();
     return this;
   }
 
@@ -372,6 +413,10 @@ function translateAfter(
   // Every descendant of `from` lies between `from + "/"` and `from + "0"`.
   if (comparePaths(after, `${fromPrefix}/`) < 0) return undefined;
   return SKIP;
+}
+
+function isInsideOrSame(path: string, ancestor: string): boolean {
+  return path === ancestor || isStrictlyInside(path, ancestor);
 }
 
 function isStrictlyInside(path: string, ancestor: string): boolean {

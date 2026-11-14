@@ -348,5 +348,32 @@ for (const driver of DRIVERS) {
         expect(await files.exists("/c")).toBe(false);
       });
     });
+
+    describe("createExclusive", () => {
+      it("loses to a path created while its content streams, and leaves no content", async () => {
+        const { db, files } = await newFiles(small);
+        async function* source() {
+          yield* positionContent(200, [64]);
+          // The content is stored; now someone else takes the path.
+          await files.write("/x.lock", [enc.encode("theirs")]);
+        }
+        expect(await files.createExclusive("/x.lock", source())).toBe(false);
+        expect(dec.decode(await collectStream(files.read("/x.lock")))).toBe("theirs");
+        expect(await count(db, "fs_files")).toBe(1);
+        expect(await count(db, "fs_blocks")).toBe(1);
+      });
+
+      it("removes the pending content when the source fails", async () => {
+        const { db, files } = await newFiles(small);
+        async function* source() {
+          yield* positionContent(200, [64]);
+          throw new Error("source failed");
+        }
+        await expect(files.createExclusive("/x.lock", source())).rejects.toThrow("source failed");
+        expect(await count(db, "fs_files")).toBe(0);
+        expect(await count(db, "fs_blocks")).toBe(0);
+        expect(await files.exists("/x.lock")).toBe(false);
+      });
+    });
   });
 }

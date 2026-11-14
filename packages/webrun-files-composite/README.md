@@ -206,6 +206,32 @@ const draft = cow(templateFiles, new MemFilesApi());
 await draft.remove("/obsolete.md"); // recorded as /.wh.obsolete.md in the writable layer
 ```
 
+### Exclusive create through a composite
+
+```ts
+const fs = new CompositeFilesApi(nodeFiles).mount("/cache", memFiles);
+
+if (fs.createExclusive) {
+  await fs.createExclusive("/repo/.git/index.lock", [lockBytes]); // nodeFiles: O_EXCL
+  await fs.createExclusive("/cache/job.lock", [lockBytes]);       // memFiles: in-instance
+}
+
+fs.mount("/remote", httpFiles); // a backend without createExclusive...
+fs.createExclusive;             // ...removes it: undefined
+```
+
+`CompositeFilesApi` has `createExclusive` only while every backend, the root and each mount,
+has its own. A call goes to the backend that owns the path, so the exclusion reaches exactly as
+far as that backend's does. Defining the method and then refusing it for some paths would make
+feature detection lie, so a composite with one incapable mount has no method at all, and callers
+take their fallback. A mount point, and a directory that exists only because a mount lies under
+it, count as existing.
+
+`GuardedFilesApi` and `FilteredFilesApi` have the method when what they wrap has it: a guard
+checks it as a `write`, and a filter refuses a hidden path with `"Path is hidden"`, as for
+`write`. So `readOnly()` throws. `overlay` (read-only) and `cow` do not offer it: a create in
+the writable layer of `cow` could not also exclude what the base and the whiteouts say.
+
 ## Internals
 
 ### How the decorators stack
@@ -253,6 +279,7 @@ filter to that mount only).
 | ------------ | --------------------------------------------------- |
 | `read`       | `read`                                              |
 | `write`      | `write`                                             |
+| `createExclusive` | `write`                                        |
 | `mkdir`      | `mkdir`                                             |
 | `remove`     | `remove`                                            |
 | `list`       | `list` on the path AND on each directory entry      |
@@ -274,7 +301,7 @@ multiple operation lists.
 | `exists`            | `false`                  |
 | `remove`            | `false`                  |
 | `move` / `copy`     | `false` (no side effect) |
-| `write` / `mkdir`   | throws `"Path is hidden"` (silent drop would lose data) |
+| `write` / `mkdir` / `createExclusive` | throws `"Path is hidden"` (silent drop would lose data) |
 
 ### What it refuses, and what is not atomic
 
