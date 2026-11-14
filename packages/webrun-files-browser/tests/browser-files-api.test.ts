@@ -111,3 +111,30 @@ describe("BrowserFilesApi.write when the content fails part way", () => {
     expect(await api.exists("/new.txt")).toBe(false);
   });
 });
+
+describe("BrowserFilesApi.write when the commit fails", () => {
+  it("leaves no empty file behind when close() rejects", async () => {
+    const rootHandle = (await getOriginPrivateDirectory(driver)) as FileSystemDirectoryHandle;
+    const api = new BrowserFilesApi({ rootHandle });
+    const getFileHandle = rootHandle.getFileHandle.bind(rootHandle);
+    rootHandle.getFileHandle = (async (name: string, options?: FileSystemGetFileOptions) => {
+      const handle = await getFileHandle(name, options);
+      if (!options?.create) return handle;
+      const createWritable = handle.createWritable.bind(handle);
+      handle.createWritable = (async () => {
+        const writable = await createWritable();
+        writable.close = async () => {
+          await writable.abort();
+          throw new Error("quota exceeded");
+        };
+        return writable;
+      }) as typeof handle.createWritable;
+      return handle;
+    }) as typeof rootHandle.getFileHandle;
+    await expect(api.write("/q.txt", [new TextEncoder().encode("data")])).rejects.toThrow(
+      "quota exceeded",
+    );
+    rootHandle.getFileHandle = getFileHandle;
+    expect(await api.exists("/q.txt")).toBe(false);
+  });
+});

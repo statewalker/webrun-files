@@ -144,17 +144,28 @@ export class BrowserFilesApi implements FilesApi {
       .then(() => true)
       .catch(() => false);
     const fileHandle = await parent.getFileHandle(fileName, { create: true });
-    const writable = await fileHandle.createWritable();
+    let writable: FileSystemWritableFileStream | undefined;
+    let closing = false;
     try {
+      writable = await fileHandle.createWritable();
       for await (const chunk of content) {
         await writable.write(chunk as Uint8Array<ArrayBuffer>);
       }
+      closing = true;
+      await writable.close();
     } catch (error) {
-      await writable.abort().catch(() => {});
-      if (!existed) await parent.removeEntry(fileName).catch(() => {});
+      if (writable && !closing) await writable.abort().catch(() => {});
+      // Remove the empty file this write created, unless someone else has written it since
+      // (concurrent writers to one path are otherwise last-close-wins).
+      if (!existed) {
+        const size = await fileHandle
+          .getFile()
+          .then((f) => f.size)
+          .catch(() => -1);
+        if (size === 0) await parent.removeEntry(fileName).catch(() => {});
+      }
       throw error;
     }
-    await writable.close();
   }
 
   async mkdir(path: string): Promise<void> {
@@ -354,6 +365,7 @@ async function* fileChunks(file: File): AsyncGenerator<Uint8Array> {
       yield value;
     }
   } finally {
-    reader.releaseLock();
+    // stopped early or done: cancel, so the file's stream does not keep buffering
+    await reader.cancel().catch(() => {});
   }
 }
