@@ -143,9 +143,24 @@ This is how the package's own tests run.
   directory of that name with `getFileHandle` / `getDirectoryHandle` (no `create`) and, if there
   is none, creates the parents and writes the file as `write` does.
 - `remove` is `removeEntry(name, { recursive: true })` on the parent.
-- `move` uses the native `FileSystemHandle.move()` where it exists (Chromium 110+), which renames
-  in place without copying. Without it, or when it throws, `move` copies then removes, which is
-  not atomic.
+- `move` first checks an existing target as `rename(2)` would: a file replaces a file and a
+  directory an empty directory; a file onto a directory, a directory onto a file or a non-empty
+  directory, or a directory into its own subtree returns `false` and changes source and target
+  not at all (the target's parent directories, created first, may be left even then). It then uses
+  the native `FileSystemHandle.move()` where it exists (Chromium 110+), which renames in place
+  without copying and is atomic in OPFS; current Chromium replaces an existing file. The target
+  check and the native move are separate steps, so another writer can change the target in
+  between; the native move then decides on its own. Without native move, or when it reports the
+  move unsupported (`TypeError`, `NotSupportedError`) or refuses an existing target
+  (`InvalidModificationError` on older versions), `move` copies then removes, which
+  is not atomic: a file is copied through a writable stream, so the target's content is swapped
+  in one step on close; a directory is copied file by file. If the source cannot be removed after
+  the copy, the removal is retried once, then `move` throws a `MoveIncompleteError`
+  (`move /a -> /b: the target was replaced, but the source could not be removed`): the target
+  already holds the new content and the source still exists. It never returns `false` for a
+  half-done move. Any other native error (`NoModificationAllowedError` for a locked entry,
+  `NotAllowedError`, ...) is rethrown, except that a native move which throws after the source
+  has already moved (the source is gone, the target exists) counts as done and returns `true`.
 
 ### Why listings read every file
 

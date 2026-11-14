@@ -360,7 +360,8 @@ export class SqliteFilesApi implements FilesApi {
     if ((await this.stats(base))?.kind !== "directory") return;
 
     const range = descendants(base);
-    const prefixLength = base === "/" ? 1 : base.length + 1;
+    // SQLite's substr() counts characters (code points), not UTF-16 units.
+    const prefixLength = base === "/" ? 1 : [...base].length + 1;
     const directOnly = options.recursive ? "" : "AND instr(substr(p.path, ?), '/') = 0";
     // The unique index orders paths by UTF-8 bytes, which is `comparePaths` order,
     // so resuming after a path is the keyset cursor's starting point.
@@ -426,6 +427,12 @@ export class SqliteFilesApi implements FilesApi {
     return this.#transfer(source, target, "copy");
   }
 
+  /**
+   * One transaction (see the private `#transfer`): the target's subtree is removed, its
+   * contents collected when no other path shares them, and the source's path rows are
+   * renamed by prefix, keeping their content ids, so no content is copied. Atomic for
+   * readers on every connection; a failure leaves source and target unchanged.
+   */
   async move(source: string, target: string): Promise<boolean> {
     return this.#transfer(source, target, "move");
   }
@@ -450,6 +457,8 @@ export class SqliteFilesApi implements FilesApi {
       params: inS.params,
     };
     const now = Date.now();
+    // SQLite's substr() counts characters (code points), not UTF-16 units.
+    const rest = [...from].length + 1;
     const statements: SqlStatement[] = [
       ...this.#removeTree(to, guard),
       ...ancestorsAndSelf(parentOf(to)).map((dir) => ({
@@ -461,12 +470,12 @@ export class SqliteFilesApi implements FilesApi {
         ? {
             sql: `INSERT INTO ${this.#paths}(path, fid, mtime)
                   SELECT ? || substr(p.path, ?), p.fid, ? FROM ${this.#paths} p WHERE ${range.where}`,
-            params: [to, from.length + 1, now, ...range.params],
+            params: [to, rest, now, ...range.params],
           }
         : {
             sql: `UPDATE ${this.#paths} AS p SET path = ? || substr(p.path, ?), mtime = ?
                   WHERE ${range.where}`,
-            params: [to, from.length + 1, now, ...range.params],
+            params: [to, rest, now, ...range.params],
           },
     ];
     const counts = await this.#transaction(statements);

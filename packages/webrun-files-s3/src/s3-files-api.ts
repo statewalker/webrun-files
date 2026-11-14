@@ -24,7 +24,12 @@ import type {
   ListOptions,
   ReadOptions,
 } from "@statewalker/webrun-files";
-import { basename, comparePaths, normalizePath } from "@statewalker/webrun-files";
+import {
+  basename,
+  comparePaths,
+  normalizePath,
+  removeMovedSource,
+} from "@statewalker/webrun-files";
 
 /** Default part size for multipart uploads: 5MB (S3 minimum) */
 const DEFAULT_PART_SIZE = 5 * 1024 * 1024;
@@ -554,10 +559,19 @@ export class S3FilesApi implements FilesApi {
     return true;
   }
 
+  /**
+   * S3 has no rename, so a move is a copy, then a delete, and is NOT atomic: while it
+   * runs, the object exists under both keys, and a directory (a key prefix) moves object
+   * by object. A failed copy throws and keeps the source. If the copy succeeds but the
+   * source cannot be deleted, the delete is retried once, then a `MoveIncompleteError`
+   * is thrown: the target holds the new content and the source still exists. False is
+   * never returned for a half-done move.
+   */
   async move(source: string, target: string): Promise<boolean> {
     const copied = await this.copy(source, target);
     if (!copied) return false;
-    return this.remove(source);
+    await removeMovedSource(this, normalizePath(source), normalizePath(target));
+    return true;
   }
 
   async copy(source: string, target: string): Promise<boolean> {

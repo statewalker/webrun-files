@@ -18,6 +18,7 @@ import {
   joinPath,
   listInPathOrder,
   normalizePath,
+  removeMovedSource,
 } from "@statewalker/webrun-files";
 
 /** Chrome 110+ exposes move() on FileSystemHandle; not yet in TS DOM types. */
@@ -342,36 +343,74 @@ export class BrowserFilesApi implements FilesApi {
     }
   }
 
+  /**
+   * Uses the native `FileSystemHandle.move()` where it exists (Chromium; atomic in the
+   * Origin Private File System), else copies, then deletes the source.
+   *
+   * - Native move over an existing file: current Chromium replaces the file; versions
+   *   that throw `InvalidModificationError` instead (the target exists) fall back to the
+   *   copy below, which still replaces the target atomically.
+   * - Other native errors: only an unsupported move (`TypeError`, `NotSupportedError`)
+   *   falls back; anything else (a locked entry, no permission, ...) is rethrown. If the
+   *   native move threw after the source had already moved (the source is gone and the
+   *   target exists), the move counts as done and returns true.
+   * - Time of check: the target is checked (below) before the native move runs, with
+   *   `await`s between them, so another writer can create or change the target in that
+   *   gap; the native move then decides on its own (replacing a file, or throwing).
+   * - Fallback, NOT atomic as a whole: a file is copied through a writable stream,
+   *   whose swap file replaces the target's content in one step on close; a directory
+   *   is copied file by file. If the copy fails, the error is thrown and the source
+   *   kept. If the copy succeeds but the source cannot be deleted, the delete is retried
+   *   once, then a `MoveIncompleteError` is thrown: the target already holds the new
+   *   content and the source still exists. False is never returned for a half-done move.
+   *
+   * An existing target is checked first, as POSIX `rename(2)` treats it: a file
+   * replaces a file and a directory an empty directory; anything else (a file onto a
+   * directory, a directory onto a file or a non-empty directory, a directory into its
+   * own subtree) returns false and changes nothing. A move onto itself is a no-op.
+   * The target's parent directories are created before the native move or the copy,
+   * so they may be left behind even when `move` returns false.
+   */
   async move(source: string, target: string): Promise<boolean> {
     const sourcePath = normalizePath(source);
     const targetPath = normalizePath(target);
-    const targetParentPath = dirname(targetPath);
-    const targetName = basename(targetPath);
 
-    // Try native move() (available in Chrome 110+, Edge 110+)
     const sourceStats = await this.stats(sourcePath);
     if (!sourceStats) return false;
+    if (sourcePath === targetPath) return true;
+    if (sourcePath === "/" || targetPath.startsWith(`${sourcePath}/`)) return false;
+    const targetStats = await this.stats(targetPath);
+    if (targetStats) {
+      if (targetStats.kind !== sourceStats.kind) return false;
+      if (targetStats.kind === "directory" && !(await isEmpty(this.list(targetPath)))) {
+        return false;
+      }
+    }
 
     const sourceHandle: FileSystemHandle | null =
       sourceStats.kind === "file"
         ? await this.getFileHandle(sourcePath)
         : await this.getDirectoryHandle(sourcePath);
     if (!sourceHandle) return false;
+    // Fails, creating nothing, when a file stands where a parent directory should be.
+    const targetParent = await this.getDirectoryHandle(dirname(targetPath), { create: true });
+    if (!targetParent) return false;
 
+    // Native move() (Chrome 110+, Edge 110+): one atomic step in OPFS.
     if (typeof (sourceHandle as MovableHandle).move === "function") {
       try {
-        const targetParent = await this.getDirectoryHandle(targetParentPath, { create: true });
-        if (!targetParent) return false;
-        await (sourceHandle as MovableHandle).move(targetParent, targetName);
+        await (sourceHandle as MovableHandle).move(targetParent, basename(targetPath));
         return true;
-      } catch {
-        // Fall through to copy-then-delete
+      } catch (error) {
+        // The move may have happened before the error was raised.
+        if (!(await this.exists(sourcePath)) && (await this.exists(targetPath))) return true;
+        if (!canFallBack(error, targetStats !== undefined)) throw error;
       }
     }
 
-    const copied = await this.copy(source, target);
-    if (!copied) return false;
-    return this.remove(source);
+    if (!(await this.copy(sourcePath, targetPath))) return false;
+    await removeMovedSource(this, sourcePath, targetPath);
+    return true;
   }
 
   async copy(source: string, target: string): Promise<boolean> {
@@ -446,6 +485,28 @@ async function* fileChunks(file: File): AsyncGenerator<Uint8Array> {
     // stopped early or done: cancel, so the file's stream does not keep buffering
     await reader.cancel().catch(() => {});
   }
+}
+
+/**
+ * Whether a native `move()` error means "not done this way", so copy-then-delete may
+ * try instead: the move is unsupported for this handle (`TypeError`, as for a handle
+ * whose `move` is not callable, or `NotSupportedError`), or the target exists and this
+ * Chromium refuses to overwrite it (`InvalidModificationError`; versions before the
+ * overwrite change raise it for an existing file). Everything else, such as
+ * `NoModificationAllowedError` (a locked entry), `NotAllowedError` (no permission) or
+ * `NotFoundError`, is a real failure and is rethrown.
+ */
+function canFallBack(error: unknown, targetExisted: boolean): boolean {
+  if (error instanceof TypeError) return true;
+  const name = (error as { name?: unknown } | null)?.name;
+  if (name === "NotSupportedError") return true;
+  return name === "InvalidModificationError" && targetExisted;
+}
+
+/** Whether a listing yields nothing. */
+async function isEmpty(entries: AsyncIterable<FileInfo>): Promise<boolean> {
+  for await (const _ of entries) return false;
+  return true;
 }
 
 /** Whether `parent` holds a file or a directory called `name`. */

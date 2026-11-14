@@ -119,8 +119,13 @@ directory. `write` collects all chunks and stores one `Uint8Array`; `read` yield
 - **A reservation outlives its parent.** It is only a name, not an entry: `remove` or `move` of a
   parent directory while the content is collected does not cancel it, and once the content is
   complete the file reappears at its path, with its parent directories created again.
-- **`move` is copy then remove**, in memory, so it is cheap but not atomic against concurrent
-  calls on the same instance.
+- **`move` is one synchronous re-keying.** The file, or every entry under a directory, changes
+  its key in one step with no `await` in between, so no reader or other call ever sees the
+  source and the target both present, or the target missing. Entries keep their content and
+  times. An existing target is treated as `rename(2)` treats it (and so `NodeFilesApi`): a file
+  replaces a file and a directory replaces an empty directory; a file onto a directory, a
+  directory onto a file or a non-empty directory, a directory into its own subtree and a target
+  below a file return `false` and change nothing.
 - Everything lives in the JavaScript heap; a large file costs its size in memory.
 
 ### Dependencies

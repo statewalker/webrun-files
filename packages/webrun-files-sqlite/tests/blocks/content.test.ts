@@ -287,3 +287,26 @@ describe("names", () => {
     expect((await collectGenerator(files.list("/many", { recursive: true }))).length).toBe(601);
   });
 });
+
+describe("copy and move with names outside the Basic Multilingual Plane", () => {
+  it("rewrites the prefix by characters, as SQLite's substr() counts them", async () => {
+    const { files } = await newFiles(small);
+    await files.write("/\u{1F4C1}/\u{1F600}.txt", [enc.encode("smile")]);
+    await files.copy("/\u{1F4C1}", "/c");
+    await files.move("/\u{1F4C1}", "/m");
+    for (const dir of ["/c", "/m"]) {
+      const names = (await collectGenerator(files.list(dir))).map((e) => e.path);
+      expect(names).toEqual([`${dir}/\u{1F600}.txt`]);
+    }
+  });
+});
+
+describe("non-recursive list with names outside the Basic Multilingual Plane", () => {
+  it("counts the base by characters, as SQLite's substr() does", async () => {
+    const { files } = await newFiles(small);
+    await files.write("/\u{1F600}\u{1F600}/a/b", [enc.encode("b")]);
+    await files.write("/\u{1F600}\u{1F600}/cc", [enc.encode("c")]);
+    const names = (await collectGenerator(files.list("/\u{1F600}\u{1F600}"))).map((e) => e.path);
+    expect(names).toEqual(["/\u{1F600}\u{1F600}/a", "/\u{1F600}\u{1F600}/cc"]);
+  });
+});

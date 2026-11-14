@@ -139,8 +139,11 @@ under `a/` both exist, `/a` is listed once, as the file, the same answer `stats(
 
 ### What breaks, and how it looks
 
-- **`move` and directory `copy` are not atomic.** They are many `CopyObject` and `DeleteObject`
-  calls; a failure midway leaves some objects copied and the source partly removed.
+- **`move` and directory `copy` are not atomic.** S3 has no rename: they are many `CopyObject`
+  and `DeleteObject` calls; a failure midway leaves some objects copied and the source partly
+  removed. When the copy succeeded but the source cannot be deleted, `move` retries the delete
+  once, then throws a `MoveIncompleteError` (`move /a -> /b: the target was replaced, but the
+  source could not be removed`) instead of returning `false`.
 - **Writing zero chunks creates nothing.** `write(path, [])` sends no request, so the path does not
   exist afterwards. Pass `[new Uint8Array(0)]` to create an empty file.
 - **Only the key is exclusive.** A directory is a key prefix, so an existing one makes

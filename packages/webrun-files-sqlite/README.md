@@ -205,6 +205,8 @@ page starts.
 Streaming happens outside transactions. Every step that changes what a path shows is one
 transaction: storing each block, finishing a write, `remove`, `copy` and `move`. A failure inside
 any of them leaves the database as it was; `move` onto an existing target never loses the target.
+`move` renames the path rows by prefix and keeps their content ids, so no content is copied, and
+the content of a replaced target is collected in the same transaction when no other path shares it.
 A write stays invisible until it finishes: if it fails, the path keeps its previous content and the
 partial content is deleted.
 
@@ -257,9 +259,18 @@ does. A dangling link, or a chain longer than 8, behaves as a missing path. `rem
   SQLAR keeps each file in one row. A larger file fails the `write` with `string or blob too big`
   — a value limit, not corruption. Store big files with `SqliteFilesApi`, whose blocks stay under
   the limit.
-- Multi-row mutations (`copy`, `move`, `remove` of a tree) are not wrapped in a transaction: a
-  failure part-way leaves the rows already changed in place, and a `move` can leave the entry under
-  both paths.
+- `move` is one transaction through `inTransaction` (so the `Db` must carry db-sqlite's hook, as
+  for `SqliteFilesApi`): it deletes the target's subtree, creates the target's parents and renames
+  the source row and every row under it by rewriting the name prefix. The stored data is never
+  copied; mode, mtime and data stay as they were. Readers see the old state or the new one, and a
+  failure leaves source and target unchanged. Like `SqliteFilesApi`, it replaces the target's
+  subtree rather than merging into it, and throws
+  `sqlar: cannot move /a to /a/b: one contains the other` when one path contains the other. A
+  target below a file or a symlink returns `false` and changes nothing. A `Db` without the hook
+  (a wrapper that does not forward it) makes `move` reject with `inTransaction`'s
+  `this Db has no SQLite transaction hook` error.
+- The other multi-row mutations (`copy`, `remove` of a tree) are not wrapped in a transaction: a
+  failure part-way leaves the rows already changed in place.
 - `list` loads every row under the directory, then sorts the entries into path order before
   applying `after`.
 

@@ -314,7 +314,17 @@ multiple operation lists.
 
 - The root mount (`/`) is fixed at construction; you cannot remount it.
 - Mount points are immutable — `remove()` on a mount point throws.
-- Cross-mount `move` is copy + delete; not atomic.
+- Cross-mount `move` is copy + delete; not atomic: while it runs the content exists in both
+  places. If the copy succeeds but the source cannot be removed, the removal is retried once,
+  then `move` throws a `MoveIncompleteError` (the target holds the new content, the source still
+  exists) instead of returning `false`. A move within one mount is delegated, and is as atomic
+  as that backend's.
+- `cow` `move` is copy + delete too, and not atomic: the composite view of the source is copied
+  into the writable layer, then the source is removed (or hidden behind a whiteout). A source
+  that cannot be removed is retried once, then throws `MoveIncompleteError`. An existing target
+  is treated as `rename(2)` treats it, like `MemFilesApi`: a file replaces a file and a directory
+  an empty directory; a file onto a directory, a directory onto a file or a non-empty directory,
+  a directory into its own subtree, or a target below a file returns `false` and changes nothing.
 - `newPathFilter()` (no args) hides nothing; entries that normalize to
   `"/"` (empty string, `"/"`) are dropped because they would otherwise hide
   the whole tree.

@@ -287,6 +287,16 @@ export class NodeFilesApi implements FilesApi {
     }
   }
 
+  /**
+   * `fs.rename` (POSIX `rename(2)`), after creating the target's parent directories:
+   * atomic within one filesystem, so a reader sees the old target or the new one, never
+   * a missing or partial file, and a failed rename changes nothing. An existing file is
+   * replaced, and so is an empty directory when the source is a directory. A file onto
+   * a directory (EISDIR), a directory onto a file (ENOTDIR) or a non-empty directory
+   * (ENOTEMPTY), a directory into its own subtree (EINVAL), and any other failed rename
+   * return false, the target untouched. The target's parent directories are created
+   * before the rename, so they may be left behind even when `move` returns false.
+   */
   async move(source: string, target: string): Promise<boolean> {
     const sourcePath = this.resolvePath(source);
     const targetPath = this.resolvePath(target);

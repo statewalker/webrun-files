@@ -119,6 +119,12 @@ Every argument and result is a plain value: strings, numbers, booleans, plain ob
 | `stats`, `exists` | as the `FilesApi` |
 | `mkdir(path, {requestId?})`, `remove(path, {requestId?})`, `move(source, target, {requestId?})`, `copy(source, target, {requestId?})` | as the `FilesApi`; with a `requestId`, once (a call delivered again gets the first answer) |
 
+`move` is as atomic as the served backend's `move` (node, mem, sqlite: atomic; s3 or a cross-mount
+composite: copy then delete); the protocol adds no guarantee of its own. A `MoveIncompleteError`
+thrown by the served backend is rebuilt by the client as a `MoveIncompleteError` with the client's
+paths. It is recognised by its message (`move /a -> /b: the target was replaced, but the source
+could not be removed`), since a structured clone keeps an error's message but only standard names.
+
 - **Stream ids:** `streamId` may be chosen by the caller: 16 to 128 characters of `[A-Za-z0-9_-]`,
   random, such as `crypto.randomUUID()` without dashes. Then an open delivered twice opens one
   stream; the client always does this.

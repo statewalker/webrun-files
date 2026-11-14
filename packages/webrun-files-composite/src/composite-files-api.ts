@@ -5,7 +5,13 @@ import type {
   ListOptions,
   ReadOptions,
 } from "@statewalker/webrun-files";
-import { comparePaths, joinPath, mergeInPathOrder, normalizePath } from "@statewalker/webrun-files";
+import {
+  comparePaths,
+  joinPath,
+  mergeInPathOrder,
+  normalizePath,
+  removeMovedSource,
+} from "@statewalker/webrun-files";
 import { followCreateExclusive } from "./follow-create-exclusive.js";
 
 interface MountEntry {
@@ -24,7 +30,7 @@ interface MountEntry {
  * Each backend can use a sub-directory of its own filesystem as the mount
  * root via `fsPath` (constructor `rootPath` for the implicit root mount,
  * `fsPath` argument for additional mounts). Cross-mount `move` is
- * implemented as copy-then-delete; there is no atomicity guarantee.
+ * implemented as copy-then-delete; there is no atomicity guarantee (see `move`).
  *
  * Access control and visibility filtering are intentionally **not** part of
  * this class — wrap with {@link GuardedFilesApi} or {@link FilteredFilesApi}
@@ -299,6 +305,17 @@ export class CompositeFilesApi implements FilesApi {
     return api.remove(resolvedPath);
   }
 
+  /**
+   * Within one mount the move is delegated, so it is exactly as atomic as that
+   * backend's `move` (and treats an existing target as that backend does).
+   *
+   * Across mounts it can only be a copy, then a delete, and is NOT atomic: while it
+   * runs, the content exists in both places, and a directory appears in the target
+   * file by file. A failed copy throws and keeps the source. If the copy succeeds but
+   * the source cannot be removed, the removal is retried once, then a
+   * `MoveIncompleteError` is thrown: the target holds the new content and the source
+   * still exists. False is never returned for a half-done move.
+   */
   async move(source: string, target: string): Promise<boolean> {
     const src = this.resolve(source);
     const tgt = this.resolve(target);
@@ -310,10 +327,14 @@ export class CompositeFilesApi implements FilesApi {
 
     // Cross-mount: copy then remove
     const copied = await this.crossCopy(src.api, src.resolvedPath, tgt.api, tgt.resolvedPath);
-    if (copied) {
-      await src.api.remove(src.resolvedPath);
-    }
-    return copied;
+    if (!copied) return false;
+    // Reported with the composite's paths, not the backend's.
+    const backend = {
+      remove: () => src.api.remove(src.resolvedPath),
+      exists: () => src.api.exists(src.resolvedPath),
+    };
+    await removeMovedSource(backend, normalizePath(source), normalizePath(target));
+    return true;
   }
 
   async copy(source: string, target: string): Promise<boolean> {

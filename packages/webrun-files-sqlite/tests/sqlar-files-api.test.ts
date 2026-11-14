@@ -2,9 +2,13 @@
  * FilesApi behaviour that the shared suite cannot know about: what follows
  * from SQLAR being a flat, case-sensitive keyspace with seconds for mtime.
  */
+import type { Db } from "@statewalker/db-api";
 import { collectGenerator, collectStream } from "@statewalker/webrun-files-tests";
 import { describe, expect, it } from "vitest";
-import { newArchive, rawRow } from "./helpers.js";
+import { SqlarFilesApi } from "../src/index.js";
+import { type Spy, spyDb } from "./blocks/helpers.js";
+import { newArchive, rawNames, rawRow } from "./helpers.js";
+import { DRIVERS } from "./open-db.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -176,5 +180,184 @@ describe("createExclusive", () => {
     expect(row?.mode).toBe(0o100644);
     expect(row?.len).toBeLessThan(3000);
     expect(dec.decode(await collectStream(files.read("/big.lock")))).toBe(text);
+  });
+});
+
+describe("move is one transaction", () => {
+  /** Every row but mtime: what a reader can see. */
+  async function contents(db: Db) {
+    return db.query(
+      "SELECT name, mode, sz, typeof(data) AS dtype, hex(data) AS data FROM sqlar ORDER BY name",
+    );
+  }
+
+  /** An archive whose Db fails as `fail` says; `healthy` shares the Db and never fails. */
+  async function failing(fail: Spy) {
+    const { db, files: healthy } = await newArchive();
+    const files = new SqlarFilesApi(spyDb(db, fail));
+    return { db, files, healthy };
+  }
+
+  async function populate(files: SqlarFilesApi) {
+    await files.write("/repo/index.lock", [enc.encode("new index ".repeat(50))]);
+    await files.write("/repo/index", [enc.encode("old index")]);
+    await files.write("/tree/a.txt", [enc.encode("a")]);
+    await files.write("/tree/sub/b.txt", [enc.encode("b")]);
+  }
+
+  for (const driver of DRIVERS) {
+    describe(`[${driver}]`, () => {
+      it("a failure after its last statement leaves source and target unchanged", async () => {
+        const { db, files: healthy } = await newArchive({ driver });
+        let failures = 0;
+        const files = new SqlarFilesApi(
+          spyDb(db, {
+            after: async (tx) => {
+              failures++;
+              await tx.query("SELECT * FROM no_such_table");
+            },
+          }),
+        );
+        await populate(healthy);
+        const before = await contents(db);
+        await expect(files.move("/repo/index.lock", "/repo/index")).rejects.toThrow(
+          /no_such_table/,
+        );
+        await expect(files.move("/tree", "/new/place")).rejects.toThrow(/no_such_table/);
+        expect(failures).toBe(2);
+        expect(await contents(db)).toEqual(before);
+        expect(dec.decode(await collectStream(healthy.read("/repo/index")))).toBe("old index");
+      });
+    });
+  }
+
+  it("a driver error on one of its statements leaves source and target unchanged", async () => {
+    const { db, files, healthy } = await failing({
+      query: async (sql, _params, next) => {
+        if (/^\s*DELETE FROM sqlar/.test(sql)) throw new Error("disk I/O error");
+        return next();
+      },
+    });
+    await populate(healthy);
+    const before = await contents(db);
+    await expect(files.move("/repo/index.lock", "/repo/index")).rejects.toThrow("disk I/O error");
+    expect(await contents(db)).toEqual(before);
+  });
+
+  it("renames rows instead of copying their content", async () => {
+    const written: unknown[] = [];
+    const { db, files, healthy } = await failing({
+      query: async (sql, params, next) => {
+        if (params.some((p) => p instanceof Uint8Array)) written.push(sql);
+        return next();
+      },
+    });
+    await populate(healthy);
+    const stored = (await rawRow(db, "repo/index.lock"))?.data;
+    expect(await files.move("/repo/index.lock", "/repo/index")).toBe(true);
+    expect(await files.move("/tree", "/moved/tree")).toBe(true);
+    expect(written).toEqual([]);
+    expect((await rawRow(db, "repo/index"))?.data).toEqual(stored);
+    expect(await rawRow(db, "repo/index.lock")).toBeUndefined();
+    expect(await rawNames(db)).toEqual([
+      "moved",
+      "moved/tree",
+      "moved/tree/a.txt",
+      "moved/tree/sub",
+      "moved/tree/sub/b.txt",
+      "repo",
+      "repo/index",
+    ]);
+  });
+
+  it("replaces the target's subtree, as SqliteFilesApi does", async () => {
+    const { db, files } = await newArchive();
+    await files.write("/src/new.txt", [enc.encode("new")]);
+    await files.write("/dst/old.txt", [enc.encode("old")]);
+    await files.write("/f.txt", [enc.encode("file")]);
+    expect(await files.move("/src", "/dst")).toBe(true);
+    expect(await rawNames(db)).toEqual(["dst", "dst/new.txt", "f.txt"]);
+    expect(await files.move("/f.txt", "/dst")).toBe(true);
+    expect(await rawNames(db)).toEqual(["dst"]);
+    expect(dec.decode(await collectStream(files.read("/dst")))).toBe("file");
+  });
+
+  it("refuses to move into the source's own subtree, or onto an ancestor", async () => {
+    const { db, files } = await newArchive();
+    await files.write("/a/b/c.txt", [enc.encode("c")]);
+    const before = await rawNames(db);
+    await expect(files.move("/a", "/a/b/inner")).rejects.toThrow(/contains/);
+    await expect(files.move("/a/b", "/a")).rejects.toThrow(/contains/);
+    expect(await rawNames(db)).toEqual(before);
+    expect(dec.decode(await collectStream(files.read("/a/b/c.txt")))).toBe("c");
+  });
+
+  it("moves names outside the Basic Multilingual Plane", async () => {
+    const { db, files } = await newArchive();
+    await files.write("/\u{1F4C1}/\u{1F600}.txt", [enc.encode("smile")]);
+    expect(await files.move("/\u{1F4C1}", "/d")).toBe(true);
+    expect(await rawNames(db)).toEqual(["d", "d/\u{1F600}.txt"]);
+  });
+});
+
+describe("move targets", () => {
+  it("returns false, changing nothing, when an ancestor of the target is a file", async () => {
+    const { db, files } = await newArchive();
+    await files.write("/a/x.txt", [enc.encode("x")]);
+    await files.write("/f", [enc.encode("file")]);
+    const before = await rawNames(db);
+    expect(await files.move("/a", "/f/x")).toBe(false);
+    expect(await files.move("/a", "/f/deeper/x")).toBe(false);
+    expect(await rawNames(db)).toEqual(before);
+  });
+
+  it("returns false, changing nothing, when an ancestor of the target is a symlink", async () => {
+    const { db, files } = await newArchive();
+    await files.write("/a/x.txt", [enc.encode("x")]);
+    await files.mkdir("/d");
+    await files.symlink("/link", "d");
+    const before = await rawNames(db);
+    expect(await files.move("/a", "/link/x")).toBe(false);
+    expect(await rawNames(db)).toEqual(before);
+  });
+
+  it("does not touch a sibling that shares the target's prefix", async () => {
+    const { db, files } = await newArchive();
+    await files.write("/a", [enc.encode("a")]);
+    await files.write("/ab", [enc.encode("old ab")]);
+    await files.write("/abc/x", [enc.encode("abc")]);
+    expect(await files.move("/a", "/ab")).toBe(true);
+    expect(await rawNames(db)).toEqual(["ab", "abc", "abc/x"]);
+    expect(dec.decode(await collectStream(files.read("/ab")))).toBe("a");
+    expect(dec.decode(await collectStream(files.read("/abc/x")))).toBe("abc");
+  });
+
+  it("moves names containing %, _ and \\ without matching other names", async () => {
+    const { db, files } = await newArchive();
+    await files.write("/p%_\\q/f.txt", [enc.encode("special")]);
+    await files.write("/pXYZq/f.txt", [enc.encode("plain")]);
+    await files.write("/t%_\\/old.txt", [enc.encode("old")]);
+    await files.write("/tAB/keep.txt", [enc.encode("keep")]);
+    expect(await files.move("/p%_\\q", "/t%_\\")).toBe(true);
+    expect(await rawNames(db)).toEqual([
+      "pXYZq",
+      "pXYZq/f.txt",
+      "t%_\\",
+      "t%_\\/f.txt",
+      "tAB",
+      "tAB/keep.txt",
+    ]);
+    expect(dec.decode(await collectStream(files.read("/t%_\\/f.txt")))).toBe("special");
+  });
+});
+
+describe("move needs db-sqlite's transaction hook", () => {
+  it("rejects with inTransaction's error on a wrapper Db that does not forward it", async () => {
+    const { db, files: healthy } = await newArchive();
+    await healthy.write("/a.txt", [enc.encode("a")]);
+    const wrapper: Db = { query: (sql, params) => db.query(sql, params) } as Db;
+    const files = new SqlarFilesApi(wrapper);
+    await expect(files.move("/a.txt", "/b.txt")).rejects.toThrow(/no SQLite transaction hook/);
+    expect(await rawNames(db)).toEqual(["a.txt"]);
   });
 });

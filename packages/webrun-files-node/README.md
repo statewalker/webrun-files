@@ -106,7 +106,7 @@ try {
 | `write` | `fs.mkdir(parent, { recursive: true })`, then streams the chunks (batched to 64 KiB) into a temporary `.webrun-tmp-<random>` beside the file and renames it over the file |
 | `createExclusive` | `fs.mkdir(parent, { recursive: true })`, then `fs.open(path, "wx")`; `EEXIST` returns `false`, otherwise the chunks are streamed (batched to 64 KiB) straight into the new file, which is unlinked again if the source fails |
 | `list` | `fs.readdir` + `fs.stat` per entry, walked through `listInPathOrder` |
-| `move` | `fs.rename` after creating the target's parent |
+| `move` | `fs.rename` after creating the target's parent: atomic, replaces an existing file or (for a directory) an empty directory |
 | `copy` | `fs.cp(..., { recursive: true })` |
 | `remove` | `fs.rm(..., { recursive: true, force: true })` for a directory, `fs.unlink` for a file |
 
@@ -150,8 +150,12 @@ directory whose whole subtree sorts at or before `after`.
 - **Cleanup unlinks by path.** When the source fails, the file is unlinked by its path. If
   another process meanwhile removed it as a stale lock and created its own, that file is the one
   removed. Git's lock files behave the same.
-- **`move` across devices returns `false`.** It is a single `fs.rename`; when that fails (`EXDEV`,
-  permissions) the method returns `false` instead of falling back to copy and delete.
+- **`move` is atomic, and returns `false` when the rename fails.** It is a single `fs.rename`, so
+  a reader sees the old target or the new one, never a missing or partial file, and a failed
+  rename changes nothing. When it fails (a file onto a directory, a directory onto a file or a
+  non-empty directory, a directory into itself, `EXDEV` across devices, permissions) the method
+  returns `false` instead of falling back to copy and delete; the target's parent directories may
+  stay created.
 - **Unreadable reads look like missing files.** `read` swallows every error (missing file,
   permission denied, a directory) and yields nothing; `copy` and `move` return `false`.
 

@@ -484,6 +484,77 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
         const result = await ctx.api.move("/nonexistent.txt", "/dest.txt");
         expect(result).toBe(false);
       });
+
+      it("should replace an existing file at the target and remove the source", async () => {
+        await ctx.api.write("/move-over/new.lock", [toBytes("new content")]);
+        await ctx.api.write("/move-over/index", [toBytes("old content, longer than the new")]);
+
+        expect(await ctx.api.move("/move-over/new.lock", "/move-over/index")).toBe(true);
+
+        expect(await ctx.api.exists("/move-over/new.lock")).toBe(false);
+        expect(fromBytes(await collectStream(ctx.api.read("/move-over/index")))).toBe(
+          "new content",
+        );
+        const stats = await ctx.api.stats("/move-over/index");
+        expect(stats?.kind).toBe("file");
+        expect(stats?.kind === "file" && stats.size).toBe(11);
+      });
+
+      it("should move a directory with nested files, keeping every file", async () => {
+        const files: Record<string, string> = {
+          "a.txt": "a",
+          "sub/b.txt": "bb",
+          "sub/deep/c.txt": "ccc",
+          "other/d.txt": "dddd",
+        };
+        for (const [name, text] of Object.entries(files)) {
+          await ctx.api.write(`/move-tree/${name}`, [toBytes(text)]);
+        }
+
+        expect(await ctx.api.move("/move-tree", "/moved-tree")).toBe(true);
+
+        expect(await ctx.api.exists("/move-tree")).toBe(false);
+        for (const [name, text] of Object.entries(files)) {
+          expect(await ctx.api.exists(`/move-tree/${name}`)).toBe(false);
+          expect(fromBytes(await collectStream(ctx.api.read(`/moved-tree/${name}`)))).toBe(text);
+        }
+        const listed = await collectGenerator(ctx.api.list("/moved-tree", { recursive: true }));
+        expect(listed.filter((e) => e.kind === "file").map((e) => e.path)).toEqual([
+          "/moved-tree/a.txt",
+          "/moved-tree/other/d.txt",
+          "/moved-tree/sub/b.txt",
+          "/moved-tree/sub/deep/c.txt",
+        ]);
+      });
+
+      it("should create missing parent directories of the target", async () => {
+        await ctx.api.write("/move-me.txt", [toBytes("payload")]);
+
+        expect(await ctx.api.move("/move-me.txt", "/no/such/parent/moved.txt")).toBe(true);
+
+        expect(await ctx.api.exists("/move-me.txt")).toBe(false);
+        expect((await ctx.api.stats("/no/such/parent"))?.kind).toBe("directory");
+        expect(fromBytes(await collectStream(ctx.api.read("/no/such/parent/moved.txt")))).toBe(
+          "payload",
+        );
+      });
+
+      it("should return false and change nothing for a missing source", async () => {
+        await ctx.api.write("/move-keep/target.txt", [toBytes("keep me")]);
+
+        expect(await ctx.api.move("/move-keep/missing.txt", "/move-keep/target.txt")).toBe(false);
+        expect(await ctx.api.move("/move-keep/missing.txt", "/move-keep/new/target.txt")).toBe(
+          false,
+        );
+
+        expect(fromBytes(await collectStream(ctx.api.read("/move-keep/target.txt")))).toBe(
+          "keep me",
+        );
+        expect(await ctx.api.exists("/move-keep/missing.txt")).toBe(false);
+        expect(await ctx.api.exists("/move-keep/new/target.txt")).toBe(false);
+        const listed = await collectGenerator(ctx.api.list("/move-keep", { recursive: true }));
+        expect(listed.map((e) => e.path)).toEqual(["/move-keep/target.txt"]);
+      });
     });
 
     // ========================================
