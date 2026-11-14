@@ -6,6 +6,7 @@ import type {
   ReadOptions,
 } from "@statewalker/webrun-files";
 import { normalizePath } from "@statewalker/webrun-files";
+import { followCreateExclusive } from "./follow-create-exclusive.js";
 import type { FileGuard, FileOperation } from "./types.js";
 
 /**
@@ -59,25 +60,28 @@ export class GuardedFilesApi implements FilesApi {
    *   defensive copy, so mutating the array afterwards has no effect.
    *   An empty list disables every check (the wrapper becomes a passthrough).
    */
-  /**
-   * Present only when the source has it: a `write`-guarded pass-through, so the
-   * exclusion is the source's own.
-   */
-  declare createExclusive?: (
-    path: string,
-    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
-  ) => Promise<boolean>;
-
   constructor(source: FilesApi, guards: FileGuard[]) {
     this.source = source;
     this.guards = [...guards];
-    const createExclusive = source.createExclusive?.bind(source);
-    if (createExclusive) {
-      this.createExclusive = async (path, content) => {
-        this.checkGuard(path, "write");
-        return createExclusive(path, content);
-      };
+    // biome-ignore lint/correctness/noConstructorReturn: the proxy shows `createExclusive` only while the source has it
+    return followCreateExclusive(this, () => typeof source.createExclusive === "function");
+  }
+
+  /**
+   * Present only while the source has it, checked at each access (`in` and `typeof`
+   * included), so it follows a source whose methods change, such as a
+   * `CompositeFilesApi` after `mount()`. A `write`-guarded pass-through, so the
+   * exclusion is the source's own.
+   */
+  async createExclusive?(
+    path: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  ): Promise<boolean> {
+    this.checkGuard(path, "write");
+    if (!this.source.createExclusive) {
+      throw new Error(`createExclusive is not supported by the source for ${path}`);
     }
+    return this.source.createExclusive(path, content);
   }
 
   private checkGuard(path: string, ...operations: FileOperation[]): void {

@@ -125,10 +125,15 @@ try {
 ```
 
 `createExclusive(path, content)` creates the file and returns `true` only if nothing exists at
-the path; of several concurrent calls for one path exactly one wins. It returns `false`, writing
-nothing, for an existing file, directory or link. Parent directories are created, and a source
-that fails part way leaves no file and rethrows. Checking `exists()` and then calling `write()`
-cannot do this: another process, tab or connection can create the file between the two calls.
+the path; of several concurrent calls for one path at most one wins (none, if the winner's source
+fails). It returns `false`, writing no file, for an existing file, directory or link. Parent
+directories are created, and may stay created even when the call returns `false`; a source that
+fails part way leaves no file and rethrows. Checking `exists()` and then calling `write()` cannot
+do this: another process, tab or connection can create the file between the two calls.
+
+Only the creation is atomic, not the content. On some backends (node) the file is visible while
+its content is written, so a reader can see it empty or partial until the call completes. When
+readers must see the whole content at once, create a temporary file and `move` it into place.
 
 The method is optional, because not every storage can create atomically. Feature-detect it as
 above and decide what to do without it: refuse, or fall back to check-then-write where a single

@@ -188,6 +188,9 @@ export class NodeFilesApi implements FilesApi {
     } finally {
       if (!done) {
         await handle.close().catch(() => {});
+        // Unlinks by path, not by handle: if another process removed our file meanwhile
+        // (taking it for a stale lock) and created its own, this removes theirs. Git's
+        // lock files behave the same.
         await fs.unlink(resolved).catch(() => {});
       }
     }

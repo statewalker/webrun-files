@@ -102,7 +102,13 @@ export class MemFilesApi implements FilesApi {
    *
    * The file stays invisible to every other method until its content is complete, then
    * appears whole. Should `write` or `mkdir` put something at the path meanwhile, that
-   * stays, nothing is written and the call returns false.
+   * stays, nothing is written and the call returns false. A file at an ancestor of the
+   * path, before the call or by the time the content is complete, also makes it return
+   * false: a file cannot hold another.
+   *
+   * The reservation is only a name, not an entry: a `remove` or `move` of a parent
+   * directory meanwhile does not touch it, and once the content is complete the file
+   * appears at its path, the parent directories created again.
    */
   async createExclusive(
     path: string,
@@ -110,11 +116,11 @@ export class MemFilesApi implements FilesApi {
   ): Promise<boolean> {
     const normalizedPath = normalizePath(path);
     // Synchronous from here to the reservation: no other call can run in between.
-    if (this.reserved.has(normalizedPath) || this.existsSync(normalizedPath)) return false;
+    if (this.reserved.has(normalizedPath) || this.isTaken(normalizedPath)) return false;
     this.reserved.add(normalizedPath);
     try {
       const bytes = await collect(content);
-      if (this.existsSync(normalizedPath)) return false;
+      if (this.isTaken(normalizedPath)) return false;
       this.setFile(normalizedPath, bytes);
       return true;
     } finally {
@@ -214,6 +220,19 @@ export class MemFilesApi implements FilesApi {
 
   async exists(path: string): Promise<boolean> {
     return this.existsSync(normalizePath(path));
+  }
+
+  /** Whether a normalized path exists, or a file sits at one of its ancestors. */
+  private isTaken(normalizedPath: string): boolean {
+    if (this.existsSync(normalizedPath)) return true;
+    for (
+      let i = normalizedPath.lastIndexOf("/");
+      i > 0;
+      i = normalizedPath.lastIndexOf("/", i - 1)
+    ) {
+      if (this.entries.get(normalizedPath.slice(0, i))?.kind === "file") return true;
+    }
+    return false;
   }
 
   /** An entry, or an implicit directory holding one, at a normalized path. */

@@ -152,20 +152,32 @@ describe("BrowserFilesApi.createExclusive across tabs", () => {
 
   /** A `navigator.locks` that runs the callbacks of one name one at a time, as browsers do. */
   function fakeLocks() {
-    const requests: { name: string; mode: string | undefined }[] = [];
+    const requests: { name: string; mode: string | undefined; ifAvailable?: boolean }[] = [];
     const tails = new Map<string, Promise<unknown>>();
+    // Requests per name that hold the lock or wait for it.
+    const pending = new Map<string, number>();
     let running = 0;
     let maxRunning = 0;
     const locks = {
-      request(name: string, options: { mode?: string }, callback: () => Promise<unknown>) {
-        requests.push({ name, mode: options.mode });
+      request(
+        name: string,
+        options: { mode?: string; ifAvailable?: boolean },
+        callback: (lock: object | null) => Promise<unknown>,
+      ) {
+        requests.push({ name, mode: options.mode, ifAvailable: options.ifAvailable });
+        // `ifAvailable`: granted only if nobody holds or waits for the lock, else null.
+        if (options.ifAvailable && (pending.get(name) ?? 0) > 0) {
+          return Promise.resolve().then(() => callback(null));
+        }
+        pending.set(name, (pending.get(name) ?? 0) + 1);
         const run = (tails.get(name) ?? Promise.resolve()).then(async () => {
           running++;
           maxRunning = Math.max(maxRunning, running);
           try {
-            return await callback();
+            return await callback({ name });
           } finally {
             running--;
+            pending.set(name, (pending.get(name) ?? 1) - 1);
           }
         });
         tails.set(
@@ -232,7 +244,7 @@ describe("BrowserFilesApi.createExclusive across tabs", () => {
     });
     const api = new BrowserFilesApi({ rootHandle });
     expect(await api.createExclusive("/x.lock", bytes("x"))).toBe(true);
-    expect(fake.requests[0]?.name).toBe("webrun-files:opfs:/repos/one:/x.lock");
+    expect(fake.requests[0]?.name).toBe("webrun-files:opfs:/repos/one/x.lock");
   });
 
   it("serializes calls in memory without navigator.locks", async () => {
@@ -250,5 +262,78 @@ describe("BrowserFilesApi.createExclusive across tabs", () => {
     // The mutex is released after each call: later calls proceed.
     expect(await api.createExclusive("/index.lock", bytes("again"))).toBe(false);
     expect(await api.createExclusive("/other.lock", bytes("other"))).toBe(true);
+  });
+  it("names an OPFS lock by the file's full OPFS path, whatever the instance's root", async () => {
+    const fake = fakeLocks();
+    const opfsRoot = await newRoot();
+    const repo = await opfsRoot.getDirectoryHandle("repo", { create: true });
+    const paths = new Map<FileSystemDirectoryHandle, string[]>([
+      [opfsRoot, []],
+      [repo, ["repo"]],
+    ]);
+    vi.stubGlobal("navigator", {
+      locks: fake.locks,
+      storage: {
+        getDirectory: async () => ({
+          resolve: async (h: FileSystemDirectoryHandle) => paths.get(h) ?? null,
+        }),
+      },
+    });
+    // One instance rooted at OPFS `/repo`, one at OPFS `/`: the same file.
+    const inRepo = new BrowserFilesApi({ rootHandle: repo });
+    const atRoot = new BrowserFilesApi({ rootHandle: opfsRoot, lockScope: "ignored-in-opfs" });
+
+    const results = await Promise.all([
+      inRepo.createExclusive("/HEAD.lock", slowly("a")),
+      atRoot.createExclusive("/repo/HEAD.lock", slowly("b")),
+    ]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(fake.requests.map((r) => r.name)).toEqual([
+      "webrun-files:opfs:/repo/HEAD.lock",
+      "webrun-files:opfs:/repo/HEAD.lock",
+    ]);
+  });
+
+  describe("does not wait for a winner whose source stalls", () => {
+    function stalled() {
+      let release = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      async function* source() {
+        yield new TextEncoder().encode("first");
+        await gate;
+        yield new TextEncoder().encode(" last");
+      }
+      return { source: source(), release };
+    }
+
+    async function loserReturnsAtOnce(api: BrowserFilesApi) {
+      // The memory adapter's roots share one tree: a path of its own for each run.
+      const path = `/stalled-${crypto.randomUUID()}.lock`;
+      const { source, release } = stalled();
+      const winner = api.createExclusive(path, source);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const loser = await Promise.race([
+        api.createExclusive(path, bytes("other")),
+        new Promise((resolve) => setTimeout(() => resolve("blocked"), 200)),
+      ]);
+      release();
+      expect(loser).toBe(false);
+      expect(await winner).toBe(true);
+      expect(new TextDecoder().decode(await collectStream(api.read(path)))).toBe("first last");
+    }
+
+    it("with Web Locks, asking ifAvailable", async () => {
+      const fake = fakeLocks();
+      vi.stubGlobal("navigator", { locks: fake.locks });
+      await loserReturnsAtOnce(new BrowserFilesApi({ rootHandle: await newRoot() }));
+      expect(fake.requests.every((r) => r.ifAvailable === true)).toBe(true);
+    });
+
+    it("with the in-memory mutex", async () => {
+      vi.stubGlobal("navigator", {});
+      await loserReturnsAtOnce(new BrowserFilesApi({ rootHandle: await newRoot() }));
+    });
   });
 });

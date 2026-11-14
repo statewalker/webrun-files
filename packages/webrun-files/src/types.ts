@@ -130,10 +130,16 @@ export interface FilesApi {
 
   /**
    * Create `path` with `content` only if nothing exists there, atomically: of two
-   * concurrent calls for one path, exactly one returns true. Returns false (and writes
-   * nothing) when the path already exists, whether as a file, a directory or a link.
-   * Parent directories are created as needed. If the content fails part way, the file
-   * is removed again and the error is thrown.
+   * concurrent calls for one path, at most one returns true. Returns false, and writes no
+   * file, when the path already exists, whether as a file, a directory or a link.
+   * Parent directories are created as needed, and may be left created even when the call
+   * returns false. If the content fails part way, the file is removed again and the
+   * error is thrown.
+   *
+   * Only the creation is atomic, not the content: on some backends (node) the file is
+   * visible while its content is written, so a reader can see it empty or partial until
+   * the call completes. Callers that need readers to see the whole content at once
+   * should create a temporary file and `move` it into place.
    *
    * This is the primitive behind lock files (git's `index.lock`, `refs/heads/main.lock`):
    * take the lock by creating the file, release it by removing or renaming it.

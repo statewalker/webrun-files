@@ -154,7 +154,9 @@ under `a/` both exist, `/a` is listed once, as the file, the same answer `stats(
 
 ### Testing
 
-`pnpm test` runs only unit tests (a fake client exercises listing order across pages).
+`pnpm test` runs only unit tests, against fake clients: listing order across pages, and how
+`createExclusive` handles `412` (returns `false`, also from `CompleteMultipartUpload`) and `409`
+(retried, then thrown).
 `pnpm test:integration` needs Docker: it starts
 [RustFS](https://github.com/rustfs/rustfs) through testcontainers (`rustfs/rustfs:latest`, override
 with `RUSTFS_IMAGE`) and runs the shared `createFilesApiTests` and `createBigFilesApiTests` suites

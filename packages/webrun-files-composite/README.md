@@ -217,7 +217,8 @@ if (fs.createExclusive) {
 }
 
 fs.mount("/remote", httpFiles); // a backend without createExclusive...
-fs.createExclusive;             // ...removes it: undefined
+fs.createExclusive;             // ...hides it: undefined
+"createExclusive" in fs;        // false
 ```
 
 `CompositeFilesApi` has `createExclusive` only while every backend, the root and each mount,
@@ -227,9 +228,15 @@ feature detection lie, so a composite with one incapable mount has no method at 
 take their fallback. A mount point, and a directory that exists only because a mount lies under
 it, count as existing.
 
-`GuardedFilesApi` and `FilteredFilesApi` have the method when what they wrap has it: a guard
-checks it as a `write`, and a filter refuses a hidden path with `"Path is hidden"`, as for
-`write`. So `readOnly()` throws. `overlay` (read-only) and `cow` do not offer it: a create in
+Whether the method is there is decided at each access, `in` and `typeof` included: the
+composite is a proxy that asks its mounts, and `createExclusive` itself is a prototype method,
+so a subclass overrides it as usual. A reference to the method taken before a `mount()` of an
+incapable backend still calls, and throws for paths on that backend.
+
+`GuardedFilesApi` and `FilteredFilesApi` have the method while what they wrap has it, checked
+the same way at each access, so a guard or filter over a composite loses it when the composite
+does. A guard checks it as a `write`, and a filter refuses a hidden path with
+`"Path is hidden"`, as for `write`. So `readOnly()` throws. `overlay` (read-only) and `cow` do not offer it: a create in
 the writable layer of `cow` could not also exclude what the base and the whiteouts say.
 
 ## Internals

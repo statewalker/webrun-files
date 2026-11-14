@@ -586,3 +586,48 @@ describe("CompositeFilesApi.createExclusive", () => {
     ).toBeUndefined();
   });
 });
+
+describe("createExclusive follows the source at call time", () => {
+  function withoutCreateExclusive(): FilesApi {
+    const api = new MemFilesApi();
+    Object.defineProperty(api, "createExclusive", { value: undefined });
+    return api;
+  }
+
+  function hasIt(api: FilesApi): boolean {
+    return "createExclusive" in api && typeof api.createExclusive === "function";
+  }
+
+  it("on wrappers of a composite, after a mount of a backend without it", async () => {
+    const composite = new CompositeFilesApi(new MemFilesApi());
+    const filtered = new FilteredFilesApi(composite, () => true);
+    const guarded = new GuardedFilesApi(composite, []);
+    const ro = readOnly(composite);
+    for (const api of [composite, filtered, guarded, ro]) expect(hasIt(api)).toBe(true);
+    expect(await filtered.createExclusive?.("/a.lock", [toBytes("a")])).toBe(true);
+    expect(await guarded.createExclusive?.("/a.lock", [toBytes("a")])).toBe(false);
+
+    composite.mount("/plain", withoutCreateExclusive());
+    for (const api of [composite, filtered, guarded, ro]) {
+      expect("createExclusive" in api).toBe(false);
+      expect(api.createExclusive).toBeUndefined();
+    }
+  });
+
+  it("on the composite: a prototype method, so subclasses override it", async () => {
+    class Logged extends CompositeFilesApi {
+      calls: string[] = [];
+      override async createExclusive(
+        path: string,
+        content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+      ): Promise<boolean> {
+        this.calls.push(path);
+        return (await super.createExclusive?.(path, content)) ?? false;
+      }
+    }
+    const logged = new Logged(new MemFilesApi());
+    expect(await logged.createExclusive("/x.lock", [toBytes("x")])).toBe(true);
+    expect(logged.calls).toEqual(["/x.lock"]);
+    expect(Object.hasOwn(logged, "createExclusive")).toBe(false);
+  });
+});

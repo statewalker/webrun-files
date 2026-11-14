@@ -114,7 +114,11 @@ directory. `write` collects all chunks and stores one `Uint8Array`; `read` yield
   map, so `read`, `stats`, `exists` and `list` see nothing until the content has been collected,
   and then the whole file. A failing source drops the reservation. If `write` or `mkdir` puts
   something at the path in the meantime, that wins: nothing is stored and the call returns
-  `false`.
+  `false`. A file at an ancestor of the path, before the call or by the time the content is
+  complete, also returns `false`, so a file is never stored under a file.
+- **A reservation outlives its parent.** It is only a name, not an entry: `remove` or `move` of a
+  parent directory while the content is collected does not cancel it, and once the content is
+  complete the file reappears at its path, with its parent directories created again.
 - **`move` is copy then remove**, in memory, so it is cheap but not atomic against concurrent
   calls on the same instance.
 - Everything lives in the JavaScript heap; a large file costs its size in memory.

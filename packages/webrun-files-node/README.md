@@ -147,6 +147,9 @@ directory whose whole subtree sorts at or before `after`.
 - **A lock file is visible while it is written.** Unlike `write`, `createExclusive` writes in
   place, as git does with its lock files: other readers see the file grow until the content
   ends. A crash part way leaves the partial file, and with it the lock, behind.
+- **Cleanup unlinks by path.** When the source fails, the file is unlinked by its path. If
+  another process meanwhile removed it as a stale lock and created its own, that file is the one
+  removed. Git's lock files behave the same.
 - **`move` across devices returns `false`.** It is a single `fs.rename`; when that fails (`EXDEV`,
   permissions) the method returns `false` instead of falling back to copy and delete.
 - **Unreadable reads look like missing files.** `read` swallows every error (missing file,

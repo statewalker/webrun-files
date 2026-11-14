@@ -6,6 +6,7 @@ import type {
   ReadOptions,
 } from "@statewalker/webrun-files";
 import { normalizePath } from "@statewalker/webrun-files";
+import { followCreateExclusive } from "./follow-create-exclusive.js";
 import { globToRegExp } from "./glob-to-regexp.js";
 
 /**
@@ -188,24 +189,29 @@ export class FilteredFilesApi implements FilesApi {
    * @param pathFilter Predicate that decides per-call whether a normalized
    *   path is visible. See {@link PathFilter}.
    */
-  /** Present only when the source has it; the exclusion is the source's own. */
-  declare createExclusive?: (
-    path: string,
-    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
-  ) => Promise<boolean>;
-
   constructor(source: FilesApi, pathFilter: PathFilter) {
     this.source = source;
     this.pathFilter = pathFilter;
-    const createExclusive = source.createExclusive?.bind(source);
-    if (createExclusive) {
-      this.createExclusive = async (path, content) => {
-        if (await this.isHidden(path)) {
-          throw new Error(`Path is hidden: ${path}`);
-        }
-        return createExclusive(path, content);
-      };
+    // biome-ignore lint/correctness/noConstructorReturn: the proxy shows `createExclusive` only while the source has it
+    return followCreateExclusive(this, () => typeof source.createExclusive === "function");
+  }
+
+  /**
+   * Present only while the source has it, checked at each access (`in` and `typeof`
+   * included), so it follows a source whose methods change, such as a
+   * `CompositeFilesApi` after `mount()`. The exclusion is the source's own.
+   */
+  async createExclusive?(
+    path: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  ): Promise<boolean> {
+    if (await this.isHidden(path)) {
+      throw new Error(`Path is hidden: ${path}`);
     }
+    if (!this.source.createExclusive) {
+      throw new Error(`createExclusive is not supported by the source for ${path}`);
+    }
+    return this.source.createExclusive(path, content);
   }
 
   protected async isHidden(path: string): Promise<boolean> {

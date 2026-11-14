@@ -6,6 +6,7 @@ import type {
   ReadOptions,
 } from "@statewalker/webrun-files";
 import { comparePaths, joinPath, mergeInPathOrder, normalizePath } from "@statewalker/webrun-files";
+import { followCreateExclusive } from "./follow-create-exclusive.js";
 
 interface MountEntry {
   prefix: string;
@@ -42,21 +43,6 @@ export class CompositeFilesApi implements FilesApi {
   private mounts: MountEntry[];
 
   /**
-   * Present only while EVERY backend — the root and each mount — has its own
-   * `createExclusive`, so feature detection on the composite tells the truth for
-   * any path. Mounting a backend without it removes the method; it is never
-   * defined and then refused for some paths.
-   *
-   * A call goes to the backend owning the path, so the exclusion reaches as far
-   * as that backend's does. A mount point, and a directory that exists only
-   * because a mount lies under it, count as existing.
-   */
-  declare createExclusive?: (
-    path: string,
-    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
-  ) => Promise<boolean>;
-
-  /**
    * @param root Default backend used for any path that does not match a
    *   more specific mount. All paths are routed here unless `mount()`
    *   intercepts them.
@@ -67,19 +53,26 @@ export class CompositeFilesApi implements FilesApi {
    */
   constructor(root: FilesApi, rootPath?: string) {
     this.mounts = [{ prefix: "/", api: root, basePath: normalizePath(rootPath ?? "/") }];
-    this.updateCreateExclusive();
+    // biome-ignore lint/correctness/noConstructorReturn: the proxy shows `createExclusive` only while every backend has it
+    return followCreateExclusive(this, () =>
+      this.mounts.every((m) => typeof m.api.createExclusive === "function"),
+    );
   }
 
-  /** Defines or removes `createExclusive`, as the current mounts allow. */
-  private updateCreateExclusive(): void {
-    if (this.mounts.every((m) => typeof m.api.createExclusive === "function")) {
-      this.createExclusive = (path, content) => this.createExclusiveIn(path, content);
-    } else {
-      delete this.createExclusive;
-    }
-  }
-
-  private async createExclusiveIn(
+  /**
+   * Present only while EVERY backend — the root and each mount — has its own
+   * `createExclusive`, so feature detection on the composite tells the truth for
+   * any path: `"createExclusive" in composite` and `typeof composite.createExclusive`
+   * are checked against the mounts at each access. Mounting a backend without it hides
+   * the method; it is never shown and then refused for some paths. (A reference taken
+   * before such a mount still calls; it throws for paths on a backend without it.)
+   * It is a prototype method, so a subclass overrides it as usual.
+   *
+   * A call goes to the backend owning the path, so the exclusion reaches as far
+   * as that backend's does. A mount point, and a directory that exists only
+   * because a mount lies under it, count as existing.
+   */
+  async createExclusive?(
     path: string,
     content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
   ): Promise<boolean> {
@@ -118,7 +111,6 @@ export class CompositeFilesApi implements FilesApi {
     this.mounts.push({ prefix, api, basePath: normalizePath(fsPath ?? "/") });
     // Sort by prefix length descending so longest match comes first
     this.mounts.sort((a, b) => b.prefix.length - a.prefix.length);
-    this.updateCreateExclusive();
     return this;
   }
 
