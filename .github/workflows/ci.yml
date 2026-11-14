@@ -35,8 +35,7 @@ jobs:
       group: release-${{ github.repository }}
       cancel-in-progress: false
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
     outputs:
       pending: ${{ steps.changesets.outputs.has-changesets }}
     steps:
@@ -70,10 +69,28 @@ jobs:
       - name: Changesets for unreleased changes
         run: node "$RUNNER_TEMP/statewalker-ci/scripts/release-changesets.mjs"
 
+      # The version pull request is opened and pushed with the statewalker-release GitHub App's
+      # installation token, not GITHUB_TOKEN: GitHub does not run CI on what GITHUB_TOKEN pushes
+      # (the run waits as "action_required" until a maintainer approves it), so the pull request
+      # would have no checks for the merge gate or a required status check. The App (Contents and
+      # Pull requests: read & write) is installed on each publishing repository; its client id is
+      # the organization variable RELEASE_APP_CLIENT_ID and its private key the organization secret
+      # RELEASE_APP_KEY, both visible only to those repositories. The token is scoped to this
+      # repository and revoked when the job ends.
+      - name: Release token
+        id: release-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
       - name: Version pull request
         id: changesets
         uses: changesets/action@v2
         with:
+          github-token: ${{ steps.release-token.outputs.token }}
           version-script: pnpm exec changeset version
           commit-message: "chore: version packages"
           pr-title: "chore: version packages"
