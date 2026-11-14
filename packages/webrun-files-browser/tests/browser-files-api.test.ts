@@ -82,3 +82,32 @@ describe("BrowserFilesApi specific tests", () => {
     expect(await api.exists("/a/b/c/d/e")).toBe(true);
   });
 });
+
+describe("BrowserFilesApi.write when the content fails part way", () => {
+  async function freshApi() {
+    const rootHandle = (await getOriginPrivateDirectory(driver)) as FileSystemDirectoryHandle;
+    return new BrowserFilesApi({ rootHandle });
+  }
+  async function* failing() {
+    yield new TextEncoder().encode("partial");
+    throw new Error("source failed");
+  }
+  async function text(api: BrowserFilesApi, path: string) {
+    const parts: Uint8Array[] = [];
+    for await (const c of api.read(path)) parts.push(c);
+    return new TextDecoder().decode(Buffer.concat(parts));
+  }
+
+  it("keeps the old file", async () => {
+    const api = await freshApi();
+    await api.write("/f.txt", [new TextEncoder().encode("old content")]);
+    await expect(api.write("/f.txt", failing())).rejects.toThrow("source failed");
+    expect(await text(api, "/f.txt")).toBe("old content");
+  });
+
+  it("leaves no file behind when there was none", async () => {
+    const api = await freshApi();
+    await expect(api.write("/new.txt", failing())).rejects.toThrow("source failed");
+    expect(await api.exists("/new.txt")).toBe(false);
+  });
+});

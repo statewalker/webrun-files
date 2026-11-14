@@ -125,16 +125,36 @@ export class BrowserFilesApi implements FilesApi {
       throw new Error(`Cannot create directory: ${parentPath}`);
     }
 
+    await this.writeFileIn(parent, fileName, content);
+  }
+
+  /**
+   * Write `content` to `fileName` in `parent`. A writable stream writes to a swap file:
+   * close() commits it, abort() drops it and leaves the old file as it was. So a source
+   * that fails part way keeps the old file (and a file this write created is removed
+   * again) instead of committing a cut-off one.
+   */
+  private async writeFileIn(
+    parent: FileSystemDirectoryHandle,
+    fileName: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  ): Promise<void> {
+    const existed = await parent
+      .getFileHandle(fileName)
+      .then(() => true)
+      .catch(() => false);
     const fileHandle = await parent.getFileHandle(fileName, { create: true });
     const writable = await fileHandle.createWritable();
-
     try {
       for await (const chunk of content) {
         await writable.write(chunk as Uint8Array<ArrayBuffer>);
       }
-    } finally {
-      await writable.close();
+    } catch (error) {
+      await writable.abort().catch(() => {});
+      if (!existed) await parent.removeEntry(fileName).catch(() => {});
+      throw error;
     }
+    await writable.close();
   }
 
   async mkdir(path: string): Promise<void> {
@@ -285,20 +305,7 @@ export class BrowserFilesApi implements FilesApi {
       const targetParent = await this.getDirectoryHandle(targetParentPath, { create: true });
       if (!targetParent) return false;
 
-      const targetHandle = await targetParent.getFileHandle(targetFileName, { create: true });
-      const writable = await targetHandle.createWritable();
-
-      try {
-        const reader = sourceFile.stream().getReader();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          await writable.write(value);
-        }
-      } finally {
-        await writable.close();
-      }
-
+      await this.writeFileIn(targetParent, targetFileName, fileChunks(sourceFile));
       return true;
     }
 
@@ -322,21 +329,7 @@ export class BrowserFilesApi implements FilesApi {
       const newTargetParent = await this.getDirectoryHandle(newTargetParentPath, { create: true });
       if (!newTargetParent) continue;
 
-      const newTargetHandle = await newTargetParent.getFileHandle(newTargetFileName, {
-        create: true,
-      });
-      const writable = await newTargetHandle.createWritable();
-
-      try {
-        const reader = entryFile.stream().getReader();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          await writable.write(value);
-        }
-      } finally {
-        await writable.close();
-      }
+      await this.writeFileIn(newTargetParent, newTargetFileName, fileChunks(entryFile));
     }
 
     return true;
@@ -349,4 +342,18 @@ export class BrowserFilesApi implements FilesApi {
 export async function getOPFSFilesApi(): Promise<BrowserFilesApi> {
   const rootHandle = await navigator.storage.getDirectory();
   return new BrowserFilesApi({ rootHandle });
+}
+
+/** A file's content as chunks, read through its stream (released when stopped early). */
+async function* fileChunks(file: File): AsyncGenerator<Uint8Array> {
+  const reader = file.stream().getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      yield value;
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
