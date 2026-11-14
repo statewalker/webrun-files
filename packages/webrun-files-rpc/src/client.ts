@@ -5,6 +5,7 @@ import type {
   ListOptions,
   ReadOptions,
 } from "@statewalker/webrun-files";
+import { MoveIncompleteError, normalizePath } from "@statewalker/webrun-files";
 import type { FilesRpc, ReadResult } from "./types.js";
 
 export interface FilesRpcClientOptions {
@@ -217,8 +218,12 @@ export class FilesRpcClient implements FilesApi {
    * copy then delete). The client adds no guarantee, and a call that fails in transit
    * leaves it unknown whether the move happened.
    */
-  move(source: string, target: string): Promise<boolean> {
-    return this.#rpc.move(source, target, { requestId: newStreamId() });
+  async move(source: string, target: string): Promise<boolean> {
+    try {
+      return await this.#rpc.move(source, target, { requestId: newStreamId() });
+    } catch (error) {
+      throw moveIncomplete(error, source, target);
+    }
   }
   copy(source: string, target: string): Promise<boolean> {
     return this.#rpc.copy(source, target, { requestId: newStreamId() });
@@ -229,3 +234,21 @@ export class FilesRpcClient implements FilesApi {
 export function newFilesRpcClient(options: FilesRpcClientOptions): FilesRpcClient {
   return new FilesRpcClient(options);
 }
+
+/**
+ * A server-side `MoveIncompleteError` arrives as a plain error: over http with its name and
+ * message, through a structured clone (rpc transports) with its message only. Recognised by
+ * either, it is rebuilt with the client's paths, the original kept as its cause.
+ */
+function moveIncomplete(error: unknown, source: string, target: string): unknown {
+  const { name, message } = (error ?? {}) as { name?: unknown; message?: unknown };
+  const recognised =
+    name === "MoveIncompleteError" ||
+    (typeof message === "string" && MOVE_INCOMPLETE_MESSAGE.test(message));
+  return recognised
+    ? new MoveIncompleteError(normalizePath(source), normalizePath(target), { cause: error })
+    : error;
+}
+
+const MOVE_INCOMPLETE_MESSAGE =
+  /^move .* -> .*: the target was replaced, but the source could not be removed$/s;

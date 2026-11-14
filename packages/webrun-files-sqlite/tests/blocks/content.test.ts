@@ -300,3 +300,13 @@ describe("copy and move with names outside the Basic Multilingual Plane", () => 
     }
   });
 });
+
+describe("non-recursive list with names outside the Basic Multilingual Plane", () => {
+  it("counts the base by characters, as SQLite's substr() does", async () => {
+    const { files } = await newFiles(small);
+    await files.write("/\u{1F600}\u{1F600}/a/b", [enc.encode("b")]);
+    await files.write("/\u{1F600}\u{1F600}/cc", [enc.encode("c")]);
+    const names = (await collectGenerator(files.list("/\u{1F600}\u{1F600}"))).map((e) => e.path);
+    expect(names).toEqual(["/\u{1F600}\u{1F600}/a", "/\u{1F600}\u{1F600}/cc"]);
+  });
+});

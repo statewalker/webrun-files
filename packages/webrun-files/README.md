@@ -159,9 +159,10 @@ await files.move('/repo/.git/index.lock', '/repo/.git/index'); // replaces the o
 ```
 
 `move(source, target)` replaces an existing file at the target and creates the target's parent
-directories. It returns `false` only when nothing changed: the source is missing, or the backend
-refused the target. Moving onto an existing directory differs between backends: node, mem and
-the browser follow `rename(2)` (a directory replaces an empty directory; anything else returns
+directories. It returns `false` when the move did not happen: the source is missing, or the
+backend refused the target. Source and target are then unchanged, though parent directories
+created for the target (node, browser) may be left. Moving onto an existing directory differs
+between backends: node, mem, the browser and `cow` follow `rename(2)` (a directory replaces an empty directory; anything else returns
 `false`), while the sqlite backends replace the target's whole subtree. Portable code does not
 move onto directories.
 
@@ -177,12 +178,14 @@ a missing or partial target, and a failed move changes nothing.
 | `webrun-files-browser` | copy, then delete, without native `move()` | no |
 | `webrun-files-s3` | `CopyObject`, then `DeleteObject` | no |
 | `webrun-files-composite` | the backend's `move` within a mount; copy, then delete, across mounts | as the backend; no across mounts |
+| `webrun-files-composite` `cow` | copy into the writable layer, then remove or hide the source | no |
 | `webrun-files-http`, `webrun-files-rpc` | the server's backend | as the server's backend |
 
 A copy-then-delete move that copied but cannot remove its source retries the removal once, then
 throws a `MoveIncompleteError` (exported here, with `source` and `target`): the target already
 holds the new content and the source still exists. Backends built on copy-then-delete call
-`removeMovedSource(files, source, target)` to get this behaviour.
+`removeMovedSource(files, source, target)` to get this behaviour. The http and rpc clients rebuild
+a server-side `MoveIncompleteError` as one.
 
 ### Paths
 

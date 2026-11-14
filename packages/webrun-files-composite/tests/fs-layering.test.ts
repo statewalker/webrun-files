@@ -1,4 +1,5 @@
 import type { FilesApi } from "@statewalker/webrun-files";
+import { MoveIncompleteError } from "@statewalker/webrun-files";
 import { MemFilesApi } from "@statewalker/webrun-files-mem";
 import { createFilesApiTests } from "@statewalker/webrun-files-tests";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -292,5 +293,75 @@ describe("cow", () => {
     for (const n of await names(c.list("/"))) {
       expect(n.startsWith(".del.")).toBe(false);
     }
+  });
+});
+
+// ---------------------------------------------------------------
+// cow — move contract
+// ---------------------------------------------------------------
+
+describe("cow move", () => {
+  let base: MemFilesApi;
+  let writable: MemFilesApi;
+  let api: FilesApi;
+
+  beforeEach(async () => {
+    base = new MemFilesApi();
+    writable = new MemFilesApi();
+    api = cow(base, writable);
+  });
+
+  it("throws MoveIncompleteError when the source cannot be removed, after one retry", async () => {
+    await write(api, "/src.txt", "payload");
+    let removals = 0;
+    const real = writable.remove.bind(writable);
+    writable.remove = async (path: string) => {
+      if (path === "/src.txt") {
+        removals++;
+        throw new Error("EBUSY");
+      }
+      return real(path);
+    };
+    const error = await api.move("/src.txt", "/dst.txt").catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(MoveIncompleteError);
+    expect((error as MoveIncompleteError).source).toBe("/src.txt");
+    expect((error as MoveIncompleteError).target).toBe("/dst.txt");
+    expect(removals).toBe(2);
+    expect(await readAll(api.read("/dst.txt"))).toBe("payload");
+  });
+
+  it("succeeds when the second removal attempt works", async () => {
+    await write(api, "/src.txt", "payload");
+    let removals = 0;
+    const real = writable.remove.bind(writable);
+    writable.remove = async (path: string) => {
+      if (path === "/src.txt" && removals++ === 0) throw new Error("EBUSY");
+      return real(path);
+    };
+    expect(await api.move("/src.txt", "/dst.txt")).toBe(true);
+    expect(await api.exists("/src.txt")).toBe(false);
+  });
+
+  it("treats an existing target as rename(2) does, changing nothing on refusal", async () => {
+    await write(base, "/f.txt", "file");
+    await write(base, "/full/x.txt", "x");
+    await write(api, "/dir/a.txt", "a");
+    await write(api, "/g.txt", "g");
+    await api.mkdir("/empty");
+    expect(await api.move("/g.txt", "/full")).toBe(false); // file onto directory
+    expect(await api.move("/dir", "/f.txt")).toBe(false); // directory onto file
+    expect(await api.move("/dir", "/full")).toBe(false); // onto a non-empty directory
+    expect(await api.move("/dir", "/dir/inner")).toBe(false); // into its own subtree
+    expect(await api.move("/g.txt", "/f.txt/below")).toBe(false); // below a file
+    expect(await names(api.list("/"))).toEqual(["dir", "empty", "f.txt", "full", "g.txt"]);
+    expect(await names(api.list("/full"))).toEqual(["x.txt"]);
+    expect(await readAll(api.read("/f.txt"))).toBe("file");
+
+    expect(await api.move("/g.txt", "/f.txt")).toBe(true); // file replaces file
+    expect(await readAll(api.read("/f.txt"))).toBe("g");
+    expect(await api.move("/dir", "/empty")).toBe(true); // directory replaces empty directory
+    expect(await readAll(api.read("/empty/a.txt"))).toBe("a");
+    expect(await api.move("/empty", "/empty")).toBe(true); // onto itself: no-op
+    expect(await names(api.list("/"))).toEqual(["empty", "f.txt", "full"]);
   });
 });

@@ -478,3 +478,89 @@ describe("BrowserFilesApi.move", () => {
     }
   });
 });
+
+describe("BrowserFilesApi.move: which native move() errors fall back", () => {
+  const bytes = (s: string) => [new TextEncoder().encode(s)];
+  async function setup() {
+    const rootHandle = (await getOriginPrivateDirectory(driver)) as FileSystemDirectoryHandle;
+    for await (const [name] of rootHandle.entries()) {
+      await rootHandle.removeEntry(name, { recursive: true });
+    }
+    return { rootHandle, api: new BrowserFilesApi({ rootHandle }) };
+  }
+  async function text(api: BrowserFilesApi, path: string) {
+    return new TextDecoder().decode(await collectStream(api.read(path)));
+  }
+  /** Gives every file handle of the root a native move() doing `impl`. */
+  function fakeNativeMove(
+    rootHandle: FileSystemDirectoryHandle,
+    impl: (parent: FileSystemDirectoryHandle, name: string) => Promise<void>,
+  ) {
+    const getFileHandle = rootHandle.getFileHandle.bind(rootHandle);
+    const nativeMove = vi.fn(impl);
+    rootHandle.getFileHandle = (async (name: string, options?: FileSystemGetFileOptions) =>
+      Object.assign(await getFileHandle(name, options), {
+        move: nativeMove,
+      })) as typeof rootHandle.getFileHandle;
+    return { nativeMove, restore: () => (rootHandle.getFileHandle = getFileHandle) };
+  }
+
+  for (const [what, error] of [
+    ["a TypeError (move() unsupported for this handle)", new TypeError("not a function")],
+    ["a NotSupportedError", new DOMException("unsupported", "NotSupportedError")],
+  ] as const) {
+    it(`falls back to copy-then-delete on ${what}`, async () => {
+      const { rootHandle, api } = await setup();
+      await api.write("/src.txt", bytes("payload"));
+      const { nativeMove, restore } = fakeNativeMove(rootHandle, async () => {
+        throw error;
+      });
+      expect(await api.move("/src.txt", "/dst.txt")).toBe(true);
+      restore();
+      expect(nativeMove).toHaveBeenCalledTimes(1);
+      expect(await text(api, "/dst.txt")).toBe("payload");
+      expect(await api.exists("/src.txt")).toBe(false);
+    });
+  }
+
+  for (const [what, error] of [
+    ["NoModificationAllowedError", new DOMException("locked", "NoModificationAllowedError")],
+    ["NotAllowedError", new DOMException("denied", "NotAllowedError")],
+    ["a plain Error", new Error("disk full")],
+    [
+      "InvalidModificationError when the target does not exist",
+      new DOMException("bad", "InvalidModificationError"),
+    ],
+  ] as const) {
+    it(`rethrows ${what}, changing nothing`, async () => {
+      const { rootHandle, api } = await setup();
+      await api.write("/src.txt", bytes("payload"));
+      const { restore } = fakeNativeMove(rootHandle, async () => {
+        throw error;
+      });
+      await expect(api.move("/src.txt", "/dst.txt")).rejects.toBe(error);
+      restore();
+      expect(await text(api, "/src.txt")).toBe("payload");
+      expect(await api.exists("/dst.txt")).toBe(false);
+    });
+  }
+
+  it("treats the move as done when move() throws after the source has moved", async () => {
+    const { rootHandle, api } = await setup();
+    await api.write("/src.txt", bytes("payload"));
+    const getFileHandle = rootHandle.getFileHandle.bind(rootHandle);
+    const { nativeMove, restore } = fakeNativeMove(rootHandle, async (parent, name) => {
+      const file = await (await getFileHandle("src.txt")).getFile();
+      const writable = await (await parent.getFileHandle(name, { create: true })).createWritable();
+      await writable.write(await file.arrayBuffer());
+      await writable.close();
+      await rootHandle.removeEntry("src.txt");
+      throw new DOMException("late failure", "UnknownError");
+    });
+    expect(await api.move("/src.txt", "/dst.txt")).toBe(true);
+    restore();
+    expect(nativeMove).toHaveBeenCalledTimes(1);
+    expect(await text(api, "/dst.txt")).toBe("payload");
+    expect(await api.exists("/src.txt")).toBe(false);
+  });
+});

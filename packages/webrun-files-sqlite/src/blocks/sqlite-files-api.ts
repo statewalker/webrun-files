@@ -360,7 +360,8 @@ export class SqliteFilesApi implements FilesApi {
     if ((await this.stats(base))?.kind !== "directory") return;
 
     const range = descendants(base);
-    const prefixLength = base === "/" ? 1 : base.length + 1;
+    // SQLite's substr() counts characters (code points), not UTF-16 units.
+    const prefixLength = base === "/" ? 1 : [...base].length + 1;
     const directOnly = options.recursive ? "" : "AND instr(substr(p.path, ?), '/') = 0";
     // The unique index orders paths by UTF-8 bytes, which is `comparePaths` order,
     // so resuming after a path is the keyset cursor's starting point.

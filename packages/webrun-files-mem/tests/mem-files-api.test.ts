@@ -208,3 +208,19 @@ describe("MemFilesApi.move onto an existing entry, as rename(2) does", () => {
     expect(await paths(api)).toEqual(before);
   });
 });
+
+describe("MemFilesApi.move with a target that prefixes a sibling's name", () => {
+  it("moves /a onto /ab without touching /abc", async () => {
+    const api = new MemFilesApi();
+    const enc = new TextEncoder();
+    const dec = new TextDecoder();
+    await api.write("/a", [enc.encode("a")]);
+    await api.write("/ab", [enc.encode("old ab")]);
+    await api.write("/abc/x", [enc.encode("abc")]);
+    expect(await api.move("/a", "/ab")).toBe(true);
+    const listed = await collectGenerator(api.list("/", { recursive: true }));
+    expect(listed.map((e) => e.path)).toEqual(["/ab", "/abc", "/abc/x"]);
+    expect(dec.decode(await collectStream(api.read("/ab")))).toBe("a");
+    expect(dec.decode(await collectStream(api.read("/abc/x")))).toBe("abc");
+  });
+});

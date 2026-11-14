@@ -348,8 +348,15 @@ export class BrowserFilesApi implements FilesApi {
    * Origin Private File System), else copies, then deletes the source.
    *
    * - Native move over an existing file: current Chromium replaces the file; versions
-   *   that throw instead (the target exists) fall back to the copy below, which still
-   *   replaces the target atomically.
+   *   that throw `InvalidModificationError` instead (the target exists) fall back to the
+   *   copy below, which still replaces the target atomically.
+   * - Other native errors: only an unsupported move (`TypeError`, `NotSupportedError`)
+   *   falls back; anything else (a locked entry, no permission, ...) is rethrown. If the
+   *   native move threw after the source had already moved (the source is gone and the
+   *   target exists), the move counts as done and returns true.
+   * - Time of check: the target is checked (below) before the native move runs, with
+   *   `await`s between them, so another writer can create or change the target in that
+   *   gap; the native move then decides on its own (replacing a file, or throwing).
    * - Fallback, NOT atomic as a whole: a file is copied through a writable stream,
    *   whose swap file replaces the target's content in one step on close; a directory
    *   is copied file by file. If the copy fails, the error is thrown and the source
@@ -361,6 +368,8 @@ export class BrowserFilesApi implements FilesApi {
    * replaces a file and a directory an empty directory; anything else (a file onto a
    * directory, a directory onto a file or a non-empty directory, a directory into its
    * own subtree) returns false and changes nothing. A move onto itself is a no-op.
+   * The target's parent directories are created before the native move or the copy,
+   * so they may be left behind even when `move` returns false.
    */
   async move(source: string, target: string): Promise<boolean> {
     const sourcePath = normalizePath(source);
@@ -392,8 +401,10 @@ export class BrowserFilesApi implements FilesApi {
       try {
         await (sourceHandle as MovableHandle).move(targetParent, basename(targetPath));
         return true;
-      } catch {
-        // Fall through to copy-then-delete
+      } catch (error) {
+        // The move may have happened before the error was raised.
+        if (!(await this.exists(sourcePath)) && (await this.exists(targetPath))) return true;
+        if (!canFallBack(error, targetStats !== undefined)) throw error;
       }
     }
 
@@ -474,6 +485,22 @@ async function* fileChunks(file: File): AsyncGenerator<Uint8Array> {
     // stopped early or done: cancel, so the file's stream does not keep buffering
     await reader.cancel().catch(() => {});
   }
+}
+
+/**
+ * Whether a native `move()` error means "not done this way", so copy-then-delete may
+ * try instead: the move is unsupported for this handle (`TypeError`, as for a handle
+ * whose `move` is not callable, or `NotSupportedError`), or the target exists and this
+ * Chromium refuses to overwrite it (`InvalidModificationError`; versions before the
+ * overwrite change raise it for an existing file). Everything else, such as
+ * `NoModificationAllowedError` (a locked entry), `NotAllowedError` (no permission) or
+ * `NotFoundError`, is a real failure and is rethrown.
+ */
+function canFallBack(error: unknown, targetExisted: boolean): boolean {
+  if (error instanceof TypeError) return true;
+  const name = (error as { name?: unknown } | null)?.name;
+  if (name === "NotSupportedError") return true;
+  return name === "InvalidModificationError" && targetExisted;
 }
 
 /** Whether a listing yields nothing. */

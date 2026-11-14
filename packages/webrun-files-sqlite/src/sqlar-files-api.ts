@@ -261,7 +261,9 @@ export class SqlarFilesApi implements FilesApi {
    *
    * Like `SqliteFilesApi`, an existing target is replaced with its whole subtree,
    * not merged into, and a move into the source's own subtree or onto one of its
-   * ancestors throws. A symlink is moved as a link. A move onto itself is a no-op.
+   * ancestors throws. A target below a file or a symlink (an ancestor of the target is
+   * one) returns false, changing nothing. A symlink is moved as a link. A move onto
+   * itself is a no-op.
    */
   async move(source: string, target: string): Promise<boolean> {
     const from = toName(source);
@@ -276,8 +278,18 @@ export class SqlarFilesApi implements FilesApi {
     return inTransaction(this.#db, async (tx) => {
       const found = await tx.query(`SELECT 1 FROM sqlar WHERE ${src.where} LIMIT 1`, src.params);
       if (found.length === 0) return false;
+      // A target below a file or a symlink: refuse, changing nothing.
+      const ancestors = ancestorsAndSelf(parentName(to));
+      if (ancestors.length > 0) {
+        const blocking = await tx.query(
+          `SELECT 1 FROM sqlar WHERE name IN (${ancestors.map(() => "?").join(", ")})
+           AND (sz = -1 OR NOT (sz = 0 AND typeof(data) = 'null')) LIMIT 1`,
+          ancestors,
+        );
+        if (blocking.length > 0) return false;
+      }
       await tx.query(`DELETE FROM sqlar WHERE ${dst.where}`, dst.params);
-      for (const dir of ancestorsAndSelf(parentName(to))) {
+      for (const dir of ancestors) {
         await tx.query(
           `INSERT INTO sqlar (name, mode, mtime, sz, data) VALUES (?, ?, ?, 0, NULL)
            ON CONFLICT(name) DO NOTHING`,

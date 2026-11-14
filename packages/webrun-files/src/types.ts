@@ -200,8 +200,11 @@ export interface FilesApi {
 
   /**
    * Move/rename a file or directory, with everything under it, creating the target's
-   * parent directories as needed. Returns true on success, and false when nothing was
-   * changed: the source does not exist, or the backend refused the target (below).
+   * parent directories as needed. Returns true on success, and false when the move did
+   * not happen: the source does not exist, or the backend refused the target (below).
+   * Source and target are then unchanged, but parent directories created for the target
+   * may be left behind even when `move` returns false (node and the browser create them
+   * before moving).
    *
    * @example
    * // Publish a new index: write a lock file, then move it over the real one.
@@ -212,11 +215,12 @@ export interface FilesApi {
    * implementation supports it.
    *
    * An existing DIRECTORY at the target is backend specific. Filesystem-like backends
-   * follow POSIX `rename(2)`: node, mem and the browser replace an EMPTY directory with
+   * follow POSIX `rename(2)`: node, mem, the browser and `cow` replace an EMPTY directory with
    * a directory, and return false, changing nothing, for a directory onto a non-empty
    * directory, a file onto a directory, a directory onto a file, or a directory into
    * its own subtree. The sqlite backends replace the target's whole subtree, and throw
-   * when one path contains the other. Portable callers do not move onto directories.
+   * when one path contains the other (Sqlar returns false for a target below a file).
+   * Portable callers do not move onto directories.
    *
    * ATOMICITY. Where the backend allows it, a move is atomic: a reader sees the old
    * state or the new one, never the target missing or partial, and a failed move
@@ -224,7 +228,9 @@ export interface FilesApi {
    * sqlite (one transaction) and the browser where the native `FileSystemHandle.move()`
    * exists (Chromium, OPFS). It does NOT hold where the move is a copy then a delete:
    * s3 (no rename), the browser without native move, a `CompositeFilesApi` move across
-   * mounts, and http/rpc clients, which inherit whatever the server's backend does.
+   * mounts, the copy-on-write layer (`cow` from webrun-files-composite, which copies into
+   * its writable layer, then removes or hides the source), and http/rpc clients, which
+   * inherit whatever the server's backend does.
    *
    * PARTIAL FAILURE of a copy-then-delete move: if the copy fails, the error is thrown
    * and the source is kept (the target may hold part of a directory copy; a single file

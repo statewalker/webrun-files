@@ -299,3 +299,65 @@ describe("move is one transaction", () => {
     expect(await rawNames(db)).toEqual(["d", "d/\u{1F600}.txt"]);
   });
 });
+
+describe("move targets", () => {
+  it("returns false, changing nothing, when an ancestor of the target is a file", async () => {
+    const { db, files } = await newArchive();
+    await files.write("/a/x.txt", [enc.encode("x")]);
+    await files.write("/f", [enc.encode("file")]);
+    const before = await rawNames(db);
+    expect(await files.move("/a", "/f/x")).toBe(false);
+    expect(await files.move("/a", "/f/deeper/x")).toBe(false);
+    expect(await rawNames(db)).toEqual(before);
+  });
+
+  it("returns false, changing nothing, when an ancestor of the target is a symlink", async () => {
+    const { db, files } = await newArchive();
+    await files.write("/a/x.txt", [enc.encode("x")]);
+    await files.mkdir("/d");
+    await files.symlink("/link", "d");
+    const before = await rawNames(db);
+    expect(await files.move("/a", "/link/x")).toBe(false);
+    expect(await rawNames(db)).toEqual(before);
+  });
+
+  it("does not touch a sibling that shares the target's prefix", async () => {
+    const { db, files } = await newArchive();
+    await files.write("/a", [enc.encode("a")]);
+    await files.write("/ab", [enc.encode("old ab")]);
+    await files.write("/abc/x", [enc.encode("abc")]);
+    expect(await files.move("/a", "/ab")).toBe(true);
+    expect(await rawNames(db)).toEqual(["ab", "abc", "abc/x"]);
+    expect(dec.decode(await collectStream(files.read("/ab")))).toBe("a");
+    expect(dec.decode(await collectStream(files.read("/abc/x")))).toBe("abc");
+  });
+
+  it("moves names containing %, _ and \\ without matching other names", async () => {
+    const { db, files } = await newArchive();
+    await files.write("/p%_\\q/f.txt", [enc.encode("special")]);
+    await files.write("/pXYZq/f.txt", [enc.encode("plain")]);
+    await files.write("/t%_\\/old.txt", [enc.encode("old")]);
+    await files.write("/tAB/keep.txt", [enc.encode("keep")]);
+    expect(await files.move("/p%_\\q", "/t%_\\")).toBe(true);
+    expect(await rawNames(db)).toEqual([
+      "pXYZq",
+      "pXYZq/f.txt",
+      "t%_\\",
+      "t%_\\/f.txt",
+      "tAB",
+      "tAB/keep.txt",
+    ]);
+    expect(dec.decode(await collectStream(files.read("/t%_\\/f.txt")))).toBe("special");
+  });
+});
+
+describe("move needs db-sqlite's transaction hook", () => {
+  it("rejects with inTransaction's error on a wrapper Db that does not forward it", async () => {
+    const { db, files: healthy } = await newArchive();
+    await healthy.write("/a.txt", [enc.encode("a")]);
+    const wrapper: Db = { query: (sql, params) => db.query(sql, params) } as Db;
+    const files = new SqlarFilesApi(wrapper);
+    await expect(files.move("/a.txt", "/b.txt")).rejects.toThrow(/no SQLite transaction hook/);
+    expect(await rawNames(db)).toEqual(["a.txt"]);
+  });
+});

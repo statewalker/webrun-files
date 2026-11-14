@@ -208,7 +208,9 @@ request and wrap it, for example in `GuardedFilesApi` from `@statewalker/webrun-
 - `move` and `copy` address one server; moving between two servers is not supported.
 - `move` is as atomic as the server's backend makes it (node, mem, sqlite: atomic; s3 or a
   cross-mount composite: copy then delete). The client adds no guarantee, and a request that
-  fails in transit leaves it unknown whether the move happened.
+  fails in transit leaves it unknown whether the move happened. A `MoveIncompleteError` thrown by
+  the server's backend (a half-done copy-then-delete move) is rebuilt on the client as a
+  `MoveIncompleteError` with the client's paths, recognised by the error name in the response.
 
 ### Tests
 

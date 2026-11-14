@@ -265,7 +265,10 @@ does. A dangling link, or a chain longer than 8, behaves as a missing path. `rem
   copied; mode, mtime and data stay as they were. Readers see the old state or the new one, and a
   failure leaves source and target unchanged. Like `SqliteFilesApi`, it replaces the target's
   subtree rather than merging into it, and throws
-  `sqlar: cannot move /a to /a/b: one contains the other` when one path contains the other.
+  `sqlar: cannot move /a to /a/b: one contains the other` when one path contains the other. A
+  target below a file or a symlink returns `false` and changes nothing. A `Db` without the hook
+  (a wrapper that does not forward it) makes `move` reject with `inTransaction`'s
+  `this Db has no SQLite transaction hook` error.
 - The other multi-row mutations (`copy`, `remove` of a tree) are not wrapped in a transaction: a
   failure part-way leaves the rows already changed in place.
 - `list` loads every row under the directory, then sorts the entries into path order before
