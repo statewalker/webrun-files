@@ -14,7 +14,7 @@ jobs:
   # (statewalker/statewalker-ci's merge-lockfile.yml; statewalker-root docs/process/merging.md).
   lockfile:
     needs: ci
-    if: github.event_name == 'pull_request' && github.head_ref == 'deps/statewalker-lockfile'
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && github.head_ref == 'deps/statewalker-lockfile' }}
     permissions:
       contents: read
       pull-requests: read
