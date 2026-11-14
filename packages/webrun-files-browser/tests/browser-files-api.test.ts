@@ -82,3 +82,59 @@ describe("BrowserFilesApi specific tests", () => {
     expect(await api.exists("/a/b/c/d/e")).toBe(true);
   });
 });
+
+describe("BrowserFilesApi.write when the content fails part way", () => {
+  async function freshApi() {
+    const rootHandle = (await getOriginPrivateDirectory(driver)) as FileSystemDirectoryHandle;
+    return new BrowserFilesApi({ rootHandle });
+  }
+  async function* failing() {
+    yield new TextEncoder().encode("partial");
+    throw new Error("source failed");
+  }
+  async function text(api: BrowserFilesApi, path: string) {
+    const parts: Uint8Array[] = [];
+    for await (const c of api.read(path)) parts.push(c);
+    return new TextDecoder().decode(Buffer.concat(parts));
+  }
+
+  it("keeps the old file", async () => {
+    const api = await freshApi();
+    await api.write("/f.txt", [new TextEncoder().encode("old content")]);
+    await expect(api.write("/f.txt", failing())).rejects.toThrow("source failed");
+    expect(await text(api, "/f.txt")).toBe("old content");
+  });
+
+  it("leaves no file behind when there was none", async () => {
+    const api = await freshApi();
+    await expect(api.write("/new.txt", failing())).rejects.toThrow("source failed");
+    expect(await api.exists("/new.txt")).toBe(false);
+  });
+});
+
+describe("BrowserFilesApi.write when the commit fails", () => {
+  it("leaves no empty file behind when close() rejects", async () => {
+    const rootHandle = (await getOriginPrivateDirectory(driver)) as FileSystemDirectoryHandle;
+    const api = new BrowserFilesApi({ rootHandle });
+    const getFileHandle = rootHandle.getFileHandle.bind(rootHandle);
+    rootHandle.getFileHandle = (async (name: string, options?: FileSystemGetFileOptions) => {
+      const handle = await getFileHandle(name, options);
+      if (!options?.create) return handle;
+      const createWritable = handle.createWritable.bind(handle);
+      handle.createWritable = (async () => {
+        const writable = await createWritable();
+        writable.close = async () => {
+          await writable.abort();
+          throw new Error("quota exceeded");
+        };
+        return writable;
+      }) as typeof handle.createWritable;
+      return handle;
+    }) as typeof rootHandle.getFileHandle;
+    await expect(api.write("/q.txt", [new TextEncoder().encode("data")])).rejects.toThrow(
+      "quota exceeded",
+    );
+    rootHandle.getFileHandle = getFileHandle;
+    expect(await api.exists("/q.txt")).toBe(false);
+  });
+});
