@@ -115,6 +115,13 @@ directory whose whole subtree sorts at or before `after`.
   can leave one behind, still visible to `exists`, `stats` and `read`. A caller that reuses
   a chunk's buffer after yielding it may change what is written (up to 64 KiB is held before
   each write). Reads stream.
+- **Replacing has the costs of a rename.** The disk must hold the old file and the new one
+  until the rename. The new content is not flushed (`fsync`) before the rename, so after a
+  power loss the file can be empty or partial on some file systems. On Windows a file that
+  another process holds open cannot be replaced, so the rename is retried for about a second
+  before the write fails. A file the rename cannot replace because it is a mount point (a
+  bind-mounted file in a container, `EBUSY`) or on another device (`EXDEV`) is written in
+  place instead: the temporary is copied into it, so readers may see it half-written.
 - **`move` across devices returns `false`.** It is a single `fs.rename`; when that fails (`EXDEV`,
   permissions) the method returns `false` instead of falling back to copy and delete.
 - **Unreadable reads look like missing files.** `read` swallows every error (missing file,

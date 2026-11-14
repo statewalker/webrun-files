@@ -1,5 +1,5 @@
 /**
- * write() streams: each chunk reaches the disk before the next is pulled, the
+ * write() streams: each 64 KiB batch reaches the disk before more is pulled, the
  * file appears only once complete (a failing source leaves the old file), and
  * a FilesApi rooted at "/" accepts paths.
  */
@@ -9,6 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { NodeFilesApi } from "../src/index.js";
+import { replaceFile } from "../src/replace-file.js";
 
 const dirs: string[] = [];
 async function tempDir() {
@@ -174,5 +175,65 @@ describe("NodeFilesApi.write: what a replacing write must not change", () => {
     }
     await expect(api.write("/sub", chunks())).rejects.toThrow();
     expect(pulled).toBe(0);
+  });
+});
+
+describe("NodeFilesApi.write: links and rename fallbacks", () => {
+  it("replaces a dangling link with a regular file, creating no target", async () => {
+    const dir = await tempDir();
+    const api = new NodeFilesApi({ rootDir: dir });
+    fsSync.symlinkSync("missing.txt", path.join(dir, "link.txt"));
+    await api.write("/link.txt", [new TextEncoder().encode("new")]);
+    expect(fsSync.lstatSync(path.join(dir, "link.txt")).isFile()).toBe(true);
+    expect(fsSync.readFileSync(path.join(dir, "link.txt"), "utf8")).toBe("new");
+    expect(fsSync.existsSync(path.join(dir, "missing.txt"))).toBe(false);
+  });
+
+  const failing = (code: string, times = Infinity) => {
+    let calls = 0;
+    const rename = async (from: string, to: string) => {
+      calls++;
+      if (calls <= times) throw Object.assign(new Error(code), { code });
+      await fs.rename(from, to);
+    };
+    return { rename, calls: () => calls };
+  };
+
+  for (const code of ["EBUSY", "EXDEV"]) {
+    it(`copies into the target in place when rename fails with ${code} (bind-mounted file)`, async () => {
+      const dir = await tempDir();
+      const tmp = path.join(dir, "tmp");
+      const target = path.join(dir, "target");
+      fsSync.writeFileSync(tmp, "new");
+      fsSync.writeFileSync(target, "old content");
+      const ino = fsSync.statSync(target).ino;
+      await replaceFile(tmp, target, { rename: failing(code).rename, platform: "linux" });
+      expect(fsSync.readFileSync(target, "utf8")).toBe("new");
+      expect(fsSync.statSync(target).ino).toBe(ino); // written in place, not replaced
+      expect(fsSync.existsSync(tmp)).toBe(false);
+    });
+  }
+
+  it("retries a rename refused on Windows while another process holds the file", async () => {
+    const dir = await tempDir();
+    const tmp = path.join(dir, "tmp");
+    const target = path.join(dir, "target");
+    fsSync.writeFileSync(tmp, "new");
+    fsSync.writeFileSync(target, "old");
+    const r = failing("EPERM", 2);
+    await replaceFile(tmp, target, { rename: r.rename, platform: "win32", retryDelayMs: 1 });
+    expect(r.calls()).toBe(3);
+    expect(fsSync.readFileSync(target, "utf8")).toBe("new");
+  });
+
+  it("does not retry EPERM elsewhere, and leaves the temporary to the caller", async () => {
+    const dir = await tempDir();
+    const tmp = path.join(dir, "tmp");
+    fsSync.writeFileSync(tmp, "new");
+    const r = failing("EPERM");
+    await expect(
+      replaceFile(tmp, path.join(dir, "target"), { rename: r.rename, platform: "linux" }),
+    ).rejects.toMatchObject({ code: "EPERM" });
+    expect(r.calls()).toBe(1);
   });
 });

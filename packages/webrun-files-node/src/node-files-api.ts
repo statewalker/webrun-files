@@ -9,6 +9,7 @@ import type {
   ReadOptions,
 } from "@statewalker/webrun-files";
 import { dirname, joinPath, listInPathOrder, normalizePath } from "@statewalker/webrun-files";
+import { replaceFile } from "./replace-file.js";
 
 /** Small chunks are gathered up to this size before each write call. */
 const WRITE_BATCH = 64 * 1024;
@@ -164,7 +165,7 @@ export class NodeFilesApi implements FilesApi {
       await flush();
       if (mode !== undefined) await handle.chmod(mode);
       await handle.close();
-      await fs.rename(tmp, realPath);
+      await replaceFile(tmp, realPath);
       done = true;
     } finally {
       if (!done) {
