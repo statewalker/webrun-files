@@ -9,6 +9,19 @@ import type {
   ReadOptions,
 } from "@statewalker/webrun-files";
 import { dirname, joinPath, listInPathOrder, normalizePath } from "@statewalker/webrun-files";
+import { replaceFile } from "./replace-file.js";
+
+/** Small chunks are gathered up to this size before each write call. */
+const WRITE_BATCH = 64 * 1024;
+
+/** Temporaries of writes in flight: hidden from `list`, left behind only by a crash. */
+const TMP_PREFIX = ".webrun-tmp-";
+const TMP_NAME = /^\.webrun-tmp-[0-9a-f]{16}$/;
+const tmpName = () =>
+  TMP_PREFIX +
+  Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) =>
+    b.toString(16).padStart(2, "0"),
+  ).join("");
 
 export interface NodeFilesApiOptions {
   /**
@@ -32,7 +45,8 @@ export class NodeFilesApi implements FilesApi {
   /** The real path of a virtual one; throws when `..` segments would take it outside rootDir. */
   private resolvePath(virtualPath: string): string {
     const real = nodePath.resolve(this.rootDir, `.${normalizePath(virtualPath)}`);
-    if (real !== this.rootDir && !real.startsWith(this.rootDir + nodePath.sep)) {
+    const prefix = this.rootDir.endsWith(nodePath.sep) ? this.rootDir : this.rootDir + nodePath.sep;
+    if (real !== this.rootDir && !real.startsWith(prefix)) {
       throw new Error(`NodeFilesApi: path is outside rootDir: ${virtualPath}`);
     }
     return real;
@@ -85,28 +99,80 @@ export class NodeFilesApi implements FilesApi {
     path: string,
     content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
   ): Promise<void> {
-    const realPath = this.resolvePath(path);
+    const resolved = this.resolvePath(path);
+    if (resolved === this.rootDir) {
+      throw Object.assign(new Error(`EISDIR: cannot write the root directory: ${path}`), {
+        code: "EISDIR",
+      });
+    }
     const normalized = normalizePath(path);
     const dir = this.resolvePath(dirname(normalized));
 
     await fs.mkdir(dir, { recursive: true });
 
-    const chunks: Uint8Array[] = [];
-    let totalLength = 0;
-
-    for await (const chunk of content) {
-      chunks.push(chunk);
-      totalLength += chunk.length;
+    // An existing file keeps what an in-place write kept: a symbolic link is written
+    // through to its target, and the new file gets the old file's mode.
+    // (A dangling link is replaced by a regular file rather than creating its target.)
+    let realPath = resolved;
+    let mode: number | undefined;
+    let existing: Stats | undefined;
+    try {
+      const st = await fs.lstat(resolved);
+      if (st.isSymbolicLink()) realPath = await fs.realpath(resolved);
+      existing = await fs.stat(realPath);
+    } catch {
+      // a new file (or a dangling link): written as a new file
+    }
+    if (existing) {
+      if (existing.isDirectory()) {
+        throw Object.assign(new Error(`EISDIR: illegal operation on a directory: ${path}`), {
+          code: "EISDIR",
+        });
+      }
+      // A rename would replace a file the caller may not write: refuse, as writeFile did.
+      await fs.access(realPath, fs.constants.W_OK);
+      // Permission bits only: setuid/setgid are dropped, as the kernel drops them on a write.
+      mode = existing.mode & 0o777;
     }
 
-    const result = new Uint8Array(totalLength);
-    let offset = 0;
-    for (const chunk of chunks) {
-      result.set(chunk, offset);
-      offset += chunk.length;
+    // Stream into a temporary beside the file, then rename it over the file: memory stays at
+    // about one batch, a source that fails leaves the old file, and a file can be rewritten
+    // from its own read. The short dot-name works for names near the length limit, and
+    // `list` does not show it.
+    const tmp = nodePath.join(nodePath.dirname(realPath), tmpName());
+    const handle = await fs.open(tmp, "wx");
+    let done = false;
+    try {
+      const batch: Uint8Array[] = [];
+      let batched = 0;
+      const flush = async () => {
+        if (batched === 0) return;
+        const bytes = batch.length === 1 ? (batch[0] as Uint8Array) : Buffer.concat(batch);
+        let offset = 0;
+        while (offset < bytes.length) {
+          const { bytesWritten } = await handle.write(bytes, offset, bytes.length - offset);
+          offset += bytesWritten;
+        }
+        batch.length = 0;
+        batched = 0;
+      };
+      for await (const chunk of content) {
+        if (chunk.length === 0) continue;
+        batch.push(chunk);
+        batched += chunk.length;
+        if (batched >= WRITE_BATCH) await flush();
+      }
+      await flush();
+      if (mode !== undefined) await handle.chmod(mode);
+      await handle.close();
+      await replaceFile(tmp, realPath);
+      done = true;
+    } finally {
+      if (!done) {
+        await handle.close().catch(() => {});
+        await fs.rm(tmp, { force: true }).catch(() => {});
+      }
     }
-
-    await fs.writeFile(realPath, result);
   }
 
   async mkdir(path: string): Promise<void> {
@@ -130,6 +196,7 @@ export class NodeFilesApi implements FilesApi {
     }
     const infos: FileInfo[] = [];
     for (const entry of entries) {
+      if (entry.isFile() && TMP_NAME.test(entry.name)) continue; // a write in flight
       const entryPath = joinPath(dir, entry.name);
       let stat: Stats;
       try {

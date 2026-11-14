@@ -83,7 +83,7 @@ try {
 | Call | Implementation |
 | --- | --- |
 | `read` | `fs.open` + positioned `handle.read` in 8 KiB buffers, only the requested range |
-| `write` | `fs.mkdir(parent, { recursive: true })`, then collects every chunk and calls `fs.writeFile` once |
+| `write` | `fs.mkdir(parent, { recursive: true })`, then streams the chunks (batched to 64 KiB) into a temporary `.webrun-tmp-<random>` beside the file and renames it over the file |
 | `list` | `fs.readdir` + `fs.stat` per entry, walked through `listInPathOrder` |
 | `move` | `fs.rename` after creating the target's parent |
 | `copy` | `fs.cp(..., { recursive: true })` |
@@ -103,8 +103,26 @@ directory whose whole subtree sorts at or before `after`.
   `NodeFilesApi: path is outside rootDir: /../etc/passwd` (reads throw when iterated). `..` that
   stays inside (`/a/../b.txt`) is fine. Symbolic links inside `rootDir` are followed as the
   operating system follows them, so a link pointing out of `rootDir` still leads out.
-- **`write` holds the whole file in memory** before writing it, so a very large upload costs its
-  full size in RAM. Reads stream.
+- **`write` streams, and replaces the file at the end.** Memory stays at about two batches of
+  64 KiB plus one chunk. Until the rename the old file stays readable, and a source that fails leaves it
+  unchanged. A read-only file is refused, as an in-place write was. Replacing keeps the old
+  file's permission bits (not setuid/setgid, which a write would clear) and writes through a
+  symbolic link to its target (a dangling link is replaced by a regular file, and a link out of
+  `rootDir` is written there, with its temporary beside the target); a hard link is replaced,
+  not written through, and the owner, ACLs and extended
+  attributes are those of a new file. The temporary needs write permission on the directory.
+  `list` hides the temporaries (files named exactly `.webrun-tmp-` plus 16 hex digits); a crash
+  can leave one behind, still visible to `exists`, `stats` and `read`. A caller that reuses
+  a chunk's buffer after yielding it may change what is written (up to 64 KiB is held before
+  each write). Reads stream.
+- **Replacing has the costs of a rename.** The disk must hold the old file and the new one
+  until the rename. The new content is not flushed (`fsync`) before the rename, so after a
+  power loss the file can be empty or partial on some file systems. On Windows a file that
+  another process holds open cannot be replaced, so the rename is retried for about a second
+  before the write fails (the temporary is removed and the old file kept). A file the rename cannot replace because it is a mount point (a
+  bind-mounted file in a container, `EBUSY`) or on another device (`EXDEV`) is written in
+  place instead: the temporary is copied into it, keeping its owner and mode, so readers may
+  see it half-written, and a failure part way (a full disk) leaves it partial.
 - **`move` across devices returns `false`.** It is a single `fs.rename`; when that fails (`EXDEV`,
   permissions) the method returns `false` instead of falling back to copy and delete.
 - **Unreadable reads look like missing files.** `read` swallows every error (missing file,
