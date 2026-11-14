@@ -1,4 +1,5 @@
 import type { Db } from "@statewalker/db-api";
+import { inTransaction } from "@statewalker/db-sqlite";
 import type {
   FileInfo,
   FileStats,
@@ -250,10 +251,47 @@ export class SqlarFilesApi implements FilesApi {
     return true;
   }
 
+  /**
+   * One transaction, through `inTransaction` (so the `Db` must carry db-sqlite's
+   * transaction hook): delete the target's subtree, create the target's parents, then
+   * rename the source row and every row under it by rewriting the name prefix. Content
+   * is never copied, only re-keyed, and mode, mtime and data stay as they were, as with
+   * `rename(2)`. Readers on any connection see the old state or the new one; a failure
+   * rolls everything back, leaving source and target unchanged.
+   *
+   * Like `SqliteFilesApi`, an existing target is replaced with its whole subtree,
+   * not merged into, and a move into the source's own subtree or onto one of its
+   * ancestors throws. A symlink is moved as a link. A move onto itself is a no-op.
+   */
   async move(source: string, target: string): Promise<boolean> {
-    if (!(await this.copy(source, target))) return false;
-    await this.remove(source);
-    return true;
+    const from = toName(source);
+    const to = toName(target);
+    if (from === to) return this.exists(source);
+    if (isInside(to, from) || isInside(from, to)) {
+      throw new Error(`sqlar: cannot move /${from} to /${to}: one contains the other`);
+    }
+    const src = selfAndDescendants(from);
+    const dst = selfAndDescendants(to);
+    const now = Math.floor(Date.now() / 1000);
+    return inTransaction(this.#db, async (tx) => {
+      const found = await tx.query(`SELECT 1 FROM sqlar WHERE ${src.where} LIMIT 1`, src.params);
+      if (found.length === 0) return false;
+      await tx.query(`DELETE FROM sqlar WHERE ${dst.where}`, dst.params);
+      for (const dir of ancestorsAndSelf(parentName(to))) {
+        await tx.query(
+          `INSERT INTO sqlar (name, mode, mtime, sz, data) VALUES (?, ?, ?, 0, NULL)
+           ON CONFLICT(name) DO NOTHING`,
+          [dir, DIR_MODE, now],
+        );
+      }
+      // SQLite's substr() counts characters (code points), not UTF-16 units.
+      await tx.query(`UPDATE sqlar SET name = ? || substr(name, ?) WHERE ${src.where}`, [
+        to,
+        [...from].length + 1,
+        ...src.params,
+      ]);
+      return true;
+    });
   }
 
   /** `length(data) = sz` is plaintext, `< sz` is compressed, `> sz` is corrupt. */
@@ -374,6 +412,11 @@ function selfAndDescendants(name: string): { where: string; params: string[] } {
 /** A FilesApi path as a stored name: normalised, without the leading slash. The root is "". */
 function toName(path: string): string {
   return normalizePath(path).slice(1);
+}
+
+/** Whether `name` lies strictly under `ancestor`; everything lies under the root "". */
+function isInside(name: string, ancestor: string): boolean {
+  return ancestor === "" ? name !== "" : name.startsWith(`${ancestor}/`);
 }
 
 function joinName(base: string, rest: string): string {

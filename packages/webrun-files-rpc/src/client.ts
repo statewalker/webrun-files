@@ -211,6 +211,12 @@ export class FilesRpcClient implements FilesApi {
   remove(path: string): Promise<boolean> {
     return this.#rpc.remove(path, { requestId: newStreamId() });
   }
+  /**
+   * One `move` call: the server's backend does the move, so it is exactly as atomic as
+   * that backend's `move` (node, mem, sqlite: atomic; s3 or a cross-mount composite:
+   * copy then delete). The client adds no guarantee, and a call that fails in transit
+   * leaves it unknown whether the move happened.
+   */
   move(source: string, target: string): Promise<boolean> {
     return this.#rpc.move(source, target, { requestId: newStreamId() });
   }

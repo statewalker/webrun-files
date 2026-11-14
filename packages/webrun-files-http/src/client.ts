@@ -230,6 +230,12 @@ class HttpFilesApi implements FilesApi {
     return this.#found(await this.#operation(source, "COPY", "copy", target));
   }
 
+  /**
+   * One `MOVE` request: the server's backend does the move, so it is exactly as atomic
+   * as that backend's `move` (node, mem, sqlite: atomic; s3 or a cross-mount composite:
+   * copy then delete). The client adds no guarantee, and a request that fails in
+   * transit leaves it unknown whether the move happened.
+   */
   async move(source: string, target: string): Promise<boolean> {
     return this.#found(await this.#operation(source, "MOVE", "move", target));
   }

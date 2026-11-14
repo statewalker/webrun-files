@@ -28,6 +28,8 @@ export {
 } from "./file-utils.js";
 // Listing order
 export { comparePaths, listInPathOrder, mergeInPathOrder } from "./list-order.js";
+// Moves done as copy-then-delete
+export { MoveIncompleteError, removeMovedSource } from "./move-utils.js";
 // Path utilities
 export {
   basename,

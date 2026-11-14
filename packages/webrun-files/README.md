@@ -151,6 +151,39 @@ writer is guaranteed anyway. How far the exclusion reaches is the implementation
 `webrun-files-http` and `webrun-files-rpc` do not offer it yet: neither protocol has a
 conditional create.
 
+### Replace a file atomically: write a temporary, then `move` it
+
+```typescript
+await files.write('/repo/.git/index.lock', newIndex);
+await files.move('/repo/.git/index.lock', '/repo/.git/index'); // replaces the old index
+```
+
+`move(source, target)` replaces an existing file at the target and creates the target's parent
+directories. It returns `false` only when nothing changed: the source is missing, or the backend
+refused the target. Moving onto an existing directory differs between backends: node, mem and
+the browser follow `rename(2)` (a directory replaces an empty directory; anything else returns
+`false`), while the sqlite backends replace the target's whole subtree. Portable code does not
+move onto directories.
+
+Where the storage allows it, the move is atomic: readers see the old file or the new one, never
+a missing or partial target, and a failed move changes nothing.
+
+| Package | Mechanism | Atomic |
+| --- | --- | --- |
+| `webrun-files-node` | `fs.rename` | yes |
+| `webrun-files-mem` | one synchronous re-keying of the entries | yes |
+| `webrun-files-sqlite` | one transaction renaming rows by prefix | yes |
+| `webrun-files-browser` | native `FileSystemHandle.move()` (Chromium, OPFS) | yes |
+| `webrun-files-browser` | copy, then delete, without native `move()` | no |
+| `webrun-files-s3` | `CopyObject`, then `DeleteObject` | no |
+| `webrun-files-composite` | the backend's `move` within a mount; copy, then delete, across mounts | as the backend; no across mounts |
+| `webrun-files-http`, `webrun-files-rpc` | the server's backend | as the server's backend |
+
+A copy-then-delete move that copied but cannot remove its source retries the removal once, then
+throws a `MoveIncompleteError` (exported here, with `source` and `target`): the target already
+holds the new content and the source still exists. Backends built on copy-then-delete call
+`removeMovedSource(files, source, target)` to get this behaviour.
+
 ### Paths
 
 ```typescript

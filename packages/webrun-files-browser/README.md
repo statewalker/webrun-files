@@ -143,9 +143,18 @@ This is how the package's own tests run.
   directory of that name with `getFileHandle` / `getDirectoryHandle` (no `create`) and, if there
   is none, creates the parents and writes the file as `write` does.
 - `remove` is `removeEntry(name, { recursive: true })` on the parent.
-- `move` uses the native `FileSystemHandle.move()` where it exists (Chromium 110+), which renames
-  in place without copying. Without it, or when it throws, `move` copies then removes, which is
-  not atomic.
+- `move` first checks an existing target as `rename(2)` would: a file replaces a file and a
+  directory an empty directory; a file onto a directory, a directory onto a file or a non-empty
+  directory, or a directory into its own subtree returns `false` and changes nothing. It then uses
+  the native `FileSystemHandle.move()` where it exists (Chromium 110+), which renames in place
+  without copying and is atomic in OPFS; current Chromium replaces an existing file. Without it,
+  or when it throws (versions that refuse an existing target), `move` copies then removes, which
+  is not atomic: a file is copied through a writable stream, so the target's content is swapped
+  in one step on close; a directory is copied file by file. If the source cannot be removed after
+  the copy, the removal is retried once, then `move` throws a `MoveIncompleteError`
+  (`move /a -> /b: the target was replaced, but the source could not be removed`): the target
+  already holds the new content and the source still exists. It never returns `false` for a
+  half-done move.
 
 ### Why listings read every file
 

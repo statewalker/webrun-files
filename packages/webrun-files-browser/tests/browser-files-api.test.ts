@@ -2,7 +2,12 @@
  * Tests for BrowserFilesApi implementation using native-file-system-adapter's memory backend
  */
 
-import { collectStream, createFilesApiTests } from "@statewalker/webrun-files-tests";
+import { MoveIncompleteError } from "@statewalker/webrun-files";
+import {
+  collectGenerator,
+  collectStream,
+  createFilesApiTests,
+} from "@statewalker/webrun-files-tests";
 import { getOriginPrivateDirectory } from "native-file-system-adapter";
 // @ts-expect-error - no type declarations for this module
 import * as driver from "native-file-system-adapter/src/adapters/memory.js";
@@ -335,5 +340,141 @@ describe("BrowserFilesApi.createExclusive across tabs", () => {
       vi.stubGlobal("navigator", {});
       await loserReturnsAtOnce(new BrowserFilesApi({ rootHandle: await newRoot() }));
     });
+  });
+});
+
+describe("BrowserFilesApi.move", () => {
+  const bytes = (s: string) => [new TextEncoder().encode(s)];
+  /** A fresh API; the memory adapter's root outlives a test, so it is emptied first. */
+  async function setup() {
+    const rootHandle = (await getOriginPrivateDirectory(driver)) as FileSystemDirectoryHandle;
+    for await (const [name] of rootHandle.entries()) {
+      await rootHandle.removeEntry(name, { recursive: true });
+    }
+    return { rootHandle, api: new BrowserFilesApi({ rootHandle }) };
+  }
+  async function text(api: BrowserFilesApi, path: string) {
+    return new TextDecoder().decode(await collectStream(api.read(path)));
+  }
+
+  describe("copy-then-delete fallback when the source cannot be deleted", () => {
+    it("retries once, then throws MoveIncompleteError; the target holds the new content", async () => {
+      const { rootHandle, api } = await setup();
+      await api.write("/index.lock", bytes("new index"));
+      await api.write("/index", bytes("old index"));
+      const removeEntry = vi
+        .spyOn(rootHandle, "removeEntry")
+        .mockRejectedValue(new DOMException("locked", "NoModificationAllowedError"));
+
+      const moving = api.move("/index.lock", "/index");
+      await expect(moving).rejects.toBeInstanceOf(MoveIncompleteError);
+      await expect(moving).rejects.toThrow(
+        "move /index.lock -> /index: the target was replaced, but the source could not be removed",
+      );
+      expect(removeEntry).toHaveBeenCalledTimes(2);
+      removeEntry.mockRestore();
+
+      expect(await text(api, "/index")).toBe("new index");
+      expect(await text(api, "/index.lock")).toBe("new index");
+    });
+
+    it("succeeds when the retry removes the source", async () => {
+      const { rootHandle, api } = await setup();
+      await api.write("/a.lock", bytes("new"));
+      await api.write("/a", bytes("old"));
+      const removeEntry = vi
+        .spyOn(rootHandle, "removeEntry")
+        .mockRejectedValueOnce(new DOMException("busy", "NoModificationAllowedError"));
+
+      expect(await api.move("/a.lock", "/a")).toBe(true);
+      expect(removeEntry).toHaveBeenCalledTimes(2);
+      removeEntry.mockRestore();
+      expect(await text(api, "/a")).toBe("new");
+      expect(await api.exists("/a.lock")).toBe(false);
+    });
+  });
+
+  it("falls back and replaces the target when the native move() refuses an existing file", async () => {
+    const { rootHandle, api } = await setup();
+    await api.write("/ref.lock", bytes("new ref"));
+    await api.write("/ref", bytes("old ref"));
+    const getFileHandle = rootHandle.getFileHandle.bind(rootHandle);
+    const nativeMove = vi.fn(async () => {
+      throw new DOMException("target exists", "InvalidModificationError");
+    });
+    rootHandle.getFileHandle = (async (name: string, options?: FileSystemGetFileOptions) =>
+      Object.assign(await getFileHandle(name, options), {
+        move: nativeMove,
+      })) as typeof rootHandle.getFileHandle;
+
+    expect(await api.move("/ref.lock", "/ref")).toBe(true);
+    rootHandle.getFileHandle = getFileHandle;
+    expect(nativeMove).toHaveBeenCalledTimes(1);
+    expect(await text(api, "/ref")).toBe("new ref");
+    expect(await api.exists("/ref.lock")).toBe(false);
+  });
+
+  it("uses the native move() when it succeeds, without copying", async () => {
+    const { rootHandle, api } = await setup();
+    await api.write("/x.lock", bytes("new"));
+    await api.write("/x", bytes("old"));
+    const getFileHandle = rootHandle.getFileHandle.bind(rootHandle);
+    // Stands in for Chromium's OPFS move(): replaces the target in one step.
+    const nativeMove = vi.fn(async (parent: FileSystemDirectoryHandle, name: string) => {
+      const file = await (await getFileHandle("x.lock")).getFile();
+      const writable = await (await parent.getFileHandle(name, { create: true })).createWritable();
+      await writable.write(await file.arrayBuffer());
+      await writable.close();
+      await rootHandle.removeEntry("x.lock");
+    });
+    rootHandle.getFileHandle = (async (name: string, options?: FileSystemGetFileOptions) =>
+      Object.assign(await getFileHandle(name, options), {
+        move: nativeMove,
+      })) as typeof rootHandle.getFileHandle;
+
+    expect(await api.move("/x.lock", "/x")).toBe(true);
+    rootHandle.getFileHandle = getFileHandle;
+    expect(nativeMove).toHaveBeenCalledTimes(1);
+    expect(await text(api, "/x")).toBe("new");
+    expect(await api.exists("/x.lock")).toBe(false);
+  });
+
+  describe("onto an existing entry, as rename(2) does", () => {
+    async function populated() {
+      const { api } = await setup();
+      await api.write("/file.txt", bytes("file"));
+      await api.write("/dir/a.txt", bytes("a"));
+      await api.write("/dir/sub/b.txt", bytes("b"));
+      await api.mkdir("/empty");
+      await api.write("/full/x.txt", bytes("x"));
+      return api;
+    }
+    const paths = async (api: BrowserFilesApi) =>
+      (await collectGenerator(api.list("/", { recursive: true }))).map((e) => e.path);
+
+    it("replaces an empty directory with a directory", async () => {
+      const api = await populated();
+      expect(await api.move("/dir", "/empty")).toBe(true);
+      expect(await text(api, "/empty/sub/b.txt")).toBe("b");
+      expect(await api.exists("/dir")).toBe(false);
+    });
+
+    for (const [what, source, target] of [
+      ["a directory onto a non-empty directory", "/dir", "/full"],
+      ["a file onto a directory", "/file.txt", "/empty"],
+      ["a directory onto a file", "/dir", "/file.txt"],
+      ["a directory into itself", "/dir", "/dir/sub/inner"],
+      ["a directory onto its own parent", "/dir/sub", "/dir"],
+      ["a file below a file", "/dir/a.txt", "/file.txt/a.txt"],
+    ] as const) {
+      it(`refuses ${what}: returns false and changes nothing`, async () => {
+        const api = await populated();
+        const before = await paths(api);
+        expect(await api.move(source, target)).toBe(false);
+        expect(await paths(api)).toEqual(before);
+        expect(await text(api, "/file.txt")).toBe("file");
+        expect(await text(api, "/dir/sub/b.txt")).toBe("b");
+      });
+    }
   });
 });

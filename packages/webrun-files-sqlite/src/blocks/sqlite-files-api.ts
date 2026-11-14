@@ -426,6 +426,12 @@ export class SqliteFilesApi implements FilesApi {
     return this.#transfer(source, target, "copy");
   }
 
+  /**
+   * One transaction (see the private `#transfer`): the target's subtree is removed, its
+   * contents collected when no other path shares them, and the source's path rows are
+   * renamed by prefix, keeping their content ids, so no content is copied. Atomic for
+   * readers on every connection; a failure leaves source and target unchanged.
+   */
   async move(source: string, target: string): Promise<boolean> {
     return this.#transfer(source, target, "move");
   }
@@ -450,6 +456,8 @@ export class SqliteFilesApi implements FilesApi {
       params: inS.params,
     };
     const now = Date.now();
+    // SQLite's substr() counts characters (code points), not UTF-16 units.
+    const rest = [...from].length + 1;
     const statements: SqlStatement[] = [
       ...this.#removeTree(to, guard),
       ...ancestorsAndSelf(parentOf(to)).map((dir) => ({
@@ -461,12 +469,12 @@ export class SqliteFilesApi implements FilesApi {
         ? {
             sql: `INSERT INTO ${this.#paths}(path, fid, mtime)
                   SELECT ? || substr(p.path, ?), p.fid, ? FROM ${this.#paths} p WHERE ${range.where}`,
-            params: [to, from.length + 1, now, ...range.params],
+            params: [to, rest, now, ...range.params],
           }
         : {
             sql: `UPDATE ${this.#paths} AS p SET path = ? || substr(p.path, ?), mtime = ?
                   WHERE ${range.where}`,
-            params: [to, from.length + 1, now, ...range.params],
+            params: [to, rest, now, ...range.params],
           },
     ];
     const counts = await this.#transaction(statements);

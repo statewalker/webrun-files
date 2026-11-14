@@ -1,4 +1,4 @@
-import type { FilesApi } from "@statewalker/webrun-files";
+import { type FilesApi, MoveIncompleteError } from "@statewalker/webrun-files";
 import { MemFilesApi } from "@statewalker/webrun-files-mem";
 import { createFilesApiTests } from "@statewalker/webrun-files-tests";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -629,5 +629,52 @@ describe("createExclusive follows the source at call time", () => {
     expect(await logged.createExclusive("/x.lock", [toBytes("x")])).toBe(true);
     expect(logged.calls).toEqual(["/x.lock"]);
     expect(Object.hasOwn(logged, "createExclusive")).toBe(false);
+  });
+});
+
+describe("CompositeFilesApi.move across mounts when the source cannot be removed", () => {
+  const text = async (api: FilesApi, path: string) => {
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of api.read(path)) chunks.push(chunk);
+    return new TextDecoder().decode(Buffer.concat(chunks));
+  };
+
+  function setup(failures: number) {
+    const root = new MemFilesApi();
+    const sub = new MemFilesApi();
+    let removes = 0;
+    const remove = root.remove.bind(root);
+    root.remove = async (path: string) => {
+      removes++;
+      if (removes <= failures) throw new Error("source is busy");
+      return remove(path);
+    };
+    const composite = new CompositeFilesApi(root).mount("/mounted", sub);
+    return { root, composite, removes: () => removes };
+  }
+
+  it("retries once, then throws MoveIncompleteError; the target holds the new content", async () => {
+    const { composite, removes } = setup(2);
+    await composite.write("/index.lock", [new TextEncoder().encode("new")]);
+    await composite.write("/mounted/index", [new TextEncoder().encode("old")]);
+
+    const moving = composite.move("/index.lock", "/mounted/index");
+    await expect(moving).rejects.toBeInstanceOf(MoveIncompleteError);
+    await expect(moving).rejects.toThrow(
+      "move /index.lock -> /mounted/index: the target was replaced, but the source could not be removed",
+    );
+    expect(removes()).toBe(2);
+    expect(await text(composite, "/mounted/index")).toBe("new");
+    expect(await composite.exists("/index.lock")).toBe(true);
+  });
+
+  it("succeeds when the retry removes the source", async () => {
+    const { composite, removes } = setup(1);
+    await composite.write("/index.lock", [new TextEncoder().encode("new")]);
+
+    expect(await composite.move("/index.lock", "/mounted/index")).toBe(true);
+    expect(removes()).toBe(2);
+    expect(await text(composite, "/mounted/index")).toBe("new");
+    expect(await composite.exists("/index.lock")).toBe(false);
   });
 });

@@ -283,19 +283,68 @@ export class MemFilesApi implements FilesApi {
     return true;
   }
 
+  /**
+   * Atomic: the entries are re-keyed in one synchronous step, with no `await` between
+   * checking and changing, so no other call (and no reader) ever sees the source and
+   * the target both present, nor the target missing or half moved. A directory moves
+   * with every entry under it, keeping the entries themselves (content, times).
+   *
+   * An existing target is treated as POSIX `rename(2)` (and so `NodeFilesApi`) treats
+   * it: a file replaces a file, and a directory replaces an empty directory. Everything
+   * else returns false and changes nothing: a file onto a directory, a directory onto a
+   * file or onto a non-empty directory (its own parent included), a directory into its
+   * own subtree, a target below a file, and a missing source. A move onto itself is a
+   * successful no-op.
+   */
   async move(source: string, target: string): Promise<boolean> {
-    const normalizedSource = normalizePath(source);
-    const normalizedTarget = normalizePath(target);
+    return this.moveSync(normalizePath(source), normalizePath(target));
+  }
 
-    if (!(await this.exists(normalizedSource))) {
-      return false;
+  /** {@link move} on normalized paths, in one synchronous step. */
+  private moveSync(from: string, to: string): boolean {
+    const sourceKind = this.kindOf(from);
+    if (!sourceKind) return false;
+    if (from === to) return true;
+    if (from === "/" || to.startsWith(`${from}/`)) return false;
+    for (let i = to.lastIndexOf("/"); i > 0; i = to.lastIndexOf("/", i - 1)) {
+      if (this.entries.get(to.slice(0, i))?.kind === "file") return false;
+    }
+    const targetKind = this.kindOf(to);
+    if (targetKind !== undefined) {
+      if (targetKind !== sourceKind) return false;
+      if (targetKind === "directory" && this.hasChildren(to)) return false;
     }
 
-    const copied = await this.copy(normalizedSource, normalizedTarget);
-    if (copied) {
-      await this.remove(normalizedSource);
+    const prefix = `${from}/`;
+    const moved: [string, Entry][] = [];
+    for (const [key, entry] of this.entries) {
+      if (key === from || key.startsWith(prefix)) moved.push([key, entry]);
     }
-    return copied;
+    this.entries.delete(to);
+    for (const [key] of moved) this.entries.delete(key);
+    this.ensureParentDirs(to);
+    // An implicit directory (only names below it) becomes an explicit one.
+    if (!moved.some(([key]) => key === from)) {
+      this.entries.set(to, { kind: "directory", lastModified: Date.now() });
+    }
+    for (const [key, entry] of moved) this.entries.set(to + key.slice(from.length), entry);
+    return true;
+  }
+
+  /** The kind of the entry at a normalized path, an implicit directory included. */
+  private kindOf(normalizedPath: string): Entry["kind"] | undefined {
+    const entry = this.entries.get(normalizedPath);
+    if (entry) return entry.kind;
+    return this.hasChildren(normalizedPath) ? "directory" : undefined;
+  }
+
+  /** Whether any entry lies below a normalized path. */
+  private hasChildren(normalizedPath: string): boolean {
+    const prefix = normalizedPath === "/" ? "/" : `${normalizedPath}/`;
+    for (const key of this.entries.keys()) {
+      if (key !== normalizedPath && key.startsWith(prefix)) return true;
+    }
+    return false;
   }
 
   async copy(source: string, target: string): Promise<boolean> {
