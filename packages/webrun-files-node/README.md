@@ -119,9 +119,10 @@ directory whose whole subtree sorts at or before `after`.
   until the rename. The new content is not flushed (`fsync`) before the rename, so after a
   power loss the file can be empty or partial on some file systems. On Windows a file that
   another process holds open cannot be replaced, so the rename is retried for about a second
-  before the write fails. A file the rename cannot replace because it is a mount point (a
+  before the write fails (the temporary is removed and the old file kept). A file the rename cannot replace because it is a mount point (a
   bind-mounted file in a container, `EBUSY`) or on another device (`EXDEV`) is written in
-  place instead: the temporary is copied into it, so readers may see it half-written.
+  place instead: the temporary is copied into it, keeping its owner and mode, so readers may
+  see it half-written, and a failure part way (a full disk) leaves it partial.
 - **`move` across devices returns `false`.** It is a single `fs.rename`; when that fails (`EXDEV`,
   permissions) the method returns `false` instead of falling back to copy and delete.
 - **Unreadable reads look like missing files.** `read` swallows every error (missing file,

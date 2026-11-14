@@ -214,6 +214,37 @@ describe("NodeFilesApi.write: links and rename fallbacks", () => {
     });
   }
 
+  it("the in-place copy keeps the target's mode and does not recreate it", async () => {
+    const dir = await tempDir();
+    const tmp = path.join(dir, "tmp");
+    const target = path.join(dir, "target");
+    fsSync.writeFileSync(tmp, "new");
+    fsSync.chmodSync(tmp, 0o600);
+    fsSync.writeFileSync(target, "old content that is longer");
+    fsSync.chmodSync(target, 0o644);
+    const ino = fsSync.statSync(target).ino;
+    await replaceFile(tmp, target, { rename: failing("EBUSY").rename, platform: "linux" });
+    expect(fsSync.statSync(target).mode & 0o777).toBe(0o644);
+    expect(fsSync.statSync(target).ino).toBe(ino);
+    expect(fsSync.readFileSync(target, "utf8")).toBe("new");
+  });
+
+  it("on Windows a rename still refused after the retries fails, without copying", async () => {
+    const dir = await tempDir();
+    const tmp = path.join(dir, "tmp");
+    const target = path.join(dir, "target");
+    fsSync.writeFileSync(tmp, "new");
+    fsSync.writeFileSync(target, "old");
+    await expect(
+      replaceFile(tmp, target, {
+        rename: failing("EBUSY").rename,
+        platform: "win32",
+        retryDelayMs: 1,
+      }),
+    ).rejects.toMatchObject({ code: "EBUSY" });
+    expect(fsSync.readFileSync(target, "utf8")).toBe("old");
+  });
+
   it("retries a rename refused on Windows while another process holds the file", async () => {
     const dir = await tempDir();
     const tmp = path.join(dir, "tmp");
