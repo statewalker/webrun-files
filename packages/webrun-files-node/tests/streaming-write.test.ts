@@ -130,3 +130,49 @@ describe("NodeFilesApi.write keeps what an in-place write kept", () => {
     expect(listed).toEqual(["f.bin"]);
   });
 });
+
+describe("NodeFilesApi.write: what a replacing write must not change", () => {
+  const asRoot = typeof process.getuid === "function" && process.getuid() === 0;
+
+  it.skipIf(asRoot)("refuses to overwrite a read-only file, as an in-place write did", async () => {
+    const dir = await tempDir();
+    const api = new NodeFilesApi({ rootDir: dir });
+    await api.write("/ro.txt", [new TextEncoder().encode("keep")]);
+    fsSync.chmodSync(path.join(dir, "ro.txt"), 0o444);
+    await expect(api.write("/ro.txt", [new TextEncoder().encode("x")])).rejects.toThrow();
+    expect(fsSync.readFileSync(path.join(dir, "ro.txt"), "utf8")).toBe("keep");
+  });
+
+  it("drops setuid and setgid bits from rewritten content", async () => {
+    const dir = await tempDir();
+    const api = new NodeFilesApi({ rootDir: dir });
+    await api.write("/tool", [new TextEncoder().encode("a")]);
+    fsSync.chmodSync(path.join(dir, "tool"), 0o6755);
+    await api.write("/tool", [new TextEncoder().encode("b")]);
+    expect(fsSync.statSync(path.join(dir, "tool")).mode & 0o7777).toBe(0o755);
+  });
+
+  it("lists user entries whose names only start like a temporary", async () => {
+    const dir = await tempDir();
+    const api = new NodeFilesApi({ rootDir: dir });
+    await api.write("/.webrun-tmp-notes", [new TextEncoder().encode("mine")]);
+    const names: string[] = [];
+    for await (const info of api.list("/")) names.push(info.name);
+    expect(names).toEqual([".webrun-tmp-notes"]);
+  });
+
+  it("refuses a directory target before pulling the content", async () => {
+    const dir = await tempDir();
+    const api = new NodeFilesApi({ rootDir: dir });
+    fsSync.mkdirSync(path.join(dir, "sub"));
+    let pulled = 0;
+    async function* chunks() {
+      for (let i = 0; i < 5; i++) {
+        pulled++;
+        yield new Uint8Array(10);
+      }
+    }
+    await expect(api.write("/sub", chunks())).rejects.toThrow();
+    expect(pulled).toBe(0);
+  });
+});

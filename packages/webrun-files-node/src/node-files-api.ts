@@ -15,6 +15,7 @@ const WRITE_BATCH = 64 * 1024;
 
 /** Temporaries of writes in flight: hidden from `list`, left behind only by a crash. */
 const TMP_PREFIX = ".webrun-tmp-";
+const TMP_NAME = /^\.webrun-tmp-[0-9a-f]{16}$/;
 const tmpName = () =>
   TMP_PREFIX +
   Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) =>
@@ -110,14 +111,27 @@ export class NodeFilesApi implements FilesApi {
 
     // An existing file keeps what an in-place write kept: a symbolic link is written
     // through to its target, and the new file gets the old file's mode.
+    // (A dangling link is replaced by a regular file rather than creating its target.)
     let realPath = resolved;
     let mode: number | undefined;
+    let existing: Stats | undefined;
     try {
       const st = await fs.lstat(resolved);
       if (st.isSymbolicLink()) realPath = await fs.realpath(resolved);
-      mode = (await fs.stat(realPath)).mode & 0o7777;
+      existing = await fs.stat(realPath);
     } catch {
       // a new file (or a dangling link): written as a new file
+    }
+    if (existing) {
+      if (existing.isDirectory()) {
+        throw Object.assign(new Error(`EISDIR: illegal operation on a directory: ${path}`), {
+          code: "EISDIR",
+        });
+      }
+      // A rename would replace a file the caller may not write: refuse, as writeFile did.
+      await fs.access(realPath, fs.constants.W_OK);
+      // Permission bits only: setuid/setgid are dropped, as the kernel drops them on a write.
+      mode = existing.mode & 0o777;
     }
 
     // Stream into a temporary beside the file, then rename it over the file: memory stays at
@@ -181,7 +195,7 @@ export class NodeFilesApi implements FilesApi {
     }
     const infos: FileInfo[] = [];
     for (const entry of entries) {
-      if (entry.name.startsWith(TMP_PREFIX)) continue; // a write in flight
+      if (entry.isFile() && TMP_NAME.test(entry.name)) continue; // a write in flight
       const entryPath = joinPath(dir, entry.name);
       let stat: Stats;
       try {

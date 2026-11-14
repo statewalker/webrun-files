@@ -103,12 +103,16 @@ directory whose whole subtree sorts at or before `after`.
   `NodeFilesApi: path is outside rootDir: /../etc/passwd` (reads throw when iterated). `..` that
   stays inside (`/a/../b.txt`) is fine. Symbolic links inside `rootDir` are followed as the
   operating system follows them, so a link pointing out of `rootDir` still leads out.
-- **`write` streams, and replaces the file at the end.** Memory stays at about 64 KiB plus one
-  chunk. Until the rename the old file stays readable, and a source that fails leaves it
-  unchanged. Replacing keeps the old file's mode and writes through a symbolic link to its
-  target, but a hard link is replaced, not written through, and the owner, ACLs and extended
+- **`write` streams, and replaces the file at the end.** Memory stays at about two batches of
+  64 KiB plus one chunk. Until the rename the old file stays readable, and a source that fails leaves it
+  unchanged. A read-only file is refused, as an in-place write was. Replacing keeps the old
+  file's permission bits (not setuid/setgid, which a write would clear) and writes through a
+  symbolic link to its target (a dangling link is replaced by a regular file, and a link out of
+  `rootDir` is written there, with its temporary beside the target); a hard link is replaced,
+  not written through, and the owner, ACLs and extended
   attributes are those of a new file. The temporary needs write permission on the directory.
-  `list` hides temporaries (`.webrun-tmp-*`); a crash can leave one behind. A caller that reuses
+  `list` hides the temporaries (files named exactly `.webrun-tmp-` plus 16 hex digits); a crash
+  can leave one behind, still visible to `exists`, `stats` and `read`. A caller that reuses
   a chunk's buffer after yielding it may change what is written (up to 64 KiB is held before
   each write). Reads stream.
 - **`move` across devices returns `false`.** It is a single `fs.rename`; when that fails (`EXDEV`,
