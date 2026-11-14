@@ -152,11 +152,10 @@ and packed manifests.
 
 Packages are published to npm from CI with changesets. After CI passes on `main`, a job writes a
 changeset for every package whose packed contents differ from npm and opens a "chore: version
-packages" pull request; merging it packs the new versions, and a maintainer's approval on the `npm`
-environment publishes them with trusted publishing (no npm token in GitHub). To choose the bump or
-the changelog text yourself, run `pnpm changeset` in your pull request. Dependabot opens the
-dependency updates (`.github/dependabot.yml`), checked by CI and merged by hand. See
-[PUBLISHING.md](./PUBLISHING.md).
+packages" pull request; merging it packs the new versions and publishes them at once with trusted
+publishing (no npm token in GitHub, no approval step). To choose the bump or the changelog text
+yourself, run `pnpm changeset` in your pull request. Dependabot opens the dependency updates
+(`.github/dependabot.yml`), checked by CI and merged by hand. See [PUBLISHING.md](./PUBLISHING.md).
 
 ### License
 
