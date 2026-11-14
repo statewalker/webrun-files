@@ -10,6 +10,9 @@ import type {
 } from "@statewalker/webrun-files";
 import { dirname, joinPath, listInPathOrder, normalizePath } from "@statewalker/webrun-files";
 
+/** Small chunks are gathered up to this size before each write call. */
+const WRITE_BATCH = 64 * 1024;
+
 export interface NodeFilesApiOptions {
   /**
    * Root directory for file operations. All paths are resolved relative to this, and a path
@@ -32,7 +35,8 @@ export class NodeFilesApi implements FilesApi {
   /** The real path of a virtual one; throws when `..` segments would take it outside rootDir. */
   private resolvePath(virtualPath: string): string {
     const real = nodePath.resolve(this.rootDir, `.${normalizePath(virtualPath)}`);
-    if (real !== this.rootDir && !real.startsWith(this.rootDir + nodePath.sep)) {
+    const prefix = this.rootDir.endsWith(nodePath.sep) ? this.rootDir : this.rootDir + nodePath.sep;
+    if (real !== this.rootDir && !real.startsWith(prefix)) {
       throw new Error(`NodeFilesApi: path is outside rootDir: ${virtualPath}`);
     }
     return real;
@@ -91,22 +95,46 @@ export class NodeFilesApi implements FilesApi {
 
     await fs.mkdir(dir, { recursive: true });
 
-    const chunks: Uint8Array[] = [];
-    let totalLength = 0;
-
-    for await (const chunk of content) {
-      chunks.push(chunk);
-      totalLength += chunk.length;
+    // Stream into a temporary beside the file, then rename it over the file: memory stays at
+    // about one chunk, a source that fails leaves the old file, and a file can be rewritten
+    // from its own read. The dot-name keeps directory listings (git refs, objects) from
+    // taking a write in flight for a real entry.
+    const tmp = nodePath.join(
+      nodePath.dirname(realPath),
+      `.${nodePath.basename(realPath)}.${crypto.randomUUID()}.tmp`,
+    );
+    const handle = await fs.open(tmp, "wx");
+    let done = false;
+    try {
+      const batch: Uint8Array[] = [];
+      let batched = 0;
+      const flush = async () => {
+        if (batched === 0) return;
+        const bytes = batch.length === 1 ? (batch[0] as Uint8Array) : Buffer.concat(batch);
+        let offset = 0;
+        while (offset < bytes.length) {
+          const { bytesWritten } = await handle.write(bytes, offset, bytes.length - offset);
+          offset += bytesWritten;
+        }
+        batch.length = 0;
+        batched = 0;
+      };
+      for await (const chunk of content) {
+        if (chunk.length === 0) continue;
+        batch.push(chunk);
+        batched += chunk.length;
+        if (batched >= WRITE_BATCH) await flush();
+      }
+      await flush();
+      await handle.close();
+      await fs.rename(tmp, realPath);
+      done = true;
+    } finally {
+      if (!done) {
+        await handle.close().catch(() => {});
+        await fs.rm(tmp, { force: true }).catch(() => {});
+      }
     }
-
-    const result = new Uint8Array(totalLength);
-    let offset = 0;
-    for (const chunk of chunks) {
-      result.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    await fs.writeFile(realPath, result);
   }
 
   async mkdir(path: string): Promise<void> {
