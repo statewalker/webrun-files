@@ -9,6 +9,22 @@ jobs:
   ci:
     uses: statewalker/statewalker-ci/.github/workflows/ci.yml@main
 
+  # The lockfile-only pull request that .github/workflows/statewalker-update.yml opens:
+  # merged once every other check on it passes, after checking it changes pnpm-lock.yaml alone
+  # (statewalker/statewalker-ci's merge-lockfile.yml; statewalker-root docs/process/merging.md).
+  lockfile:
+    needs: ci
+    # !cancelled(): also after a failed check job, so the pull request gets a comment saying why.
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && github.head_ref == 'deps/statewalker-lockfile' }}
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      statuses: read
+      actions: read
+    uses: statewalker/statewalker-ci/.github/workflows/merge-lockfile.yml@main
+    secrets: inherit
+
   # Releases to npm in three jobs: `version` opens the version pull request, `pack` packs what
   # npm lacks once it is merged, `publish` uploads the tarballs. Nobody approves the upload:
   # merging the version pull request is the release decision.
@@ -152,6 +168,8 @@ jobs:
     permissions:
       contents: write
       id-token: write
+    outputs:
+      published: ${{ steps.publish.outputs.published }}
     steps:
       - uses: actions/setup-node@v7
         with:
@@ -198,6 +216,10 @@ jobs:
             console.log(out.join("\n"));
           ' packages/*.tgz)
           failed=()
+          published_now=()
+          # Written on every way out of the step, an early `exit 1` included, so `notify` announces
+          # whatever did reach npm.
+          trap 'echo "published=${published_now[*]}" >> "$GITHUB_OUTPUT"' EXIT
           for t in $order; do
             read -r name version deps < <(tar -xzOf "$t" package/package.json | node -p "const p=JSON.parse(require('fs').readFileSync(0));[p.name,p.version,Object.keys({...p.dependencies,...p.peerDependencies,...p.optionalDependencies}).join(',')].join(' ')")
             if npm view "$name@$version" version >/dev/null 2>&1; then echo "$name@$version: already on npm"; echo "$name@$version" >> "$RUNNER_TEMP/on-npm"; continue; fi
@@ -221,6 +243,7 @@ jobs:
             cat "$RUNNER_TEMP/publish.err" >&2
             if [ "$published" = true ]; then
               echo "$name@$version" >> "$RUNNER_TEMP/on-npm"
+              published_now+=("$name@$version")
             else
               hint=""
               grep -q E404 "$RUNNER_TEMP/publish.err" && hint=" (a 404 on publish usually means npmjs.com has no trusted publisher for it: add $GITHUB_REPOSITORY, workflow ci.yml, environment npm)"
@@ -245,3 +268,17 @@ jobs:
             gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && continue
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --notes "Published to npm."
           done < "$RUNNER_TEMP/on-npm"
+
+  # What this run published reaches the other repositories of the statewalker-release App's
+  # installation as a `statewalker-published` dispatch; each dependent then moves its lockfile
+  # within its ranges in a lockfile-only pull request (statewalker/statewalker-ci's
+  # notify-dependents.yml and statewalker-update.yml). Also after a partly failed publish, for
+  # what did go out.
+  notify:
+    needs: publish
+    if: ${{ !cancelled() && needs.publish.outputs.published != '' }}
+    permissions: {}
+    uses: statewalker/statewalker-ci/.github/workflows/notify-dependents.yml@main
+    with:
+      packages: ${{ needs.publish.outputs.published }}
+    secrets: inherit
