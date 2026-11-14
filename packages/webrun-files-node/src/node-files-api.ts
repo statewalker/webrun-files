@@ -13,6 +13,14 @@ import { dirname, joinPath, listInPathOrder, normalizePath } from "@statewalker/
 /** Small chunks are gathered up to this size before each write call. */
 const WRITE_BATCH = 64 * 1024;
 
+/** Temporaries of writes in flight: hidden from `list`, left behind only by a crash. */
+const TMP_PREFIX = ".webrun-tmp-";
+const tmpName = () =>
+  TMP_PREFIX +
+  Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) =>
+    b.toString(16).padStart(2, "0"),
+  ).join("");
+
 export interface NodeFilesApiOptions {
   /**
    * Root directory for file operations. All paths are resolved relative to this, and a path
@@ -89,20 +97,34 @@ export class NodeFilesApi implements FilesApi {
     path: string,
     content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
   ): Promise<void> {
-    const realPath = this.resolvePath(path);
+    const resolved = this.resolvePath(path);
+    if (resolved === this.rootDir) {
+      throw Object.assign(new Error(`EISDIR: cannot write the root directory: ${path}`), {
+        code: "EISDIR",
+      });
+    }
     const normalized = normalizePath(path);
     const dir = this.resolvePath(dirname(normalized));
 
     await fs.mkdir(dir, { recursive: true });
 
+    // An existing file keeps what an in-place write kept: a symbolic link is written
+    // through to its target, and the new file gets the old file's mode.
+    let realPath = resolved;
+    let mode: number | undefined;
+    try {
+      const st = await fs.lstat(resolved);
+      if (st.isSymbolicLink()) realPath = await fs.realpath(resolved);
+      mode = (await fs.stat(realPath)).mode & 0o7777;
+    } catch {
+      // a new file (or a dangling link): written as a new file
+    }
+
     // Stream into a temporary beside the file, then rename it over the file: memory stays at
-    // about one chunk, a source that fails leaves the old file, and a file can be rewritten
-    // from its own read. The dot-name keeps directory listings (git refs, objects) from
-    // taking a write in flight for a real entry.
-    const tmp = nodePath.join(
-      nodePath.dirname(realPath),
-      `.${nodePath.basename(realPath)}.${crypto.randomUUID()}.tmp`,
-    );
+    // about one batch, a source that fails leaves the old file, and a file can be rewritten
+    // from its own read. The short dot-name works for names near the length limit, and
+    // `list` does not show it.
+    const tmp = nodePath.join(nodePath.dirname(realPath), tmpName());
     const handle = await fs.open(tmp, "wx");
     let done = false;
     try {
@@ -126,6 +148,7 @@ export class NodeFilesApi implements FilesApi {
         if (batched >= WRITE_BATCH) await flush();
       }
       await flush();
+      if (mode !== undefined) await handle.chmod(mode);
       await handle.close();
       await fs.rename(tmp, realPath);
       done = true;
@@ -158,6 +181,7 @@ export class NodeFilesApi implements FilesApi {
     }
     const infos: FileInfo[] = [];
     for (const entry of entries) {
+      if (entry.name.startsWith(TMP_PREFIX)) continue; // a write in flight
       const entryPath = joinPath(dir, entry.name);
       let stat: Stats;
       try {

@@ -76,3 +76,57 @@ describe("NodeFilesApi rooted at /", () => {
     expect(await api.exists(`${dir}/x.txt`)).toBe(true);
   });
 });
+
+describe("NodeFilesApi.write keeps what an in-place write kept", () => {
+  it("keeps the mode of the file it replaces", async () => {
+    const dir = await tempDir();
+    const api = new NodeFilesApi({ rootDir: dir });
+    await api.write("/run.sh", [new TextEncoder().encode("#!/bin/sh\n")]);
+    fsSync.chmodSync(path.join(dir, "run.sh"), 0o755);
+    await api.write("/run.sh", [new TextEncoder().encode("#!/bin/sh\necho hi\n")]);
+    expect(fsSync.statSync(path.join(dir, "run.sh")).mode & 0o777).toBe(0o755);
+  });
+
+  it("writes through a symbolic link to the file it points to", async () => {
+    const dir = await tempDir();
+    const api = new NodeFilesApi({ rootDir: dir });
+    await api.write("/real.txt", [new TextEncoder().encode("old")]);
+    fsSync.symlinkSync("real.txt", path.join(dir, "link.txt"));
+    await api.write("/link.txt", [new TextEncoder().encode("new")]);
+    expect(fsSync.lstatSync(path.join(dir, "link.txt")).isSymbolicLink()).toBe(true);
+    expect(fsSync.readFileSync(path.join(dir, "real.txt"), "utf8")).toBe("new");
+  });
+
+  it("writes names up to the file system limit (the temporary name is short)", async () => {
+    const dir = await tempDir();
+    const api = new NodeFilesApi({ rootDir: dir });
+    const name = `/${"n".repeat(240)}.txt`;
+    await api.write(name, [new TextEncoder().encode("x")]);
+    expect(await api.exists(name)).toBe(true);
+  });
+
+  it("refuses to write the root itself, touching nothing outside it", async () => {
+    const parent = await tempDir();
+    const root = path.join(parent, "root");
+    fsSync.mkdirSync(root);
+    const api = new NodeFilesApi({ rootDir: root });
+    await expect(api.write("/", [new Uint8Array(1)])).rejects.toThrow();
+    expect(fsSync.readdirSync(parent)).toEqual(["root"]);
+  });
+
+  it("does not list a write in flight", async () => {
+    const dir = await tempDir();
+    const api = new NodeFilesApi({ rootDir: dir });
+    let listed: string[] = [];
+    async function* chunks() {
+      yield new Uint8Array(70_000);
+      for await (const info of api.list("/")) listed.push(info.name);
+      yield new Uint8Array(10);
+    }
+    await api.write("/f.bin", chunks());
+    expect(listed).toEqual([]);
+    listed = [];
+    for await (const info of api.list("/")) listed.push(info.name);
+    expect(listed).toEqual(["f.bin"]);
+  });
+});

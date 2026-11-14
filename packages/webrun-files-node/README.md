@@ -83,7 +83,7 @@ try {
 | Call | Implementation |
 | --- | --- |
 | `read` | `fs.open` + positioned `handle.read` in 8 KiB buffers, only the requested range |
-| `write` | `fs.mkdir(parent, { recursive: true })`, then collects every chunk and calls `fs.writeFile` once |
+| `write` | `fs.mkdir(parent, { recursive: true })`, then streams the chunks (batched to 64 KiB) into a temporary `.webrun-tmp-<random>` beside the file and renames it over the file |
 | `list` | `fs.readdir` + `fs.stat` per entry, walked through `listInPathOrder` |
 | `move` | `fs.rename` after creating the target's parent |
 | `copy` | `fs.cp(..., { recursive: true })` |
@@ -103,8 +103,14 @@ directory whose whole subtree sorts at or before `after`.
   `NodeFilesApi: path is outside rootDir: /../etc/passwd` (reads throw when iterated). `..` that
   stays inside (`/a/../b.txt`) is fine. Symbolic links inside `rootDir` are followed as the
   operating system follows them, so a link pointing out of `rootDir` still leads out.
-- **`write` holds the whole file in memory** before writing it, so a very large upload costs its
-  full size in RAM. Reads stream.
+- **`write` streams, and replaces the file at the end.** Memory stays at about 64 KiB plus one
+  chunk. Until the rename the old file stays readable, and a source that fails leaves it
+  unchanged. Replacing keeps the old file's mode and writes through a symbolic link to its
+  target, but a hard link is replaced, not written through, and the owner, ACLs and extended
+  attributes are those of a new file. The temporary needs write permission on the directory.
+  `list` hides temporaries (`.webrun-tmp-*`); a crash can leave one behind. A caller that reuses
+  a chunk's buffer after yielding it may change what is written (up to 64 KiB is held before
+  each write). Reads stream.
 - **`move` across devices returns `false`.** It is a single `fs.rename`; when that fails (`EXDEV`,
   permissions) the method returns `false` instead of falling back to copy and delete.
 - **Unreadable reads look like missing files.** `read` swallows every error (missing file,
