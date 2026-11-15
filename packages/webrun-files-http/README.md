@@ -196,7 +196,8 @@ request and wrap it, for example in `GuardedFilesApi` from `@statewalker/webrun-
   `webrun-files-http: this runtime cannot stream request bodies; use upload "chunked" or "auto"`.
 - **Too many parts:** `webrun-files-http: <path> needs more than <maxParts> parts of <partSize>
   bytes; raise partSize`.
-- **Paths.** The client throws `webrun-files-http: path must not contain ".."`. The server answers
+- **Paths.** The client resolves `..` segments (`/a/../b` is sent as `/b`) and throws
+  `Path climbs above the root: <path>` for one that would climb above the root. The server answers
   `400` (`Malformed path segment`, `Invalid path segment`) for an encoded `/`, `.` or `..` segment,
   and `404 Not under the files endpoint` outside `basePath`.
 - **Uploads:** `400 Missing part <n>`, `409 Upload <id> was opened for another path`,

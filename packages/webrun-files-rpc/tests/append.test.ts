@@ -44,6 +44,18 @@ describe("append: a FilesApi that appends itself", () => {
 });
 
 describe("append: any other FilesApi (read, write and remove only)", () => {
+  it('refuses a path whose ".." climbs above the root instead of clamping it (#40)', async () => {
+    const fs = new MemFilesApi();
+    const server = newFilesRpcServer({ fs });
+    const run = async () => {
+      const { streamId } = await server.openWrite("/../x.txt", { append: true });
+      await server.writeChunk(streamId, 0, text("x"));
+      await server.closeWrite(streamId, 1);
+    };
+    await expect(run()).rejects.toThrow(/above the root/);
+    expect(await fs.exists("/x.txt")).toBe(false);
+  });
+
   it("adds to the end of an existing file, and leaves nothing else behind", async () => {
     const fs = new MemFilesApi({ initialFiles: { "/d/log.txt": "one\n" } });
     const server = newFilesRpcServer({ fs, chunkSize: 4 });

@@ -65,7 +65,7 @@ describe("NodeFilesApi.write streams", () => {
 
   it("refuses paths outside the root", async () => {
     const api = new NodeFilesApi({ rootDir: await tempDir() });
-    await expect(api.write("/../escape", [new Uint8Array(1)])).rejects.toThrow(/outside rootDir/);
+    await expect(api.write("/../escape", [new Uint8Array(1)])).rejects.toThrow(/above the root/);
   });
 });
 

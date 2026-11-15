@@ -4,15 +4,13 @@ import { HttpError } from "./errors.js";
 /**
  * A FilesApi path as a URL path under `basePath`: every segment
  * `encodeURIComponent`-ed, so `%`, `#`, `?`, `+`, spaces and non-ASCII
- * survive. A `..` segment is refused: URL parsing would silently resolve it
- * into a different path.
+ * survive. `normalizePath` has already resolved every `..` segment (and
+ * refused one that climbs above the root), so URL parsing cannot turn the
+ * result into a different path.
  */
 export function encodeFilesPath(path: string): string {
   const normalized = normalizePath(path);
   const segments = normalized.split("/").filter(Boolean);
-  if (segments.some((s) => s === "..")) {
-    throw new Error(`webrun-files-http: path must not contain "..": ${path}`);
-  }
   return `/${segments.map(encodeURIComponent).join("/")}`;
 }
 

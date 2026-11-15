@@ -276,9 +276,12 @@ time.
 
 ### Path rules
 
-`normalizePath` splits on `/`, drops empty and `.` segments and returns a path with one leading
-slash and no trailing slash (`/` for the root). It does not resolve `..`; backends that map paths
-to real locations (such as `webrun-files-node`) document what that means for them.
+`normalizePath` returns the **normal path**: it splits on `/`, drops empty and `.` segments,
+resolves each `..` against the segment before it, and returns a path with one leading slash and no
+trailing slash (`/` for the root). `/a/../b` is `/b`. A `..` that would climb above the root
+(`/../x`, `/a/../../x`) throws `Path climbs above the root: <path>`. Every backend and decorator
+normalizes through it, so a filter, guard or mount decides on the same path the backend acts on.
+`joinPath`, `dirname` and `basename` normalize through it too.
 
 ### Dependencies
 

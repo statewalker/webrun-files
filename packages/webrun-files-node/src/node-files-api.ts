@@ -42,7 +42,11 @@ export class NodeFilesApi implements FilesApi {
     this.rootDir = nodePath.resolve(options?.rootDir ?? process.cwd());
   }
 
-  /** The real path of a virtual one; throws when `..` segments would take it outside rootDir. */
+  /**
+   * The real path of a virtual one. `normalizePath` already refuses a `..` that climbs above the
+   * root; the containment check stays as defence in depth. Symlinks are not resolved: one inside
+   * rootDir that points outside it is followed (see the README).
+   */
   private resolvePath(virtualPath: string): string {
     const real = nodePath.resolve(this.rootDir, `.${normalizePath(virtualPath)}`);
     const prefix = this.rootDir.endsWith(nodePath.sep) ? this.rootDir : this.rootDir + nodePath.sep;
