@@ -23,7 +23,7 @@ catalogs:
       version: 1.63.0
     '@statewalker/db-api':
       specifier: ^0.1.6
-      version: 0.1.6
+      version: 0.1.7
     '@statewalker/db-sqlite':
       specifier: ^0.1.2
       version: 0.1.2
@@ -335,7 +335,7 @@ importers:
     dependencies:
       '@statewalker/db-api':
         specifier: 'catalog:'
-        version: 0.1.6
+        version: 0.1.7
       '@statewalker/db-sqlite':
         specifier: 'catalog:'
         version: 0.1.2
@@ -1008,8 +1008,8 @@ packages:
     resolution: {integrity: sha512-r7jh49VJxGerfAcTQA6gXcKc+98zOp/tqRwzYjgOE+iSQsP6cEU1hq2QzbuipmP68QtYdY9wKEhiCQZIzHgZ4Q==}
     engines: {node: '>=18.0.0'}
 
-  '@statewalker/db-api@0.1.6':
-    resolution: {integrity: sha512-SokfgcyB9ZY5pWUUyxIMo1JsN7FOQGPLZVlMcoxrtwgk0jKeQMAfz2GKvihAJB/VFStqDk/bqgR07mDh+TxdQw==}
+  '@statewalker/db-api@0.1.7':
+    resolution: {integrity: sha512-pOrHF9vIseL4QgjK2voyHHJmKTV1MPaGo2MwWemVYTOZ0aQ8E3NP/IKCBh0gu+IjFY8FnPJ00FxafS0YxjwxVw==}
 
   '@statewalker/db-sqlite-do@0.1.2':
     resolution: {integrity: sha512-nbb0YTSp7rfxR88wGWiayLIlZbB+m8Iqm6MUP1ahN8OPYzkx9BmYtzDwCzjOEk4TdODq8cnePdnTErWCRupcEA==}
@@ -2735,21 +2735,21 @@ snapshots:
     dependencies:
       tslib: 2.9.1
 
-  '@statewalker/db-api@0.1.6': {}
+  '@statewalker/db-api@0.1.7': {}
 
   '@statewalker/db-sqlite-do@0.1.2':
     dependencies:
-      '@statewalker/db-api': 0.1.6
+      '@statewalker/db-api': 0.1.7
       '@statewalker/db-sqlite': 0.1.2
 
   '@statewalker/db-sqlite-node@0.3.2':
     dependencies:
-      '@statewalker/db-api': 0.1.6
+      '@statewalker/db-api': 0.1.7
       '@statewalker/db-sqlite': 0.1.2
 
   '@statewalker/db-sqlite@0.1.2':
     dependencies:
-      '@statewalker/db-api': 0.1.6
+      '@statewalker/db-api': 0.1.7
 
   '@turbo/darwin-64@2.11.7':
     optional: true
