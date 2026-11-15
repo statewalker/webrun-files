@@ -1,0 +1,22 @@
+name: Nightly
+
+# The suites the CI of a pull request does not run (statewalker/statewalker-ci's nightly.yml): root
+# `test:nightly` runs webrun-files-http's `test:e2e` (Playwright, Chromium and Firefox) and
+# webrun-files-s3's `test:integration` (a RustFS container started by testcontainers on the
+# runner's Docker; no credentials), each to the end even when the other fails. A failure opens one
+# `bug` + `ci-baseline` issue here; later failures comment on it while it is open.
+
+on:
+  schedule:
+    - cron: "41 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  nightly:
+    uses: statewalker/statewalker-ci/.github/workflows/nightly.yml@main
+    with:
+      setup: pnpm --filter @statewalker/webrun-files-http exec playwright install --with-deps chromium firefox

@@ -6,8 +6,9 @@
 //
 //   node ../../scripts/cjs-types.mjs [packageDir]
 
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 /** Relative specifiers in `from "…"`, `import("…")` and `import "…"`, ending in `.js`. */
 const RELATIVE_JS = /((?:\bfrom|\bimport\s*\(|\bimport)\s*["'])(\.{1,2}\/[^"']*?)\.js(["'])/g;
@@ -48,6 +49,6 @@ export function writeCjsTypes(packageDir) {
   return count;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   writeCjsTypes(process.argv[2] ?? process.cwd());
 }
