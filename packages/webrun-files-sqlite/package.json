@@ -3,6 +3,9 @@
   "version": "0.13.0",
   "private": false,
   "type": "module",
+  "engines": {
+    "node": ">=20.19"
+  },
   "description": "SQLite-backed FilesApi implementations",
   "bugs": {
     "url": "https://github.com/statewalker/webrun-files/issues"
