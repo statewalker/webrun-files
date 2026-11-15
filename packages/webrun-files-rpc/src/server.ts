@@ -1,4 +1,5 @@
 import type { FileInfo, FilesApi } from "@statewalker/webrun-files";
+import { normalizePath } from "@statewalker/webrun-files";
 import { FilesRpcError } from "./errors.js";
 import { Keyed } from "./keyed.js";
 import type {
@@ -113,17 +114,6 @@ type Stream = ReadStream | WriteStream;
  */
 const committed = (s: WriteStream): boolean =>
   s.total !== undefined && s.next >= s.total && (!s.emulated || s.committing === true);
-
-/** `path` in normal form: one leading slash, no empty, "." or ".." segments, no trailing slash. */
-function normalPath(path: string): string {
-  const out: string[] = [];
-  for (const seg of String(path).split("/")) {
-    if (!seg || seg === ".") continue;
-    if (seg === "..") out.pop();
-    else out.push(seg);
-  }
-  return `/${out.join("/")}`;
-}
 
 const messageOf = (e: unknown) => String((e as Error)?.message ?? e);
 
@@ -405,7 +395,7 @@ export function newFilesRpcServer(options: FilesRpcServerOptions): FilesRpcServe
     const own = (fs as Partial<AppendableFilesApi>).append;
     if (typeof own === "function") return own.call(fs, path, content);
     s.emulated = true;
-    const file = normalPath(path);
+    const file = normalizePath(path);
     const previous = appending.get(file) ?? Promise.resolve();
     const run = previous.then(async () => {
       // Only a directory is refused: whether the file exists is not trusted (reading a missing

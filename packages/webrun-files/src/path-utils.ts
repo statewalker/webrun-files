@@ -4,16 +4,31 @@
  */
 
 /**
- * Normalizes a file path to a consistent format.
+ * Returns the normal path of a virtual path: one leading slash, no empty, `.`,
+ * `..` or trailing segments, never naming anything above the root.
  * - Adds leading slash if missing
  * - Removes trailing slash
  * - Removes `.` segments
  * - Collapses multiple slashes
+ * - Resolves each `..` against the segment before it (`/a/../b` is `/b`)
+ *
+ * Guards, filters and mounts decide on this path and backends act on it, so
+ * both always see the same file.
+ *
+ * @throws Error when a `..` segment would climb above the root (`/../x`).
  */
 export function normalizePath(filePath: string): string {
-  const segments = filePath.split("/").filter((s) => !!s && s !== ".");
-  if (segments.length === 0) {
-    return "/";
+  const segments: string[] = [];
+  for (const segment of filePath.split("/")) {
+    if (!segment || segment === ".") continue;
+    if (segment === "..") {
+      if (segments.length === 0) {
+        throw new Error(`Path climbs above the root: ${filePath}`);
+      }
+      segments.pop();
+    } else {
+      segments.push(segment);
+    }
   }
   return `/${segments.join("/")}`;
 }

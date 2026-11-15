@@ -160,6 +160,9 @@ importers:
       '@statewalker/webrun-files-mem':
         specifier: workspace:^
         version: link:../webrun-files-mem
+      '@statewalker/webrun-files-node':
+        specifier: workspace:^
+        version: link:../webrun-files-node
       '@statewalker/webrun-files-tests':
         specifier: workspace:^
         version: link:../webrun-files-tests

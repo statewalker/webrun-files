@@ -26,18 +26,16 @@ describe("NodeFilesApi keeps every path inside rootDir", () => {
     await fs.mkdir(rootDir);
     const api = new NodeFilesApi({ rootDir });
     try {
-      await expect(api.write("/../outside.txt", bytes("x"))).rejects.toThrow(/outside rootDir/);
-      await expect(api.write("/a/../../outside.txt", bytes("x"))).rejects.toThrow(
-        /outside rootDir/,
-      );
-      await expect(api.mkdir("/../outside-dir")).rejects.toThrow(/outside rootDir/);
-      await expect(api.stats("/..")).rejects.toThrow(/outside rootDir/);
+      await expect(api.write("/../outside.txt", bytes("x"))).rejects.toThrow(/above the root/);
+      await expect(api.write("/a/../../outside.txt", bytes("x"))).rejects.toThrow(/above the root/);
+      await expect(api.mkdir("/../outside-dir")).rejects.toThrow(/above the root/);
+      await expect(api.stats("/..")).rejects.toThrow(/above the root/);
       const reading = async () => {
         for await (const _ of api.read("/../root/../outside.txt")) {
           // drain
         }
       };
-      await expect(reading()).rejects.toThrow(/outside rootDir/);
+      await expect(reading()).rejects.toThrow(/above the root/);
       // Nothing was created next to rootDir.
       expect((await fs.readdir(parent)).sort()).toEqual(["root"]);
     } finally {
@@ -83,7 +81,7 @@ describe("NodeFilesApi.createExclusive", () => {
     const api = new NodeFilesApi({ rootDir });
     try {
       await expect(api.createExclusive("/../outside.lock", bytes("x"))).rejects.toThrow(
-        /outside rootDir/,
+        /above the root/,
       );
       await expect(fs.access(path.join(parent, "outside.lock"))).rejects.toThrow();
       expect(await api.createExclusive("/", bytes("x"))).toBe(false);

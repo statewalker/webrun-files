@@ -611,6 +611,25 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
         expect(await ctx.api.exists("/a/b/file.txt")).toBe(true);
       });
 
+      it('should resolve ".." segments that stay inside the root', async () => {
+        await ctx.api.write("/a/../b.txt", [toBytes("inside")]);
+        expect(fromBytes(await collectStream(ctx.api.read("/b.txt")))).toBe("inside");
+        expect(fromBytes(await collectStream(ctx.api.read("/x/y/../../b.txt")))).toBe("inside");
+        expect(await ctx.api.exists("/a/../b.txt")).toBe(true);
+        expect(await ctx.api.exists("/a")).toBe(false);
+      });
+
+      it('should refuse ".." segments that climb above the root', async () => {
+        // A refusal may be a rejection or a synchronous throw from the call itself.
+        const refused = (call: () => unknown) => expect((async () => call())()).rejects.toThrow();
+        for (const path of ["/..", "/../x.txt", "/a/../../x.txt"]) {
+          await refused(() => ctx.api.write(path, [toBytes("x")]));
+          await refused(() => ctx.api.stats(path));
+          await refused(() => collectStream(ctx.api.read(path)));
+        }
+        expect(await ctx.api.exists("/x.txt")).toBe(false);
+      });
+
       it("should handle special characters in names", async () => {
         const specialNames = [
           "file with spaces.txt",

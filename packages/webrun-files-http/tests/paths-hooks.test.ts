@@ -29,7 +29,7 @@ describe("paths", () => {
     expect(await fs.exists("/odd/#copy?")).toBe(true);
   });
 
-  it("refuses a .. segment in the client before sending anything", async () => {
+  it("refuses a .. segment that climbs above the root before sending anything", async () => {
     const requests: string[] = [];
     const { client } = await direct({
       wrapFetch: (server) => async (req) => {
@@ -38,8 +38,24 @@ describe("paths", () => {
       },
     });
     requests.length = 0;
-    await expect(client.write("/a/../../etc/passwd", [toBytes("x")])).rejects.toThrow(/\.\./);
+    await expect(client.write("/a/../../etc/passwd", [toBytes("x")])).rejects.toThrow(
+      /above the root/,
+    );
     expect(requests).toEqual([]);
+  });
+
+  it("sends a path whose .. segments stay inside the root as the resolved path (#40)", async () => {
+    const requests: string[] = [];
+    const { client, fs } = await direct({
+      wrapFetch: (server) => async (req) => {
+        requests.push(new URL(req.url).pathname);
+        return server(req);
+      },
+    });
+    requests.length = 0;
+    await client.write("/a/../b.txt", [toBytes("x")]);
+    expect(requests.every((p) => !p.includes(".."))).toBe(true);
+    expect(await fs.exists("/b.txt")).toBe(true);
   });
 
   it("answers 400 for an encoded / segment, and 404 outside the base path", async () => {

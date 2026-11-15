@@ -119,11 +119,14 @@ directory whose whole subtree sorts at or before `after`.
 
 ### What breaks, and how it looks
 
-- **A path that leaves `rootDir` is refused.** `..` segments are resolved against `rootDir`; when
-  the result is outside it, the call throws
-  `NodeFilesApi: path is outside rootDir: /../etc/passwd` (reads throw when iterated). `..` that
-  stays inside (`/a/../b.txt`) is fine. Symbolic links inside `rootDir` are followed as the
-  operating system follows them, so a link pointing out of `rootDir` still leads out.
+- **A path that leaves `rootDir` is refused.** `normalizePath` resolves `..` segments and throws
+  `Path climbs above the root: /../etc/passwd` when one would climb above the root (reads throw
+  when iterated); `NodeFilesApi` checks containment again as defence in depth. `..` that stays
+  inside (`/a/../b.txt`) is fine.
+- **Symbolic links inside `rootDir` are out of scope.** They are followed as the operating system
+  follows them, so a link pointing out of `rootDir` still leads out. Whoever owns `rootDir`
+  controls its links; resolving every path with `realpath` would cost a system call per operation,
+  still race with the use, and break deliberately linked layouts.
 - **`write` streams, and replaces the file at the end.** Memory stays at about two batches of
   64 KiB plus one chunk. Until the rename the old file stays readable, and a source that fails leaves it
   unchanged. A read-only file is refused, as an in-place write was. Replacing keeps the old
