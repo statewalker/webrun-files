@@ -23,16 +23,16 @@ catalogs:
       version: 1.63.0
     '@statewalker/db-api':
       specifier: ^0.1.3
-      version: 0.1.4
+      version: 0.1.5
     '@statewalker/db-sqlite':
       specifier: ^0.1.0
-      version: 0.1.0
+      version: 0.1.1
     '@statewalker/db-sqlite-do':
       specifier: ^0.1.0
-      version: 0.1.0
+      version: 0.1.1
     '@statewalker/db-sqlite-node':
       specifier: ^0.3.0
-      version: 0.3.0
+      version: 0.3.1
     '@types/node':
       specifier: ^26.6.4
       version: 26.6.4
@@ -332,20 +332,20 @@ importers:
     dependencies:
       '@statewalker/db-api':
         specifier: 'catalog:'
-        version: 0.1.4
+        version: 0.1.5
       '@statewalker/db-sqlite':
         specifier: 'catalog:'
-        version: 0.1.0
+        version: 0.1.1
       '@statewalker/webrun-files':
         specifier: workspace:^
         version: link:../webrun-files
     devDependencies:
       '@statewalker/db-sqlite-do':
         specifier: 'catalog:'
-        version: 0.1.0
+        version: 0.1.1
       '@statewalker/db-sqlite-node':
         specifier: 'catalog:'
-        version: 0.3.0
+        version: 0.3.1
       '@statewalker/webrun-files-tests':
         specifier: workspace:^
         version: link:../webrun-files-tests
@@ -1005,19 +1005,19 @@ packages:
     resolution: {integrity: sha512-r7jh49VJxGerfAcTQA6gXcKc+98zOp/tqRwzYjgOE+iSQsP6cEU1hq2QzbuipmP68QtYdY9wKEhiCQZIzHgZ4Q==}
     engines: {node: '>=18.0.0'}
 
-  '@statewalker/db-api@0.1.4':
-    resolution: {integrity: sha512-XqyQRE1CvJ8Ijv99u0eW8l/syARfuzhL3BGIFYC1375/KlvDJx+o4D4LNnMqCh97ScU/hERQaaJ0MeXYAngmvA==}
+  '@statewalker/db-api@0.1.5':
+    resolution: {integrity: sha512-RJVacBYGujHUwmvQxs2ijS0CdHk28nn5LvejqWq3A0f+SPxhNKqhnEWPA7ZmUOweFwqjmKgqailCufQtLBjP2g==}
 
-  '@statewalker/db-sqlite-do@0.1.0':
-    resolution: {integrity: sha512-vMeCkED6ezm2TQSjN3AXmM3EvwylMBrQ5Uk4MTVuvnY7ljwMQa3yzjLWRt1uBGaH8n1MTLpLMHG5Ti40paT3yQ==}
+  '@statewalker/db-sqlite-do@0.1.1':
+    resolution: {integrity: sha512-lixr+KizofrDg8uZ63q0vOHtqiuNXAdJ6zpk42dhSTdbv6bAQRfyAN6Vxva9hNS1FpSYy5Jx+HAWs4+SCVKz1g==}
     engines: {node: '>=22.13'}
 
-  '@statewalker/db-sqlite-node@0.3.0':
-    resolution: {integrity: sha512-hlRr2KD9nEUbuHWGUNMigmMQav87feSwUe/7VwPvSNdoRZ150UpJiAcL6ufEDX1kw/fF0J7Ivb5eeoVg1mHQhg==}
+  '@statewalker/db-sqlite-node@0.3.1':
+    resolution: {integrity: sha512-/AI1OcVUm5IWvtFAe+M6x3vx/rjlZgWrXNbop9phnJHsVrVwXBrOhn1sYgL0yfQktPTMOLeSDooMREkor2Qv+Q==}
     engines: {node: '>=22.13'}
 
-  '@statewalker/db-sqlite@0.1.0':
-    resolution: {integrity: sha512-LoVQS/KsuKwbJjXkbrYty2cuqmACFvdhmlQYtfQ8yuBiXSAX8yfKxdDWNcJYqcBJQk6Za7Mg+HU42Oh8jCL9eg==}
+  '@statewalker/db-sqlite@0.1.1':
+    resolution: {integrity: sha512-sR6CSBMcMf66QQnb7DAXBDhw03I7KKmnzV+SFKBKDVNwNjfsQgdmJGDaXIsYJpnH4UstooyC32GpIize4l0YPQ==}
 
   '@turbo/darwin-64@2.11.7':
     resolution: {integrity: sha512-Z2LFOxwbiJueD1miByXJS/BrW21vv6YaQXZustty5jEX4vQYw6zyh101Sz1QO7WG0mqBzKagZ/DoAeeujI0/Sw==}
@@ -2732,21 +2732,21 @@ snapshots:
     dependencies:
       tslib: 2.9.1
 
-  '@statewalker/db-api@0.1.4': {}
+  '@statewalker/db-api@0.1.5': {}
 
-  '@statewalker/db-sqlite-do@0.1.0':
+  '@statewalker/db-sqlite-do@0.1.1':
     dependencies:
-      '@statewalker/db-api': 0.1.4
-      '@statewalker/db-sqlite': 0.1.0
+      '@statewalker/db-api': 0.1.5
+      '@statewalker/db-sqlite': 0.1.1
 
-  '@statewalker/db-sqlite-node@0.3.0':
+  '@statewalker/db-sqlite-node@0.3.1':
     dependencies:
-      '@statewalker/db-api': 0.1.4
-      '@statewalker/db-sqlite': 0.1.0
+      '@statewalker/db-api': 0.1.5
+      '@statewalker/db-sqlite': 0.1.1
 
-  '@statewalker/db-sqlite@0.1.0':
+  '@statewalker/db-sqlite@0.1.1':
     dependencies:
-      '@statewalker/db-api': 0.1.4
+      '@statewalker/db-api': 0.1.5
 
   '@turbo/darwin-64@2.11.7':
     optional: true
