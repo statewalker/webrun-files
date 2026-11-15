@@ -38,7 +38,9 @@
     "lint": "biome lint src tests",
     "prepublishOnly": "pnpm run build",
     "test": "vitest run --passWithNoTests",
-    "test:integration": "vitest run --config vitest.integration.config.ts"
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc -p tsconfig.tests.json"
   },
   "dependencies": {
     "@statewalker/webrun-files": "workspace:^"

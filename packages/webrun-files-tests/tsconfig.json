@@ -3,8 +3,6 @@
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "dist",
-    "declaration": false,
-    "declarationMap": false,
     // Overridden, as in every other package: the inherited `paths` are written
     // relative to the repo root with no `baseUrl`, which TypeScript rejects
     // (TS5090) in any config that does not replace them. Resolution goes

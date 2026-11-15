@@ -41,10 +41,10 @@ describe("BrowserFilesApi specific tests", () => {
   let api: BrowserFilesApi;
 
   beforeEach(async () => {
-    rootHandle = await getOriginPrivateDirectory(
+    rootHandle = (await getOriginPrivateDirectory(
       // @ts-expect-error - adapter type
       import("native-file-system-adapter/src/adapters/memory.js"),
-    );
+    )) as FileSystemDirectoryHandle;
     api = new BrowserFilesApi({ rootHandle });
   });
 
@@ -63,7 +63,7 @@ describe("BrowserFilesApi specific tests", () => {
     const stats = await api.stats("/test.json");
     expect(stats).toBeDefined();
     expect(stats?.kind).toBe("file");
-    expect(stats?.size).toBe(16);
+    expect(stats?.kind === "file" && stats.size).toBe(16);
   });
 
   it("should handle empty directory listing", async () => {

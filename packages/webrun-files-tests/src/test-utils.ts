@@ -62,7 +62,9 @@ export function randomBytes(size: number): Uint8Array {
   return buffer;
 }
 
-export async function collectStream(stream: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
+export async function collectStream(
+  stream: AsyncIterable<Uint8Array> | Iterable<Uint8Array>,
+): Promise<Uint8Array> {
   const chunks: Uint8Array[] = [];
   let totalLength = 0;
 

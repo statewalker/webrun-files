@@ -31,7 +31,7 @@ export function webDeflateCodec(): StreamCodec {
 /** The part of the `pako` module the streaming codec uses. */
 export interface PakoStreamModule {
   Deflate: new (options?: { level?: number }) => PakoStream;
-  Inflate: new () => PakoStream;
+  Inflate: new () => PakoInflateStream;
 }
 
 interface PakoStream {
@@ -39,6 +39,10 @@ interface PakoStream {
   onData(chunk: Uint8Array): void;
   err: number;
   msg: string;
+}
+
+/** pako 3 declares `ended` public on `Inflate` only (private on `Deflate`). */
+interface PakoInflateStream extends PakoStream {
   ended?: boolean;
 }
 
@@ -53,8 +57,11 @@ export function pakoDeflateCodec(
   const options = opts.level === undefined ? {} : { level: opts.level };
   return {
     name: "deflate",
-    compress: (input) => pakoTransform(new pako.Deflate(options), input, true),
-    decompress: (input) => pakoTransform(new pako.Inflate(), input, false),
+    compress: (input) => pakoTransform(new pako.Deflate(options), input, null),
+    decompress: (input) => {
+      const inflate = new pako.Inflate();
+      return pakoTransform(inflate, input, () => inflate.ended === true);
+    },
   };
 }
 
@@ -66,7 +73,8 @@ export function pakoDeflateCodec(
 async function* pakoTransform(
   stream: PakoStream,
   input: AsyncIterable<Uint8Array>,
-  compressing: boolean,
+  /** `null` when compressing; when decompressing, whether the stream reached its end. */
+  ended: (() => boolean) | null,
 ): AsyncGenerator<Uint8Array> {
   let pending: Uint8Array[] = [];
   stream.onData = (chunk) => pending.push(chunk);
@@ -81,10 +89,10 @@ async function* pakoTransform(
     pending = [];
     yield* out;
   }
-  if (compressing) {
+  if (ended === null) {
     stream.push(new Uint8Array(0), true);
     check();
-  } else if (!stream.ended) {
+  } else if (!ended()) {
     throw new Error("pako: truncated deflate stream");
   }
   yield* pending;
