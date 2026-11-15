@@ -4,8 +4,10 @@
  * - `/api/files/*` — the server stub over an in-memory FilesApi
  * - `/`            — the page (e2e/public/index.html)
  * - `/app.js`      — its script
- * - `/lib/webrun-files-http.js` — this package's built browser bundle (dist/esm/index.js,
- *   which imports nothing, so the browser loads it as is; run `pnpm build` first)
+ * - `/lib/webrun-files-http.js` — this package's built browser bundle (dist/esm/index.js; run
+ *   `pnpm build` first). It imports its dependencies by name, so the page's import map points
+ *   `@statewalker/webrun-files` and `@statewalker/webrun-files-mem` at their built ESM entries,
+ *   served below from wherever Node resolves them.
  */
 import { readFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
@@ -53,6 +55,12 @@ export async function startTestServer(
     "/lib/webrun-files-http.js",
     asset("../dist/esm/index.js", "text/javascript; charset=utf-8"),
   );
+  for (const name of ["webrun-files", "webrun-files-mem"]) {
+    app.get(
+      `/lib/${name}.js`,
+      asset(import.meta.resolve(`@statewalker/${name}`), "text/javascript; charset=utf-8"),
+    );
+  }
 
   const server = await new Promise<ReturnType<typeof serve>>((resolve) => {
     const s = serve({ fetch: app.fetch, port: options.port ?? 0, hostname: "127.0.0.1" }, () =>
