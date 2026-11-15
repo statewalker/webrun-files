@@ -8,6 +8,7 @@
 import type { FilesApi } from "@statewalker/webrun-files";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { collectGenerator, collectStream, fromBytes, randomBytes, toBytes } from "../test-utils.js";
+import { createCreateExclusiveTests } from "./create-exclusive.suite.js";
 import { createFileStatsConformanceTests } from "./file-stats.suite.js";
 import { createListOrderTests } from "./list-order.suite.js";
 
@@ -68,6 +69,8 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
   // runs as a sibling suite rather than as something each caller opts into.
   createFileStatsConformanceTests(name, factory);
   createListOrderTests(name, factory);
+  // Skips itself, case by case, for an implementation without the optional method.
+  createCreateExclusiveTests(name, factory);
 
   describe(`FilesApi [${name}]`, () => {
     let ctx: FilesApiTestContext;
@@ -481,6 +484,77 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
         const result = await ctx.api.move("/nonexistent.txt", "/dest.txt");
         expect(result).toBe(false);
       });
+
+      it("should replace an existing file at the target and remove the source", async () => {
+        await ctx.api.write("/move-over/new.lock", [toBytes("new content")]);
+        await ctx.api.write("/move-over/index", [toBytes("old content, longer than the new")]);
+
+        expect(await ctx.api.move("/move-over/new.lock", "/move-over/index")).toBe(true);
+
+        expect(await ctx.api.exists("/move-over/new.lock")).toBe(false);
+        expect(fromBytes(await collectStream(ctx.api.read("/move-over/index")))).toBe(
+          "new content",
+        );
+        const stats = await ctx.api.stats("/move-over/index");
+        expect(stats?.kind).toBe("file");
+        expect(stats?.kind === "file" && stats.size).toBe(11);
+      });
+
+      it("should move a directory with nested files, keeping every file", async () => {
+        const files: Record<string, string> = {
+          "a.txt": "a",
+          "sub/b.txt": "bb",
+          "sub/deep/c.txt": "ccc",
+          "other/d.txt": "dddd",
+        };
+        for (const [name, text] of Object.entries(files)) {
+          await ctx.api.write(`/move-tree/${name}`, [toBytes(text)]);
+        }
+
+        expect(await ctx.api.move("/move-tree", "/moved-tree")).toBe(true);
+
+        expect(await ctx.api.exists("/move-tree")).toBe(false);
+        for (const [name, text] of Object.entries(files)) {
+          expect(await ctx.api.exists(`/move-tree/${name}`)).toBe(false);
+          expect(fromBytes(await collectStream(ctx.api.read(`/moved-tree/${name}`)))).toBe(text);
+        }
+        const listed = await collectGenerator(ctx.api.list("/moved-tree", { recursive: true }));
+        expect(listed.filter((e) => e.kind === "file").map((e) => e.path)).toEqual([
+          "/moved-tree/a.txt",
+          "/moved-tree/other/d.txt",
+          "/moved-tree/sub/b.txt",
+          "/moved-tree/sub/deep/c.txt",
+        ]);
+      });
+
+      it("should create missing parent directories of the target", async () => {
+        await ctx.api.write("/move-me.txt", [toBytes("payload")]);
+
+        expect(await ctx.api.move("/move-me.txt", "/no/such/parent/moved.txt")).toBe(true);
+
+        expect(await ctx.api.exists("/move-me.txt")).toBe(false);
+        expect((await ctx.api.stats("/no/such/parent"))?.kind).toBe("directory");
+        expect(fromBytes(await collectStream(ctx.api.read("/no/such/parent/moved.txt")))).toBe(
+          "payload",
+        );
+      });
+
+      it("should return false and change nothing for a missing source", async () => {
+        await ctx.api.write("/move-keep/target.txt", [toBytes("keep me")]);
+
+        expect(await ctx.api.move("/move-keep/missing.txt", "/move-keep/target.txt")).toBe(false);
+        expect(await ctx.api.move("/move-keep/missing.txt", "/move-keep/new/target.txt")).toBe(
+          false,
+        );
+
+        expect(fromBytes(await collectStream(ctx.api.read("/move-keep/target.txt")))).toBe(
+          "keep me",
+        );
+        expect(await ctx.api.exists("/move-keep/missing.txt")).toBe(false);
+        expect(await ctx.api.exists("/move-keep/new/target.txt")).toBe(false);
+        const listed = await collectGenerator(ctx.api.list("/move-keep", { recursive: true }));
+        expect(listed.map((e) => e.path)).toEqual(["/move-keep/target.txt"]);
+      });
     });
 
     // ========================================
@@ -535,6 +609,25 @@ export function createFilesApiTests(name: string, factory: FilesApiFactory): voi
       it("should handle dot segments", async () => {
         await ctx.api.write("/a/./b/file.txt", [toBytes("x")]);
         expect(await ctx.api.exists("/a/b/file.txt")).toBe(true);
+      });
+
+      it('should resolve ".." segments that stay inside the root', async () => {
+        await ctx.api.write("/a/../b.txt", [toBytes("inside")]);
+        expect(fromBytes(await collectStream(ctx.api.read("/b.txt")))).toBe("inside");
+        expect(fromBytes(await collectStream(ctx.api.read("/x/y/../../b.txt")))).toBe("inside");
+        expect(await ctx.api.exists("/a/../b.txt")).toBe(true);
+        expect(await ctx.api.exists("/a")).toBe(false);
+      });
+
+      it('should refuse ".." segments that climb above the root', async () => {
+        // A refusal may be a rejection or a synchronous throw from the call itself.
+        const refused = (call: () => unknown) => expect((async () => call())()).rejects.toThrow();
+        for (const path of ["/..", "/../x.txt", "/a/../../x.txt"]) {
+          await refused(() => ctx.api.write(path, [toBytes("x")]));
+          await refused(() => ctx.api.stats(path));
+          await refused(() => collectStream(ctx.api.read(path)));
+        }
+        expect(await ctx.api.exists("/x.txt")).toBe(false);
       });
 
       it("should handle special characters in names", async () => {

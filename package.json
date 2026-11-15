@@ -19,7 +19,8 @@
   },
   "scripts": {
     "build": "pnpm -r run build",
-    "test": "pnpm -r run test",
+    "test": "pnpm -r run test && node --test scripts/*.test.mjs && node scripts/check-bundled-deps.mjs",
+    "test:nightly": "pnpm --no-bail --workspace-concurrency=1 --filter @statewalker/webrun-files-http --filter @statewalker/webrun-files-s3 run \"/^test:(e2e|integration)$/\"",
     "lint": "biome check --write .",
     "lint:check": "biome check .",
     "lint:fix": "biome check --write --unsafe .",
@@ -27,7 +28,8 @@
     "format:check": "biome format .",
     "format:fix": "biome check --write --unsafe .",
     "changeset": "changeset",
-    "typecheck": "pnpm -r run typecheck"
+    "typecheck": "pnpm -r run typecheck",
+    "typecheck:tests": "pnpm -r run typecheck:tests"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",

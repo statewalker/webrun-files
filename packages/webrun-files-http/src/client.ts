@@ -5,6 +5,7 @@ import type {
   ListOptions,
   ReadOptions,
 } from "@statewalker/webrun-files";
+import { MoveIncompleteError, normalizePath } from "@statewalker/webrun-files";
 import { errorFromResponse } from "./errors.js";
 import { encodeFilesPath } from "./paths.js";
 import { fromStream, toStream } from "./streams.js";
@@ -230,8 +231,18 @@ class HttpFilesApi implements FilesApi {
     return this.#found(await this.#operation(source, "COPY", "copy", target));
   }
 
+  /**
+   * One `MOVE` request: the server's backend does the move, so it is exactly as atomic
+   * as that backend's `move` (node, mem, sqlite: atomic; s3 or a cross-mount composite:
+   * copy then delete). The client adds no guarantee, and a request that fails in
+   * transit leaves it unknown whether the move happened.
+   */
   async move(source: string, target: string): Promise<boolean> {
-    return this.#found(await this.#operation(source, "MOVE", "move", target));
+    try {
+      return await this.#found(await this.#operation(source, "MOVE", "move", target));
+    } catch (error) {
+      throw moveIncomplete(error, source, target);
+    }
   }
 
   // -------------------------------------------------------------- private
@@ -375,3 +386,21 @@ class PartReader {
     await this.#iterator.return?.();
   }
 }
+
+/**
+ * A server-side `MoveIncompleteError` arrives as a plain error: over http with its name and
+ * message, through a structured clone (rpc transports) with its message only. Recognised by
+ * either, it is rebuilt with the client's paths, the original kept as its cause.
+ */
+function moveIncomplete(error: unknown, source: string, target: string): unknown {
+  const { name, message } = (error ?? {}) as { name?: unknown; message?: unknown };
+  const recognised =
+    name === "MoveIncompleteError" ||
+    (typeof message === "string" && MOVE_INCOMPLETE_MESSAGE.test(message));
+  return recognised
+    ? new MoveIncompleteError(normalizePath(source), normalizePath(target), { cause: error })
+    : error;
+}
+
+const MOVE_INCOMPLETE_MESSAGE =
+  /^move .* -> .*: the target was replaced, but the source could not be removed$/s;

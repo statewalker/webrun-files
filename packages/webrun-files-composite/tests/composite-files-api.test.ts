@@ -1,7 +1,14 @@
+import { type FilesApi, MoveIncompleteError } from "@statewalker/webrun-files";
 import { MemFilesApi } from "@statewalker/webrun-files-mem";
 import { createFilesApiTests } from "@statewalker/webrun-files-tests";
 import { beforeEach, describe, expect, it } from "vitest";
-import { CompositeFilesApi } from "../src/index.js";
+import {
+  CompositeFilesApi,
+  FilteredFilesApi,
+  GuardedFilesApi,
+  newPathFilter,
+  readOnly,
+} from "../src/index.js";
 
 // --- Shared test suite: single mount (composite wrapping one MemFilesApi) ---
 
@@ -528,5 +535,146 @@ describe("CompositeFilesApi - nested mounts with fsPath", () => {
 
     await composite.write("/a/file.txt", [toBytes("shallow-content")]);
     expect(await readAll(shallow.read("/base-a/file.txt"))).toBe("shallow-content");
+  });
+});
+
+describe("CompositeFilesApi.createExclusive", () => {
+  /** A MemFilesApi without createExclusive, as a backend that cannot honour it. */
+  function withoutCreateExclusive(): FilesApi {
+    const api = new MemFilesApi();
+    Object.defineProperty(api, "createExclusive", { value: undefined });
+    return api;
+  }
+
+  it("is defined only while every backend has it", () => {
+    const composite = new CompositeFilesApi(new MemFilesApi()).mount("/m", new MemFilesApi());
+    expect(typeof composite.createExclusive).toBe("function");
+    composite.mount("/plain", withoutCreateExclusive());
+    expect(composite.createExclusive).toBeUndefined();
+    expect(new CompositeFilesApi(withoutCreateExclusive()).createExclusive).toBeUndefined();
+  });
+
+  it("delegates to the owning mount, under its fsPath", async () => {
+    const root = new MemFilesApi();
+    const mounted = new MemFilesApi();
+    const composite = new CompositeFilesApi(root).mount("/data", mounted, "/base");
+    expect(await composite.createExclusive?.("/data/x.lock", [toBytes("x")])).toBe(true);
+    expect(await readAll(mounted.read("/base/x.lock"))).toBe("x");
+    expect(await root.exists("/data/x.lock")).toBe(false);
+    expect(await composite.createExclusive?.("/data/x.lock", [toBytes("y")])).toBe(false);
+  });
+
+  it("treats mount points and their synthetic parents as existing", async () => {
+    const root = new MemFilesApi();
+    const composite = new CompositeFilesApi(root).mount("/a/b", new MemFilesApi());
+    expect(await composite.createExclusive?.("/a/b", [toBytes("x")])).toBe(false);
+    expect(await composite.createExclusive?.("/a", [toBytes("x")])).toBe(false);
+    expect(await root.exists("/a")).toBe(false);
+  });
+
+  it("is guarded as a write, and refused on hidden paths", async () => {
+    const ro = readOnly(new MemFilesApi());
+    await expect(ro.createExclusive?.("/x.lock", [toBytes("x")])).rejects.toThrow(/read-only/);
+    const filtered = new FilteredFilesApi(new MemFilesApi(), newPathFilter("/.hidden"));
+    await expect(filtered.createExclusive?.("/.hidden/x", [toBytes("x")])).rejects.toThrow(
+      /hidden/,
+    );
+    expect(await filtered.createExclusive?.("/x.lock", [toBytes("x")])).toBe(true);
+    expect(new GuardedFilesApi(withoutCreateExclusive(), []).createExclusive).toBeUndefined();
+    expect(
+      new FilteredFilesApi(withoutCreateExclusive(), () => true).createExclusive,
+    ).toBeUndefined();
+  });
+});
+
+describe("createExclusive follows the source at call time", () => {
+  function withoutCreateExclusive(): FilesApi {
+    const api = new MemFilesApi();
+    Object.defineProperty(api, "createExclusive", { value: undefined });
+    return api;
+  }
+
+  function hasIt(api: FilesApi): boolean {
+    return "createExclusive" in api && typeof api.createExclusive === "function";
+  }
+
+  it("on wrappers of a composite, after a mount of a backend without it", async () => {
+    const composite = new CompositeFilesApi(new MemFilesApi());
+    const filtered = new FilteredFilesApi(composite, () => true);
+    const guarded = new GuardedFilesApi(composite, []);
+    const ro = readOnly(composite);
+    for (const api of [composite, filtered, guarded, ro]) expect(hasIt(api)).toBe(true);
+    expect(await filtered.createExclusive?.("/a.lock", [toBytes("a")])).toBe(true);
+    expect(await guarded.createExclusive?.("/a.lock", [toBytes("a")])).toBe(false);
+
+    composite.mount("/plain", withoutCreateExclusive());
+    for (const api of [composite, filtered, guarded, ro]) {
+      expect("createExclusive" in api).toBe(false);
+      expect(api.createExclusive).toBeUndefined();
+    }
+  });
+
+  it("on the composite: a prototype method, so subclasses override it", async () => {
+    class Logged extends CompositeFilesApi {
+      calls: string[] = [];
+      override async createExclusive(
+        path: string,
+        content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+      ): Promise<boolean> {
+        this.calls.push(path);
+        return (await super.createExclusive?.(path, content)) ?? false;
+      }
+    }
+    const logged = new Logged(new MemFilesApi());
+    expect(await logged.createExclusive("/x.lock", [toBytes("x")])).toBe(true);
+    expect(logged.calls).toEqual(["/x.lock"]);
+    expect(Object.hasOwn(logged, "createExclusive")).toBe(false);
+  });
+});
+
+describe("CompositeFilesApi.move across mounts when the source cannot be removed", () => {
+  const text = async (api: FilesApi, path: string) => {
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of api.read(path)) chunks.push(chunk);
+    return new TextDecoder().decode(Buffer.concat(chunks));
+  };
+
+  function setup(failures: number) {
+    const root = new MemFilesApi();
+    const sub = new MemFilesApi();
+    let removes = 0;
+    const remove = root.remove.bind(root);
+    root.remove = async (path: string) => {
+      removes++;
+      if (removes <= failures) throw new Error("source is busy");
+      return remove(path);
+    };
+    const composite = new CompositeFilesApi(root).mount("/mounted", sub);
+    return { root, composite, removes: () => removes };
+  }
+
+  it("retries once, then throws MoveIncompleteError; the target holds the new content", async () => {
+    const { composite, removes } = setup(2);
+    await composite.write("/index.lock", [new TextEncoder().encode("new")]);
+    await composite.write("/mounted/index", [new TextEncoder().encode("old")]);
+
+    const moving = composite.move("/index.lock", "/mounted/index");
+    await expect(moving).rejects.toBeInstanceOf(MoveIncompleteError);
+    await expect(moving).rejects.toThrow(
+      "move /index.lock -> /mounted/index: the target was replaced, but the source could not be removed",
+    );
+    expect(removes()).toBe(2);
+    expect(await text(composite, "/mounted/index")).toBe("new");
+    expect(await composite.exists("/index.lock")).toBe(true);
+  });
+
+  it("succeeds when the retry removes the source", async () => {
+    const { composite, removes } = setup(1);
+    await composite.write("/index.lock", [new TextEncoder().encode("new")]);
+
+    expect(await composite.move("/index.lock", "/mounted/index")).toBe(true);
+    expect(removes()).toBe(2);
+    expect(await text(composite, "/mounted/index")).toBe("new");
+    expect(await composite.exists("/index.lock")).toBe(false);
   });
 });

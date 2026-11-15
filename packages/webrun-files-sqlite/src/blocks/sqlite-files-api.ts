@@ -179,7 +179,32 @@ export class SqliteFilesApi implements FilesApi {
     path: string,
     content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
   ): Promise<void> {
+    await this.#writeContent(normalizePath(path), content, false);
+  }
+
+  /**
+   * Streams the content exactly as {@link write} does, into a content no path shows, then
+   * points the path at it in one transaction with `INSERT ... ON CONFLICT DO NOTHING`:
+   * exclusive against every connection to the database, since SQLite serializes write
+   * transactions. Nothing is visible until the content is complete. A path that already
+   * exists is turned away before the content is read; one created meanwhile makes the
+   * final insert change nothing, and the content is collected in that same transaction.
+   */
+  async createExclusive(
+    path: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  ): Promise<boolean> {
     const name = normalizePath(path);
+    if (name === "/" || (await this.#entry(name))) return false;
+    return this.#writeContent(name, content, true);
+  }
+
+  /** {@link write}, or with `exclusive` {@link createExclusive}; whether the path was set. */
+  async #writeContent(
+    name: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+    exclusive: boolean,
+  ): Promise<boolean> {
     const compression = this.#codec?.name ?? "none";
     // In a transaction too, so a Db without db-sqlite's hook fails before writing anything.
     const fid = await inTransaction(
@@ -230,11 +255,19 @@ export class SqliteFilesApi implements FilesApi {
         size += raw;
       }
 
-      const previous = await this.#entry(name);
-      const [finished] = await this.#transaction(
-        this.#finishWrite(name, fid, size, hash.digestHex(), compression, previous?.fid ?? null),
+      const previous = exclusive ? undefined : await this.#entry(name);
+      const statements = this.#finishWrite(
+        name,
+        fid,
+        size,
+        hash.digestHex(),
+        compression,
+        previous?.fid ?? null,
+        exclusive,
       );
-      if (finished === 0) throw sweptDuringWrite(name);
+      const counts = await this.#transaction(statements.statements);
+      if (counts[0] === 0) throw sweptDuringWrite(name);
+      return counts[statements.pathIndex] > 0;
     } catch (error) {
       try {
         await reader.close();
@@ -256,7 +289,8 @@ export class SqliteFilesApi implements FilesApi {
    * an identical content if one exists or else at this one, then collect this
    * content if it ended up unused and the path's previous content. Everything
    * after the first statement is conditioned on the content still existing, so
-   * a swept write changes nothing.
+   * a swept write changes nothing. With `exclusive` an existing path is left
+   * as it is, and `pathIndex` names the statement whose change count says so.
    */
   #finishWrite(
     name: string,
@@ -265,7 +299,8 @@ export class SqliteFilesApi implements FilesApi {
     digest: string,
     compression: string,
     previous: number | null,
-  ): SqlStatement[] {
+    exclusive: boolean,
+  ): { statements: SqlStatement[]; pathIndex: number } {
     const now = Date.now();
     const exists = `SELECT 1 FROM ${this.#files} WHERE fid = ?`;
     const statements: SqlStatement[] = [
@@ -286,13 +321,15 @@ export class SqliteFilesApi implements FilesApi {
                 ORDER BY f.fid LIMIT 1
               ), ?), ?
               WHERE EXISTS (${exists})
-              ON CONFLICT(path) DO UPDATE SET fid = excluded.fid, mtime = excluded.mtime`,
+              ON CONFLICT(path) ${exclusive ? "DO NOTHING" : "DO UPDATE SET fid = excluded.fid, mtime = excluded.mtime"}`,
         params: [name, digest, size, compression, this.#blockSize, fid, fid, now, fid],
       },
       ...this.#collect(fid),
     ];
+    // After the content update and the parents.
+    const pathIndex = 1 + ancestorsAndSelf(parentOf(name)).length;
     if (previous !== null && previous !== fid) statements.push(...this.#collect(previous));
-    return statements;
+    return { statements, pathIndex };
   }
 
   async mkdir(path: string): Promise<void> {
@@ -323,7 +360,8 @@ export class SqliteFilesApi implements FilesApi {
     if ((await this.stats(base))?.kind !== "directory") return;
 
     const range = descendants(base);
-    const prefixLength = base === "/" ? 1 : base.length + 1;
+    // SQLite's substr() counts characters (code points), not UTF-16 units.
+    const prefixLength = base === "/" ? 1 : [...base].length + 1;
     const directOnly = options.recursive ? "" : "AND instr(substr(p.path, ?), '/') = 0";
     // The unique index orders paths by UTF-8 bytes, which is `comparePaths` order,
     // so resuming after a path is the keyset cursor's starting point.
@@ -389,6 +427,12 @@ export class SqliteFilesApi implements FilesApi {
     return this.#transfer(source, target, "copy");
   }
 
+  /**
+   * One transaction (see the private `#transfer`): the target's subtree is removed, its
+   * contents collected when no other path shares them, and the source's path rows are
+   * renamed by prefix, keeping their content ids, so no content is copied. Atomic for
+   * readers on every connection; a failure leaves source and target unchanged.
+   */
   async move(source: string, target: string): Promise<boolean> {
     return this.#transfer(source, target, "move");
   }
@@ -413,6 +457,8 @@ export class SqliteFilesApi implements FilesApi {
       params: inS.params,
     };
     const now = Date.now();
+    // SQLite's substr() counts characters (code points), not UTF-16 units.
+    const rest = [...from].length + 1;
     const statements: SqlStatement[] = [
       ...this.#removeTree(to, guard),
       ...ancestorsAndSelf(parentOf(to)).map((dir) => ({
@@ -424,12 +470,12 @@ export class SqliteFilesApi implements FilesApi {
         ? {
             sql: `INSERT INTO ${this.#paths}(path, fid, mtime)
                   SELECT ? || substr(p.path, ?), p.fid, ? FROM ${this.#paths} p WHERE ${range.where}`,
-            params: [to, from.length + 1, now, ...range.params],
+            params: [to, rest, now, ...range.params],
           }
         : {
             sql: `UPDATE ${this.#paths} AS p SET path = ? || substr(p.path, ?), mtime = ?
                   WHERE ${range.where}`,
-            params: [to, from.length + 1, now, ...range.params],
+            params: [to, rest, now, ...range.params],
           },
     ];
     const counts = await this.#transaction(statements);

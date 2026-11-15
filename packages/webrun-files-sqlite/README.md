@@ -109,6 +109,24 @@ await files.init();
 const removed = await files.sweep({ olderThan: 60 * 60_000 }); // contents untouched for an hour
 ```
 
+### A lock row, shared by every connection
+
+```typescript
+const locked = await files.createExclusive('/jobs/nightly.lock', [new TextEncoder().encode(worker)]);
+if (!locked) return; // another connection, in this process or another, holds it
+try {
+  // ...
+} finally {
+  await files.remove('/jobs/nightly.lock');
+}
+```
+
+Both classes implement `createExclusive` with an `INSERT` that does nothing on a conflict, and
+read whether a row was inserted. SQLite runs the statement atomically and serializes writers, so
+every connection to the database file is excluded, in any process. An existing file, directory
+or (in `SqlarFilesApi`) symlink makes it return `false`, as does a name that only exists as the
+prefix of others. Nothing is visible until the content is complete.
+
 ### A portable archive with `SqlarFilesApi`
 
 ```typescript
@@ -187,8 +205,15 @@ page starts.
 Streaming happens outside transactions. Every step that changes what a path shows is one
 transaction: storing each block, finishing a write, `remove`, `copy` and `move`. A failure inside
 any of them leaves the database as it was; `move` onto an existing target never loses the target.
+`move` renames the path rows by prefix and keeps their content ids, so no content is copied, and
+the content of a replaced target is collected in the same transaction when no other path shares it.
 A write stays invisible until it finishes: if it fails, the path keeps its previous content and the
 partial content is deleted.
+
+`createExclusive` streams exactly like a write, and turns an existing path away before reading
+the content. Its last transaction inserts the path with `ON CONFLICT(path) DO NOTHING`: when
+another writer created the path while the content streamed, the insert changes nothing, the call
+returns `false`, and the unused content is deleted in that same transaction.
 
 If the process dies mid-stream, the partial content is left behind, unreferenced. `sweep` deletes
 contents that no path references and that have not been updated for `olderThan` milliseconds, with
@@ -226,14 +251,26 @@ does. A dangling link, or a chain longer than 8, behaves as a missing path. `rem
 
 ### `SqlarFilesApi` limits
 
-- A file is one blob: `write` buffers it, `read` inflates it whole and yields one chunk.
+- A file is one blob: `write` and `createExclusive` buffer it, `read` inflates it whole and
+  yields one chunk. `createExclusive` compresses before its single
+  `INSERT ... SELECT ... WHERE NOT EXISTS (names below) ON CONFLICT(name) DO NOTHING RETURNING name`,
+  so the check for an implicit directory and the insert are one statement.
 - On Durable Objects the stored (possibly compressed) size of one file must stay under 2 MB, since
   SQLAR keeps each file in one row. A larger file fails the `write` with `string or blob too big`
   — a value limit, not corruption. Store big files with `SqliteFilesApi`, whose blocks stay under
   the limit.
-- Multi-row mutations (`copy`, `move`, `remove` of a tree) are not wrapped in a transaction: a
-  failure part-way leaves the rows already changed in place, and a `move` can leave the entry under
-  both paths.
+- `move` is one transaction through `inTransaction` (so the `Db` must carry db-sqlite's hook, as
+  for `SqliteFilesApi`): it deletes the target's subtree, creates the target's parents and renames
+  the source row and every row under it by rewriting the name prefix. The stored data is never
+  copied; mode, mtime and data stay as they were. Readers see the old state or the new one, and a
+  failure leaves source and target unchanged. Like `SqliteFilesApi`, it replaces the target's
+  subtree rather than merging into it, and throws
+  `sqlar: cannot move /a to /a/b: one contains the other` when one path contains the other. A
+  target below a file or a symlink returns `false` and changes nothing. A `Db` without the hook
+  (a wrapper that does not forward it) makes `move` reject with `inTransaction`'s
+  `this Db has no SQLite transaction hook` error.
+- The other multi-row mutations (`copy`, `remove` of a tree) are not wrapped in a transaction: a
+  failure part-way leaves the rows already changed in place.
 - `list` loads every row under the directory, then sorts the entries into path order before
   applying `after`.
 

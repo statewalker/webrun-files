@@ -59,6 +59,26 @@ for await (const chunk of files.read('/large-file.bin', { start: 1000, length: 5
 }
 ```
 
+### A lock file, safe across processes
+
+```typescript
+const content = [new TextEncoder().encode(`${process.pid}\n`)];
+if (await files.createExclusive('/repo/.git/index.lock', content)) {
+  try {
+    // ... only this process gets here until the lock is removed
+  } finally {
+    await files.remove('/repo/.git/index.lock');
+  }
+} else {
+  // another process holds the lock
+}
+```
+
+`createExclusive` opens the file with `O_CREAT | O_EXCL`, so the operating system decides who
+wins: every process on the machine using that filesystem is excluded, and on network file systems
+that honour `O_EXCL` (NFSv3 and later) other machines are too. Anything already at the path,
+including a symbolic link, dangling or not, makes it return `false`.
+
 ### A temporary directory per test
 
 ```typescript
@@ -83,9 +103,10 @@ try {
 | Call | Implementation |
 | --- | --- |
 | `read` | `fs.open` + positioned `handle.read` in 8 KiB buffers, only the requested range |
-| `write` | `fs.mkdir(parent, { recursive: true })`, then collects every chunk and calls `fs.writeFile` once |
+| `write` | `fs.mkdir(parent, { recursive: true })`, then streams the chunks (batched to 64 KiB) into a temporary `.webrun-tmp-<random>` beside the file and renames it over the file |
+| `createExclusive` | `fs.mkdir(parent, { recursive: true })`, then `fs.open(path, "wx")`; `EEXIST` returns `false`, otherwise the chunks are streamed (batched to 64 KiB) straight into the new file, which is unlinked again if the source fails |
 | `list` | `fs.readdir` + `fs.stat` per entry, walked through `listInPathOrder` |
-| `move` | `fs.rename` after creating the target's parent |
+| `move` | `fs.rename` after creating the target's parent: atomic, replaces an existing file or (for a directory) an empty directory |
 | `copy` | `fs.cp(..., { recursive: true })` |
 | `remove` | `fs.rm(..., { recursive: true, force: true })` for a directory, `fs.unlink` for a file |
 
@@ -98,15 +119,46 @@ directory whose whole subtree sorts at or before `after`.
 
 ### What breaks, and how it looks
 
-- **A path that leaves `rootDir` is refused.** `..` segments are resolved against `rootDir`; when
-  the result is outside it, the call throws
-  `NodeFilesApi: path is outside rootDir: /../etc/passwd` (reads throw when iterated). `..` that
-  stays inside (`/a/../b.txt`) is fine. Symbolic links inside `rootDir` are followed as the
-  operating system follows them, so a link pointing out of `rootDir` still leads out.
-- **`write` holds the whole file in memory** before writing it, so a very large upload costs its
-  full size in RAM. Reads stream.
-- **`move` across devices returns `false`.** It is a single `fs.rename`; when that fails (`EXDEV`,
-  permissions) the method returns `false` instead of falling back to copy and delete.
+- **A path that leaves `rootDir` is refused.** `normalizePath` resolves `..` segments and throws
+  `Path climbs above the root: /../etc/passwd` when one would climb above the root (reads throw
+  when iterated); `NodeFilesApi` checks containment again as defence in depth. `..` that stays
+  inside (`/a/../b.txt`) is fine.
+- **Symbolic links inside `rootDir` are out of scope.** They are followed as the operating system
+  follows them, so a link pointing out of `rootDir` still leads out. Whoever owns `rootDir`
+  controls its links; resolving every path with `realpath` would cost a system call per operation,
+  still race with the use, and break deliberately linked layouts.
+- **`write` streams, and replaces the file at the end.** Memory stays at about two batches of
+  64 KiB plus one chunk. Until the rename the old file stays readable, and a source that fails leaves it
+  unchanged. A read-only file is refused, as an in-place write was. Replacing keeps the old
+  file's permission bits (not setuid/setgid, which a write would clear) and writes through a
+  symbolic link to its target (a dangling link is replaced by a regular file, and a link out of
+  `rootDir` is written there, with its temporary beside the target); a hard link is replaced,
+  not written through, and the owner, ACLs and extended
+  attributes are those of a new file. The temporary needs write permission on the directory.
+  `list` hides the temporaries (files named exactly `.webrun-tmp-` plus 16 hex digits); a crash
+  can leave one behind, still visible to `exists`, `stats` and `read`. A caller that reuses
+  a chunk's buffer after yielding it may change what is written (up to 64 KiB is held before
+  each write). Reads stream.
+- **Replacing has the costs of a rename.** The disk must hold the old file and the new one
+  until the rename. The new content is not flushed (`fsync`) before the rename, so after a
+  power loss the file can be empty or partial on some file systems. On Windows a file that
+  another process holds open cannot be replaced, so the rename is retried for about a second
+  before the write fails (the temporary is removed and the old file kept). A file the rename cannot replace because it is a mount point (a
+  bind-mounted file in a container, `EBUSY`) or on another device (`EXDEV`) is written in
+  place instead: the temporary is copied into it, keeping its owner and mode, so readers may
+  see it half-written, and a failure part way (a full disk) leaves it partial.
+- **A lock file is visible while it is written.** Unlike `write`, `createExclusive` writes in
+  place, as git does with its lock files: other readers see the file grow until the content
+  ends. A crash part way leaves the partial file, and with it the lock, behind.
+- **Cleanup unlinks by path.** When the source fails, the file is unlinked by its path. If
+  another process meanwhile removed it as a stale lock and created its own, that file is the one
+  removed. Git's lock files behave the same.
+- **`move` is atomic, and returns `false` when the rename fails.** It is a single `fs.rename`, so
+  a reader sees the old target or the new one, never a missing or partial file, and a failed
+  rename changes nothing. When it fails (a file onto a directory, a directory onto a file or a
+  non-empty directory, a directory into itself, `EXDEV` across devices, permissions) the method
+  returns `false` instead of falling back to copy and delete; the target's parent directories may
+  stay created.
 - **Unreadable reads look like missing files.** `read` swallows every error (missing file,
   permission denied, a directory) and yields nothing; `copy` and `move` return `false`.
 

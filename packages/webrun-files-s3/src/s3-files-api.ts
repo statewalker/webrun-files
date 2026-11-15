@@ -24,7 +24,12 @@ import type {
   ListOptions,
   ReadOptions,
 } from "@statewalker/webrun-files";
-import { basename, comparePaths, normalizePath } from "@statewalker/webrun-files";
+import {
+  basename,
+  comparePaths,
+  normalizePath,
+  removeMovedSource,
+} from "@statewalker/webrun-files";
 
 /** Default part size for multipart uploads: 5MB (S3 minimum) */
 const DEFAULT_PART_SIZE = 5 * 1024 * 1024;
@@ -148,7 +153,42 @@ export class S3FilesApi implements FilesApi {
     path: string,
     content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
   ): Promise<void> {
-    const key = this.resolveKey(path);
+    await this.upload(this.resolveKey(path), content, false);
+  }
+
+  /**
+   * A conditional write, `If-None-Match: *`, on the `PutObject` (or, above the multipart
+   * threshold, on the `CompleteMultipartUpload`) that makes the object visible: the
+   * service creates the key only if no object has it, and answers 412 otherwise. That
+   * excludes every client of the bucket. AWS S3 supports it since August 2024; an
+   * S3-compatible service that ignores the header gives no exclusion at all, so check
+   * yours before relying on this.
+   *
+   * Only the key itself is exclusive. A directory is a key prefix, so an existing one is
+   * turned away by a check before the upload, but one created concurrently with this
+   * call is not excluded. Nothing is visible until the content is complete; a failing
+   * source aborts the multipart upload and leaves no object.
+   */
+  async createExclusive(
+    path: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  ): Promise<boolean> {
+    if (normalizePath(path) === "/" || (await this.stats(path))) return false;
+    return this.upload(this.resolveKey(path), content, true);
+  }
+
+  /**
+   * Upload `content` to `key`: one PutObject below the multipart threshold, else a
+   * multipart upload. With `exclusive`, the request that creates the object carries
+   * `If-None-Match: *`; returns false when the service refuses it because the key exists.
+   */
+  private async upload(
+    key: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+    exclusive: boolean,
+  ): Promise<boolean> {
+    const ifNoneMatch = exclusive ? "*" : undefined;
+    const sendLast = <T>(send: () => Promise<T>) => (exclusive ? sendConditional(send) : send());
 
     // Buffer for accumulating small writes
     let buffer: Uint8Array[] = [];
@@ -158,7 +198,8 @@ export class S3FilesApi implements FilesApi {
     let partNumber = 1;
 
     const flushPart = async (isLast: boolean) => {
-      if (buffer.length === 0) return;
+      // An exclusive create of empty content still has to create the object.
+      if (buffer.length === 0 && !(exclusive && isLast && !uploadId)) return;
 
       const partLength = buffer.reduce((sum, c) => sum + c.length, 0);
       const partBuffer = new Uint8Array(partLength);
@@ -177,8 +218,9 @@ export class S3FilesApi implements FilesApi {
           Key: key,
           Body: partBuffer,
           ContentLength: partLength,
+          IfNoneMatch: ifNoneMatch,
         });
-        await this.client.send(command);
+        await sendLast(() => this.client.send(command));
         return;
       }
 
@@ -240,9 +282,11 @@ export class S3FilesApi implements FilesApi {
           MultipartUpload: {
             Parts: parts.sort((a, b) => a.PartNumber - b.PartNumber),
           },
+          IfNoneMatch: ifNoneMatch,
         });
-        await this.client.send(completeCommand);
+        await sendLast(() => this.client.send(completeCommand));
       }
+      return true;
     } catch (error) {
       // Abort multipart upload on error
       if (uploadId) {
@@ -259,6 +303,7 @@ export class S3FilesApi implements FilesApi {
         }
       }
 
+      if (exclusive && isPreconditionFailed(error)) return false;
       throw error;
     }
   }
@@ -514,10 +559,19 @@ export class S3FilesApi implements FilesApi {
     return true;
   }
 
+  /**
+   * S3 has no rename, so a move is a copy, then a delete, and is NOT atomic: while it
+   * runs, the object exists under both keys, and a directory (a key prefix) moves object
+   * by object. A failed copy throws and keeps the source. If the copy succeeds but the
+   * source cannot be deleted, the delete is retried once, then a `MoveIncompleteError`
+   * is thrown: the target holds the new content and the source still exists. False is
+   * never returned for a half-done move.
+   */
   async move(source: string, target: string): Promise<boolean> {
     const copied = await this.copy(source, target);
     if (!copied) return false;
-    return this.remove(source);
+    await removeMovedSource(this, normalizePath(source), normalizePath(target));
+    return true;
   }
 
   async copy(source: string, target: string): Promise<boolean> {
@@ -598,4 +652,29 @@ function insertInOrder(entries: FileInfo[], entry: FileInfo): void {
   // Equal paths keep arrival order: a file arrives before its same-named prefix.
   while (i > 0 && comparePaths(entries[i - 1].path, entry.path) > 0) i--;
   entries.splice(i, 0, entry);
+}
+
+/** The service refused a conditional write because the key exists (HTTP 412). */
+function isPreconditionFailed(error: unknown): boolean {
+  const err = error as { name?: string; $metadata?: { httpStatusCode?: number } };
+  return err?.name === "PreconditionFailed" || err?.$metadata?.httpStatusCode === 412;
+}
+
+/**
+ * Send a request that may carry `If-None-Match`, retrying a 409
+ * `ConditionalRequestConflict`: S3 answers that while another conditional write to the
+ * key is in flight, and asks the client to retry, after which one of them gets 412.
+ */
+async function sendConditional<T>(send: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await send();
+    } catch (error) {
+      const err = error as { name?: string; $metadata?: { httpStatusCode?: number } };
+      const conflict =
+        err?.name === "ConditionalRequestConflict" || err?.$metadata?.httpStatusCode === 409;
+      if (!conflict || attempt >= 4) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50 * 2 ** attempt));
+    }
+  }
 }

@@ -11,6 +11,7 @@ import {
   joinPath,
   listInPathOrder,
   normalizePath,
+  removeMovedSource,
 } from "@statewalker/webrun-files";
 
 /** Options for {@link cow}. */
@@ -190,11 +191,43 @@ class CowFilesApi implements FilesApi {
     return true;
   }
 
+  /**
+   * NOT atomic: the composite view of the source is copied into the writable layer,
+   * then the source is removed (deleted from the writable layer and/or hidden behind
+   * a whiteout). While it runs the content exists in both places, and a directory
+   * appears in the target file by file. A failed copy throws and keeps the source. If
+   * the copy succeeds but the source cannot be removed, the removal is retried once,
+   * then a `MoveIncompleteError` is thrown: the target holds the new content and the
+   * source still exists. False is never returned for a half-done move.
+   *
+   * An existing target (as the composite view shows it) is treated as POSIX
+   * `rename(2)` treats it, like `MemFilesApi` and `NodeFilesApi`: a file replaces a
+   * file, and a directory replaces an empty directory. Everything else returns false
+   * and changes nothing: a file onto a directory, a directory onto a file or onto a
+   * non-empty directory, a directory into its own subtree, a target below a file, and
+   * a missing source. A move onto itself is a successful no-op.
+   */
   async move(source: string, target: string): Promise<boolean> {
-    const stats = await this.stats(source);
+    const from = normalizePath(source);
+    const to = normalizePath(target);
+    const stats = await this.stats(from);
     if (!stats) return false;
-    await this.copyInto(source, target, stats);
-    await this.remove(source);
+    if (from === to) return true;
+    if (from === "/" || to.startsWith(`${from}/`)) return false;
+    for (let dir = dirname(to); dir !== "/"; dir = dirname(dir)) {
+      const kind = (await this.stats(dir))?.kind;
+      if (kind === "file") return false;
+      if (kind === "directory") break;
+    }
+    const targetStats = await this.stats(to);
+    if (targetStats) {
+      if (targetStats.kind !== stats.kind) return false;
+      if (targetStats.kind === "directory") {
+        for await (const _ of this.list(to)) return false;
+      }
+    }
+    await this.copyInto(from, to, stats);
+    await removeMovedSource(this, from, to);
     return true;
   }
 

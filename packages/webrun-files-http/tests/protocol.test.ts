@@ -1,4 +1,6 @@
 /** The wire: which request each FilesApi call sends, and how answers map back. */
+import { MoveIncompleteError } from "@statewalker/webrun-files";
+import { MemFilesApi } from "@statewalker/webrun-files-mem";
 import { collectGenerator, collectStream, toBytes } from "@statewalker/webrun-files-tests";
 import { describe, expect, it } from "vitest";
 import type { FetchHandler } from "../src/index.js";
@@ -255,5 +257,34 @@ describe("errors", () => {
       maxPageSize: 12,
       methods: { http: true, post: true },
     });
+  });
+});
+
+describe("a server-side MoveIncompleteError", () => {
+  it("reaches the client as a MoveIncompleteError with the client's paths", async () => {
+    const fs = new MemFilesApi();
+    await fs.write("/a.lock", [toBytes("new")]);
+    fs.move = async () => {
+      throw new MoveIncompleteError("/a.lock", "/a", { cause: new Error("EBUSY") });
+    };
+    const { client } = await direct({ fs });
+    const error = await client.move("/a.lock", "/a").catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(MoveIncompleteError);
+    expect((error as MoveIncompleteError).source).toBe("/a.lock");
+    expect((error as MoveIncompleteError).target).toBe("/a");
+    expect((error as Error).message).toBe(
+      "move /a.lock -> /a: the target was replaced, but the source could not be removed",
+    );
+  });
+
+  it("leaves other move errors as they were", async () => {
+    const fs = new MemFilesApi();
+    fs.move = async () => {
+      throw new Error("disk full");
+    };
+    const { client } = await direct({ fs });
+    const error = await client.move("/a.lock", "/a").catch((e: unknown) => e);
+    expect(error).not.toBeInstanceOf(MoveIncompleteError);
+    expect((error as Error).message).toBe("disk full");
   });
 });

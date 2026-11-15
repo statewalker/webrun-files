@@ -1,4 +1,5 @@
 import type { Db } from "@statewalker/db-api";
+import { inTransaction } from "@statewalker/db-sqlite";
 import type {
   FileInfo,
   FileStats,
@@ -81,14 +82,45 @@ export class SqlarFilesApi implements FilesApi {
     const name = toName(path);
     const bytes = await concat(content);
     await this.mkdir(parentName(name));
+    await this.#put(name, FILE_MODE, bytes.byteLength, await this.#stored(bytes));
+  }
 
-    let data: Uint8Array = bytes;
+  /**
+   * One `INSERT ... ON CONFLICT DO NOTHING RETURNING`, which SQLite runs atomically:
+   * exclusive against every connection to the database file, in any process. The
+   * statement inserts nothing when a row has the name — a file, a directory or a
+   * symlink, dangling or not — or when names below it make it an implicit directory.
+   * The content is collected (and compressed) before the statement runs, so nothing is
+   * visible until it is complete and a failing source writes nothing.
+   */
+  async createExclusive(
+    path: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  ): Promise<boolean> {
+    const name = toName(path);
+    if (name === "") return false; // the root always exists
+    const bytes = await concat(content);
+    const data = await this.#stored(bytes);
+    await this.mkdir(parentName(name));
+    const below = descendants(name);
+    const rows = await this.#db.query(
+      `INSERT INTO sqlar (name, mode, mtime, sz, data)
+       SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM sqlar WHERE ${below.where})
+       ON CONFLICT(name) DO NOTHING
+       RETURNING name`,
+      [name, FILE_MODE, Math.floor(Date.now() / 1000), bytes.byteLength, data, ...below.params],
+    );
+    return rows.length > 0;
+  }
+
+  /** The `data` stored for `bytes`: deflated when that is strictly shorter. */
+  async #stored(bytes: Uint8Array): Promise<Uint8Array> {
     if (bytes.byteLength >= this.#codec.minSize) {
       const deflated = await this.#codec.deflate(bytes);
       // Strictly shorter only: equal length is the plaintext marker.
-      if (deflated.byteLength < bytes.byteLength) data = deflated;
+      if (deflated.byteLength < bytes.byteLength) return deflated;
     }
-    await this.#put(name, FILE_MODE, bytes.byteLength, data);
+    return bytes;
   }
 
   /** `sz = 0` with `data IS NULL` is the format's only marker for a directory. */
@@ -219,10 +251,59 @@ export class SqlarFilesApi implements FilesApi {
     return true;
   }
 
+  /**
+   * One transaction, through `inTransaction` (so the `Db` must carry db-sqlite's
+   * transaction hook): delete the target's subtree, create the target's parents, then
+   * rename the source row and every row under it by rewriting the name prefix. Content
+   * is never copied, only re-keyed, and mode, mtime and data stay as they were, as with
+   * `rename(2)`. Readers on any connection see the old state or the new one; a failure
+   * rolls everything back, leaving source and target unchanged.
+   *
+   * Like `SqliteFilesApi`, an existing target is replaced with its whole subtree,
+   * not merged into, and a move into the source's own subtree or onto one of its
+   * ancestors throws. A target below a file or a symlink (an ancestor of the target is
+   * one) returns false, changing nothing. A symlink is moved as a link. A move onto
+   * itself is a no-op.
+   */
   async move(source: string, target: string): Promise<boolean> {
-    if (!(await this.copy(source, target))) return false;
-    await this.remove(source);
-    return true;
+    const from = toName(source);
+    const to = toName(target);
+    if (from === to) return this.exists(source);
+    if (isInside(to, from) || isInside(from, to)) {
+      throw new Error(`sqlar: cannot move /${from} to /${to}: one contains the other`);
+    }
+    const src = selfAndDescendants(from);
+    const dst = selfAndDescendants(to);
+    const now = Math.floor(Date.now() / 1000);
+    return inTransaction(this.#db, async (tx) => {
+      const found = await tx.query(`SELECT 1 FROM sqlar WHERE ${src.where} LIMIT 1`, src.params);
+      if (found.length === 0) return false;
+      // A target below a file or a symlink: refuse, changing nothing.
+      const ancestors = ancestorsAndSelf(parentName(to));
+      if (ancestors.length > 0) {
+        const blocking = await tx.query(
+          `SELECT 1 FROM sqlar WHERE name IN (${ancestors.map(() => "?").join(", ")})
+           AND (sz = -1 OR NOT (sz = 0 AND typeof(data) = 'null')) LIMIT 1`,
+          ancestors,
+        );
+        if (blocking.length > 0) return false;
+      }
+      await tx.query(`DELETE FROM sqlar WHERE ${dst.where}`, dst.params);
+      for (const dir of ancestors) {
+        await tx.query(
+          `INSERT INTO sqlar (name, mode, mtime, sz, data) VALUES (?, ?, ?, 0, NULL)
+           ON CONFLICT(name) DO NOTHING`,
+          [dir, DIR_MODE, now],
+        );
+      }
+      // SQLite's substr() counts characters (code points), not UTF-16 units.
+      await tx.query(`UPDATE sqlar SET name = ? || substr(name, ?) WHERE ${src.where}`, [
+        to,
+        [...from].length + 1,
+        ...src.params,
+      ]);
+      return true;
+    });
   }
 
   /** `length(data) = sz` is plaintext, `< sz` is compressed, `> sz` is corrupt. */
@@ -343,6 +424,11 @@ function selfAndDescendants(name: string): { where: string; params: string[] } {
 /** A FilesApi path as a stored name: normalised, without the leading slash. The root is "". */
 function toName(path: string): string {
   return normalizePath(path).slice(1);
+}
+
+/** Whether `name` lies strictly under `ancestor`; everything lies under the root "". */
+function isInside(name: string, ancestor: string): boolean {
+  return ancestor === "" ? name !== "" : name.startsWith(`${ancestor}/`);
 }
 
 function joinName(base: string, rest: string): string {

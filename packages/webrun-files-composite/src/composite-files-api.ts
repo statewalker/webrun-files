@@ -5,7 +5,14 @@ import type {
   ListOptions,
   ReadOptions,
 } from "@statewalker/webrun-files";
-import { comparePaths, joinPath, mergeInPathOrder, normalizePath } from "@statewalker/webrun-files";
+import {
+  comparePaths,
+  joinPath,
+  mergeInPathOrder,
+  normalizePath,
+  removeMovedSource,
+} from "@statewalker/webrun-files";
+import { followCreateExclusive } from "./follow-create-exclusive.js";
 
 interface MountEntry {
   prefix: string;
@@ -23,7 +30,7 @@ interface MountEntry {
  * Each backend can use a sub-directory of its own filesystem as the mount
  * root via `fsPath` (constructor `rootPath` for the implicit root mount,
  * `fsPath` argument for additional mounts). Cross-mount `move` is
- * implemented as copy-then-delete; there is no atomicity guarantee.
+ * implemented as copy-then-delete; there is no atomicity guarantee (see `move`).
  *
  * Access control and visibility filtering are intentionally **not** part of
  * this class — wrap with {@link GuardedFilesApi} or {@link FilteredFilesApi}
@@ -52,6 +59,38 @@ export class CompositeFilesApi implements FilesApi {
    */
   constructor(root: FilesApi, rootPath?: string) {
     this.mounts = [{ prefix: "/", api: root, basePath: normalizePath(rootPath ?? "/") }];
+    // biome-ignore lint/correctness/noConstructorReturn: the proxy shows `createExclusive` only while every backend has it
+    return followCreateExclusive(this, () =>
+      this.mounts.every((m) => typeof m.api.createExclusive === "function"),
+    );
+  }
+
+  /**
+   * Present only while EVERY backend — the root and each mount — has its own
+   * `createExclusive`, so feature detection on the composite tells the truth for
+   * any path: `"createExclusive" in composite` and `typeof composite.createExclusive`
+   * are checked against the mounts at each access. Mounting a backend without it hides
+   * the method; it is never shown and then refused for some paths. (A reference taken
+   * before such a mount still calls; it throws for paths on a backend without it.)
+   * It is a prototype method, so a subclass overrides it as usual.
+   *
+   * A call goes to the backend owning the path, so the exclusion reaches as far
+   * as that backend's does. A mount point, and a directory that exists only
+   * because a mount lies under it, count as existing.
+   */
+  async createExclusive?(
+    path: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  ): Promise<boolean> {
+    const normalized = normalizePath(path);
+    if (this.mounts.some((m) => m.prefix !== "/" && isInsideOrSame(m.prefix, normalized))) {
+      return false;
+    }
+    const { api, resolvedPath } = this.resolve(normalized);
+    if (!api.createExclusive) {
+      throw new Error(`createExclusive is not supported by the backend for ${normalized}`);
+    }
+    return api.createExclusive(resolvedPath, content);
   }
 
   /**
@@ -266,6 +305,17 @@ export class CompositeFilesApi implements FilesApi {
     return api.remove(resolvedPath);
   }
 
+  /**
+   * Within one mount the move is delegated, so it is exactly as atomic as that
+   * backend's `move` (and treats an existing target as that backend does).
+   *
+   * Across mounts it can only be a copy, then a delete, and is NOT atomic: while it
+   * runs, the content exists in both places, and a directory appears in the target
+   * file by file. A failed copy throws and keeps the source. If the copy succeeds but
+   * the source cannot be removed, the removal is retried once, then a
+   * `MoveIncompleteError` is thrown: the target holds the new content and the source
+   * still exists. False is never returned for a half-done move.
+   */
   async move(source: string, target: string): Promise<boolean> {
     const src = this.resolve(source);
     const tgt = this.resolve(target);
@@ -277,10 +327,14 @@ export class CompositeFilesApi implements FilesApi {
 
     // Cross-mount: copy then remove
     const copied = await this.crossCopy(src.api, src.resolvedPath, tgt.api, tgt.resolvedPath);
-    if (copied) {
-      await src.api.remove(src.resolvedPath);
-    }
-    return copied;
+    if (!copied) return false;
+    // Reported with the composite's paths, not the backend's.
+    const backend = {
+      remove: () => src.api.remove(src.resolvedPath),
+      exists: () => src.api.exists(src.resolvedPath),
+    };
+    await removeMovedSource(backend, normalizePath(source), normalizePath(target));
+    return true;
   }
 
   async copy(source: string, target: string): Promise<boolean> {
@@ -372,6 +426,10 @@ function translateAfter(
   // Every descendant of `from` lies between `from + "/"` and `from + "0"`.
   if (comparePaths(after, `${fromPrefix}/`) < 0) return undefined;
   return SKIP;
+}
+
+function isInsideOrSame(path: string, ancestor: string): boolean {
+  return path === ancestor || isStrictlyInside(path, ancestor);
 }
 
 function isStrictlyInside(path: string, ancestor: string): boolean {

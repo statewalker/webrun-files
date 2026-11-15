@@ -1,6 +1,6 @@
 {
   "name": "@statewalker/webrun-files-http",
-  "version": "0.10.4",
+  "version": "0.11.0",
   "private": false,
   "type": "module",
   "description": "FilesApi over HTTP: a fetch-based server stub and client stub",
@@ -24,9 +24,14 @@
   "exports": {
     ".": {
       "source": "./src/index.ts",
-      "types": "./dist/index.d.ts",
-      "import": "./dist/esm/index.js",
-      "require": "./dist/cjs/index.cjs"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.cts",
+        "default": "./dist/cjs/index.cjs"
+      }
     }
   },
   "files": [
@@ -34,11 +39,13 @@
     "src"
   ],
   "scripts": {
-    "build": "rimraf dist && rolldown -c && tsc --emitDeclarationOnly --declaration",
+    "build": "rimraf dist && rolldown -c && tsc --emitDeclarationOnly --declaration && node ../../scripts/cjs-types.mjs",
     "test": "vitest run",
     "lint": "biome lint src tests",
     "test:e2e": "pnpm run build && playwright test",
-    "e2e:serve": "pnpm run build && tsx e2e/serve.ts"
+    "e2e:serve": "pnpm run build && tsx e2e/serve.ts",
+    "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc -p tsconfig.tests.json"
   },
   "dependencies": {
     "@statewalker/webrun-files": "workspace:^",

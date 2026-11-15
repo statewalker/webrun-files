@@ -1,7 +1,7 @@
-import type { FilesApi } from "@statewalker/webrun-files";
+import { type FilesApi, MoveIncompleteError } from "@statewalker/webrun-files";
 import { MemFilesApi } from "@statewalker/webrun-files-mem";
 import { describe, expect, it } from "vitest";
-import { newFilesRpcClient, newFilesRpcServer } from "../src/index.js";
+import { type FilesRpc, newFilesRpcClient, newFilesRpcServer } from "../src/index.js";
 import { bytes, collect, deferred, text, transport } from "./helpers.js";
 
 const KB = 1024;
@@ -224,5 +224,48 @@ describe("client and server over an unreliable transport", () => {
       await new Promise((r) => setTimeout(r, 20)); // late duplicates land
       expect(server.openStreams()).toBe(0);
     }
+  });
+});
+
+describe("client: a server-side MoveIncompleteError", () => {
+  /** Errors cross the transport as a structured clone, which keeps only standard names. */
+  function cloningErrors(rpc: FilesRpc): FilesRpc {
+    return new Proxy(rpc, {
+      get(target, method: string) {
+        return async (...args: unknown[]) => {
+          try {
+            // biome-ignore lint/suspicious/noExplicitAny: dynamic dispatch in a test transport
+            return await (target as any)[method](...args);
+          } catch (error) {
+            throw structuredClone(error);
+          }
+        };
+      },
+    });
+  }
+
+  it("reaches the client as a MoveIncompleteError with the client's paths", async () => {
+    const fs = new MemFilesApi();
+    fs.move = async () => {
+      throw new MoveIncompleteError("/a.lock", "/a");
+    };
+    const { rpc } = transport(newFilesRpcServer({ fs }));
+    const client = newFilesRpcClient({ rpc: cloningErrors(rpc) });
+    const error = await client.move("/a.lock", "/a").catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(MoveIncompleteError);
+    expect((error as MoveIncompleteError).source).toBe("/a.lock");
+    expect((error as MoveIncompleteError).target).toBe("/a");
+  });
+
+  it("leaves other move errors as they were", async () => {
+    const fs = new MemFilesApi();
+    fs.move = async () => {
+      throw new Error("disk full");
+    };
+    const { rpc } = transport(newFilesRpcServer({ fs }));
+    const client = newFilesRpcClient({ rpc: cloningErrors(rpc) });
+    const error = await client.move("/a.lock", "/a").catch((e: unknown) => e);
+    expect(error).not.toBeInstanceOf(MoveIncompleteError);
+    expect((error as Error).message).toBe("disk full");
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "@statewalker/webrun-files-browser",
-  "version": "0.10.3",
+  "version": "0.11.0",
   "private": false,
   "type": "module",
   "description": "Browser File System Access API implementation for webrun-files",
@@ -24,9 +24,14 @@
   "exports": {
     ".": {
       "source": "./src/index.ts",
-      "types": "./dist/index.d.ts",
-      "import": "./dist/esm/index.js",
-      "require": "./dist/cjs/index.cjs"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.cts",
+        "default": "./dist/cjs/index.cjs"
+      }
     }
   },
   "files": [
@@ -34,10 +39,12 @@
     "src"
   ],
   "scripts": {
-    "build": "rimraf dist && rolldown -c && tsc --emitDeclarationOnly --declaration",
+    "build": "rimraf dist && rolldown -c && tsc --emitDeclarationOnly --declaration && node ../../scripts/cjs-types.mjs",
     "test": "vitest run",
     "lint": "biome lint src tests",
-    "prepublishOnly": "pnpm run build"
+    "prepublishOnly": "pnpm run build",
+    "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc -p tsconfig.tests.json"
   },
   "dependencies": {
     "@statewalker/webrun-files": "workspace:^"

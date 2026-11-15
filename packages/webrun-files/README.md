@@ -107,6 +107,86 @@ for (;;) {
 }
 ```
 
+### Take a lock: create a file only if it is absent
+
+```typescript
+const lock = '/repo/.git/index.lock';
+if (!files.createExclusive) throw new Error('this storage cannot hold a lock');
+
+if (!(await files.createExclusive(lock, [new TextEncoder().encode(String(Date.now()))]))) {
+  throw new Error('index.lock exists: another writer holds the lock');
+}
+try {
+  await files.write('/repo/.git/index.new', newIndex);
+  await files.move('/repo/.git/index.new', '/repo/.git/index');
+} finally {
+  await files.remove(lock);
+}
+```
+
+`createExclusive(path, content)` creates the file and returns `true` only if nothing exists at
+the path; of several concurrent calls for one path at most one wins (none, if the winner's source
+fails). It returns `false`, writing no file, for an existing file, directory or link. Parent
+directories are created, and may stay created even when the call returns `false`; a source that
+fails part way leaves no file and rethrows. Checking `exists()` and then calling `write()` cannot
+do this: another process, tab or connection can create the file between the two calls.
+
+Only the creation is atomic, not the content. On some backends (node) the file is visible while
+its content is written, so a reader can see it empty or partial until the call completes. When
+readers must see the whole content at once, create a temporary file and `move` it into place.
+
+The method is optional, because not every storage can create atomically. Feature-detect it as
+above and decide what to do without it: refuse, or fall back to check-then-write where a single
+writer is guaranteed anyway. How far the exclusion reaches is the implementation's:
+
+| Package | Mechanism | Excludes |
+| --- | --- | --- |
+| `webrun-files-mem` | synchronous check and reservation | callers sharing the instance |
+| `webrun-files-node` | `open(path, "wx")` (`O_CREAT \| O_EXCL`) | every process on the filesystem |
+| `webrun-files-browser` | Web Lock around check and create | every tab and worker of the origin |
+| `webrun-files-sqlite` | `INSERT ... ON CONFLICT DO NOTHING` | every connection to the database |
+| `webrun-files-s3` | `PutObject` with `If-None-Match: *` | every client of the bucket |
+| `webrun-files-composite` | the owning backend's method | as far as that backend's does |
+
+`webrun-files-http` and `webrun-files-rpc` do not offer it yet: neither protocol has a
+conditional create.
+
+### Replace a file atomically: write a temporary, then `move` it
+
+```typescript
+await files.write('/repo/.git/index.lock', newIndex);
+await files.move('/repo/.git/index.lock', '/repo/.git/index'); // replaces the old index
+```
+
+`move(source, target)` replaces an existing file at the target and creates the target's parent
+directories. It returns `false` when the move did not happen: the source is missing, or the
+backend refused the target. Source and target are then unchanged, though parent directories
+created for the target (node, browser) may be left. Moving onto an existing directory differs
+between backends: node, mem, the browser and `cow` follow `rename(2)` (a directory replaces an empty directory; anything else returns
+`false`), while the sqlite backends replace the target's whole subtree. Portable code does not
+move onto directories.
+
+Where the storage allows it, the move is atomic: readers see the old file or the new one, never
+a missing or partial target, and a failed move changes nothing.
+
+| Package | Mechanism | Atomic |
+| --- | --- | --- |
+| `webrun-files-node` | `fs.rename` | yes |
+| `webrun-files-mem` | one synchronous re-keying of the entries | yes |
+| `webrun-files-sqlite` | one transaction renaming rows by prefix | yes |
+| `webrun-files-browser` | native `FileSystemHandle.move()` (Chromium, OPFS) | yes |
+| `webrun-files-browser` | copy, then delete, without native `move()` | no |
+| `webrun-files-s3` | `CopyObject`, then `DeleteObject` | no |
+| `webrun-files-composite` | the backend's `move` within a mount; copy, then delete, across mounts | as the backend; no across mounts |
+| `webrun-files-composite` `cow` | copy into the writable layer, then remove or hide the source | no |
+| `webrun-files-http`, `webrun-files-rpc` | the server's backend | as the server's backend |
+
+A copy-then-delete move that copied but cannot remove its source retries the removal once, then
+throws a `MoveIncompleteError` (exported here, with `source` and `target`): the target already
+holds the new content and the source still exists. Backends built on copy-then-delete call
+`removeMovedSource(files, source, target)` to get this behaviour. The http and rpc clients rebuild
+a server-side `MoveIncompleteError` as one.
+
 ### Paths
 
 ```typescript
@@ -186,16 +266,22 @@ Two consequences:
 - Return exactly one metadata variant: a file with both numbers, a directory with only `kind`.
 - List in the order above and honour `after` exactly: the entries after a path are the same, in
   the same order, as the matching suffix of the full listing.
+- Define `createExclusive` only if the storage can keep its promise, and document how far the
+  exclusion reaches. A wrapper defines it only when what it wraps does, so feature detection on
+  the wrapper stays truthful.
 
-The shared suites in `@statewalker/webrun-files-tests` (a private workspace package) check both at
+The shared suites in `@statewalker/webrun-files-tests` (a private workspace package) check these at
 runtime. `listInPathOrder` gives both properties to a backend that can read one directory at a
 time.
 
 ### Path rules
 
-`normalizePath` splits on `/`, drops empty and `.` segments and returns a path with one leading
-slash and no trailing slash (`/` for the root). It does not resolve `..`; backends that map paths
-to real locations (such as `webrun-files-node`) document what that means for them.
+`normalizePath` returns the **normal path**: it splits on `/`, drops empty and `.` segments,
+resolves each `..` against the segment before it, and returns a path with one leading slash and no
+trailing slash (`/` for the root). `/a/../b` is `/b`. A `..` that would climb above the root
+(`/../x`, `/a/../../x`) throws `Path climbs above the root: <path>`. Every backend and decorator
+normalizes through it, so a filter, guard or mount decides on the same path the backend acts on.
+`joinPath`, `dirname` and `basename` normalize through it too.
 
 ### Dependencies
 

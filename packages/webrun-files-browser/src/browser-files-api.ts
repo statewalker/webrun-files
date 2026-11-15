@@ -18,6 +18,7 @@ import {
   joinPath,
   listInPathOrder,
   normalizePath,
+  removeMovedSource,
 } from "@statewalker/webrun-files";
 
 /** Chrome 110+ exposes move() on FileSystemHandle; not yet in TS DOM types. */
@@ -31,6 +32,15 @@ export interface BrowserFilesApiOptions {
    * Can be obtained via showDirectoryPicker(), navigator.storage.getDirectory(), etc.
    */
   rootHandle: FileSystemDirectoryHandle;
+  /**
+   * Names a directory outside the Origin Private File System in the locks
+   * `createExclusive` takes, so that separately created `BrowserFilesApi` instances over
+   * it exclude each other. Give every instance over the same directory the same value,
+   * and different directories different values. Without it, such a directory is named by
+   * its handle object (see `createExclusive`). Ignored for a root inside the Origin
+   * Private File System: there the lock is named by the file's full path in it.
+   */
+  lockScope?: string;
 }
 
 /**
@@ -42,9 +52,12 @@ export interface BrowserFilesApiOptions {
  */
 export class BrowserFilesApi implements FilesApi {
   private rootHandle: FileSystemDirectoryHandle;
+  private readonly lockScope: string | undefined;
+  private lockNamer: Promise<(path: string) => string> | undefined;
 
   constructor(options: BrowserFilesApiOptions) {
     this.rootHandle = options.rootHandle;
+    this.lockScope = options.lockScope;
   }
 
   private async getDirectoryHandle(
@@ -125,16 +138,113 @@ export class BrowserFilesApi implements FilesApi {
       throw new Error(`Cannot create directory: ${parentPath}`);
     }
 
-    const fileHandle = await parent.getFileHandle(fileName, { create: true });
-    const writable = await fileHandle.createWritable();
+    await this.writeFileIn(parent, fileName, content);
+  }
 
+  /**
+   * Write `content` to `fileName` in `parent`. A writable stream writes to a swap file:
+   * close() commits it, abort() drops it and leaves the old file as it was. So a source
+   * that fails part way keeps the old file (and a file this write created is removed
+   * again) instead of committing a cut-off one.
+   */
+  private async writeFileIn(
+    parent: FileSystemDirectoryHandle,
+    fileName: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  ): Promise<void> {
+    const existed = await parent
+      .getFileHandle(fileName)
+      .then(() => true)
+      .catch(() => false);
+    const fileHandle = await parent.getFileHandle(fileName, { create: true });
+    let writable: FileSystemWritableFileStream | undefined;
+    let closing = false;
     try {
+      writable = await fileHandle.createWritable();
       for await (const chunk of content) {
         await writable.write(chunk as Uint8Array<ArrayBuffer>);
       }
-    } finally {
+      closing = true;
       await writable.close();
+    } catch (error) {
+      if (writable && !closing) await writable.abort().catch(() => {});
+      // Remove the empty file this write created, unless someone else has written it since
+      // (concurrent writers to one path are otherwise last-close-wins).
+      if (!existed) {
+        const size = await fileHandle
+          .getFile()
+          .then((f) => f.size)
+          .catch(() => -1);
+        if (size === 0) await parent.removeEntry(fileName).catch(() => {});
+      }
+      throw error;
     }
+  }
+
+  /**
+   * The File System Access API has no exclusive create, so the check and the create run
+   * under a lock named after this directory and the path:
+   *
+   * - With the Web Locks API (`navigator.locks`, in every current browser), the lock is
+   *   shared by all tabs and workers of the origin, so calls from any of them exclude
+   *   each other.
+   * - Without it (some test environments and polyfills), an in-memory mutex stands in,
+   *   which excludes calls within this JavaScript realm only; another tab or worker is
+   *   then excluded only by the existence check, which can race.
+   *
+   * The lock is asked for `ifAvailable`: a call that finds it held returns false at once
+   * instead of waiting, since the path is being taken. (Should the holder's content then
+   * fail, the path stays free, though this call has returned false.)
+   *
+   * When the root lies in the Origin Private File System, the lock is named by the file's
+   * full path there, `webrun-files:opfs:/repo/HEAD.lock`, so instances rooted at
+   * different OPFS directories take the same lock for the same file. Outside it, the
+   * lock names the directory by `lockScope` when one was given, else by the handle
+   * object, which only instances built on that same object share. Two instances over
+   * one picked directory, from separately obtained handles, then exclude each other only
+   * through the existence check: pass them the same `lockScope`.
+   *
+   * Writers that do not take the lock — `write`, or other programs — are not excluded.
+   * The file exists, empty, while its content is written, and is removed again if the
+   * content fails.
+   */
+  async createExclusive(
+    path: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  ): Promise<boolean> {
+    const normalized = normalizePath(path);
+    if (normalized === "/") return false;
+    const parentPath = dirname(normalized);
+    const fileName = basename(normalized);
+    const lockName = (await this.getLockNamer())(normalized);
+
+    return withLockIfAvailable(lockName, false, async () => {
+      const existing = await this.getDirectoryHandle(parentPath);
+      if (existing && (await hasEntry(existing, fileName))) return false;
+      const parent = existing ?? (await this.getDirectoryHandle(parentPath, { create: true }));
+      if (!parent) throw new Error(`Cannot create directory: ${parentPath}`);
+      await this.writeFileIn(parent, fileName, content);
+      return true;
+    });
+  }
+
+  /** Names the lock for a normalized path; see {@link createExclusive}. */
+  private getLockNamer(): Promise<(path: string) => string> {
+    this.lockNamer ??= (async () => {
+      try {
+        const opfsRoot = await globalThis.navigator?.storage?.getDirectory?.();
+        const names = opfsRoot && (await opfsRoot.resolve(this.rootHandle));
+        if (names) {
+          const rootPath = names.map((name) => `/${name}`).join("");
+          return (path: string) => `webrun-files:opfs:${rootPath}${path}`;
+        }
+      } catch {
+        // not available here, or not permitted: fall back to the scope or the handle
+      }
+      const scope = this.lockScope ?? `handle:${handleId(this.rootHandle)}`;
+      return (path: string) => `webrun-files:${scope}:${path}`;
+    })();
+    return this.lockNamer;
   }
 
   async mkdir(path: string): Promise<void> {
@@ -233,36 +343,74 @@ export class BrowserFilesApi implements FilesApi {
     }
   }
 
+  /**
+   * Uses the native `FileSystemHandle.move()` where it exists (Chromium; atomic in the
+   * Origin Private File System), else copies, then deletes the source.
+   *
+   * - Native move over an existing file: current Chromium replaces the file; versions
+   *   that throw `InvalidModificationError` instead (the target exists) fall back to the
+   *   copy below, which still replaces the target atomically.
+   * - Other native errors: only an unsupported move (`TypeError`, `NotSupportedError`)
+   *   falls back; anything else (a locked entry, no permission, ...) is rethrown. If the
+   *   native move threw after the source had already moved (the source is gone and the
+   *   target exists), the move counts as done and returns true.
+   * - Time of check: the target is checked (below) before the native move runs, with
+   *   `await`s between them, so another writer can create or change the target in that
+   *   gap; the native move then decides on its own (replacing a file, or throwing).
+   * - Fallback, NOT atomic as a whole: a file is copied through a writable stream,
+   *   whose swap file replaces the target's content in one step on close; a directory
+   *   is copied file by file. If the copy fails, the error is thrown and the source
+   *   kept. If the copy succeeds but the source cannot be deleted, the delete is retried
+   *   once, then a `MoveIncompleteError` is thrown: the target already holds the new
+   *   content and the source still exists. False is never returned for a half-done move.
+   *
+   * An existing target is checked first, as POSIX `rename(2)` treats it: a file
+   * replaces a file and a directory an empty directory; anything else (a file onto a
+   * directory, a directory onto a file or a non-empty directory, a directory into its
+   * own subtree) returns false and changes nothing. A move onto itself is a no-op.
+   * The target's parent directories are created before the native move or the copy,
+   * so they may be left behind even when `move` returns false.
+   */
   async move(source: string, target: string): Promise<boolean> {
     const sourcePath = normalizePath(source);
     const targetPath = normalizePath(target);
-    const targetParentPath = dirname(targetPath);
-    const targetName = basename(targetPath);
 
-    // Try native move() (available in Chrome 110+, Edge 110+)
     const sourceStats = await this.stats(sourcePath);
     if (!sourceStats) return false;
+    if (sourcePath === targetPath) return true;
+    if (sourcePath === "/" || targetPath.startsWith(`${sourcePath}/`)) return false;
+    const targetStats = await this.stats(targetPath);
+    if (targetStats) {
+      if (targetStats.kind !== sourceStats.kind) return false;
+      if (targetStats.kind === "directory" && !(await isEmpty(this.list(targetPath)))) {
+        return false;
+      }
+    }
 
     const sourceHandle: FileSystemHandle | null =
       sourceStats.kind === "file"
         ? await this.getFileHandle(sourcePath)
         : await this.getDirectoryHandle(sourcePath);
     if (!sourceHandle) return false;
+    // Fails, creating nothing, when a file stands where a parent directory should be.
+    const targetParent = await this.getDirectoryHandle(dirname(targetPath), { create: true });
+    if (!targetParent) return false;
 
+    // Native move() (Chrome 110+, Edge 110+): one atomic step in OPFS.
     if (typeof (sourceHandle as MovableHandle).move === "function") {
       try {
-        const targetParent = await this.getDirectoryHandle(targetParentPath, { create: true });
-        if (!targetParent) return false;
-        await (sourceHandle as MovableHandle).move(targetParent, targetName);
+        await (sourceHandle as MovableHandle).move(targetParent, basename(targetPath));
         return true;
-      } catch {
-        // Fall through to copy-then-delete
+      } catch (error) {
+        // The move may have happened before the error was raised.
+        if (!(await this.exists(sourcePath)) && (await this.exists(targetPath))) return true;
+        if (!canFallBack(error, targetStats !== undefined)) throw error;
       }
     }
 
-    const copied = await this.copy(source, target);
-    if (!copied) return false;
-    return this.remove(source);
+    if (!(await this.copy(sourcePath, targetPath))) return false;
+    await removeMovedSource(this, sourcePath, targetPath);
+    return true;
   }
 
   async copy(source: string, target: string): Promise<boolean> {
@@ -285,20 +433,7 @@ export class BrowserFilesApi implements FilesApi {
       const targetParent = await this.getDirectoryHandle(targetParentPath, { create: true });
       if (!targetParent) return false;
 
-      const targetHandle = await targetParent.getFileHandle(targetFileName, { create: true });
-      const writable = await targetHandle.createWritable();
-
-      try {
-        const reader = sourceFile.stream().getReader();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          await writable.write(value);
-        }
-      } finally {
-        await writable.close();
-      }
-
+      await this.writeFileIn(targetParent, targetFileName, fileChunks(sourceFile));
       return true;
     }
 
@@ -322,21 +457,7 @@ export class BrowserFilesApi implements FilesApi {
       const newTargetParent = await this.getDirectoryHandle(newTargetParentPath, { create: true });
       if (!newTargetParent) continue;
 
-      const newTargetHandle = await newTargetParent.getFileHandle(newTargetFileName, {
-        create: true,
-      });
-      const writable = await newTargetHandle.createWritable();
-
-      try {
-        const reader = entryFile.stream().getReader();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          await writable.write(value);
-        }
-      } finally {
-        await writable.close();
-      }
+      await this.writeFileIn(newTargetParent, newTargetFileName, fileChunks(entryFile));
     }
 
     return true;
@@ -349,4 +470,95 @@ export class BrowserFilesApi implements FilesApi {
 export async function getOPFSFilesApi(): Promise<BrowserFilesApi> {
   const rootHandle = await navigator.storage.getDirectory();
   return new BrowserFilesApi({ rootHandle });
+}
+
+/** A file's content as chunks, read through its stream (released when stopped early). */
+async function* fileChunks(file: File): AsyncGenerator<Uint8Array> {
+  const reader = file.stream().getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      yield value;
+    }
+  } finally {
+    // stopped early or done: cancel, so the file's stream does not keep buffering
+    await reader.cancel().catch(() => {});
+  }
+}
+
+/**
+ * Whether a native `move()` error means "not done this way", so copy-then-delete may
+ * try instead: the move is unsupported for this handle (`TypeError`, as for a handle
+ * whose `move` is not callable, or `NotSupportedError`), or the target exists and this
+ * Chromium refuses to overwrite it (`InvalidModificationError`; versions before the
+ * overwrite change raise it for an existing file). Everything else, such as
+ * `NoModificationAllowedError` (a locked entry), `NotAllowedError` (no permission) or
+ * `NotFoundError`, is a real failure and is rethrown.
+ */
+function canFallBack(error: unknown, targetExisted: boolean): boolean {
+  if (error instanceof TypeError) return true;
+  const name = (error as { name?: unknown } | null)?.name;
+  if (name === "NotSupportedError") return true;
+  return name === "InvalidModificationError" && targetExisted;
+}
+
+/** Whether a listing yields nothing. */
+async function isEmpty(entries: AsyncIterable<FileInfo>): Promise<boolean> {
+  for await (const _ of entries) return false;
+  return true;
+}
+
+/** Whether `parent` holds a file or a directory called `name`. */
+async function hasEntry(parent: FileSystemDirectoryHandle, name: string): Promise<boolean> {
+  for (const get of [
+    () => parent.getFileHandle(name),
+    () => parent.getDirectoryHandle(name),
+  ] as const) {
+    try {
+      await get();
+      return true;
+    } catch (error) {
+      // A file asked for as a directory, or a directory as a file, is still an entry.
+      if ((error as { name?: string })?.name === "TypeMismatchError") return true;
+    }
+  }
+  return false;
+}
+
+/** Ids of root handles, for lock names; instances built on one handle object share it. */
+const handleIds = new WeakMap<FileSystemDirectoryHandle, string>();
+
+function handleId(handle: FileSystemDirectoryHandle): string {
+  let id = handleIds.get(handle);
+  if (id === undefined) {
+    id = crypto.randomUUID();
+    handleIds.set(handle, id);
+  }
+  return id;
+}
+
+/** Names of the in-memory locks standing in for Web Locks that are held now. */
+const localLocks = new Set<string>();
+
+/**
+ * Run `task` holding the exclusive lock `name`, or return `busy` at once when someone
+ * else holds it: a Web Lock asked for `ifAvailable` when `navigator.locks` exists
+ * (origin-wide), else an in-memory lock (this realm only).
+ */
+async function withLockIfAvailable<T>(name: string, busy: T, task: () => Promise<T>): Promise<T> {
+  const locks = globalThis.navigator?.locks;
+  if (locks) {
+    return locks.request(name, { mode: "exclusive", ifAvailable: true }, (lock) =>
+      lock ? task() : busy,
+    ) as Promise<T>;
+  }
+
+  if (localLocks.has(name)) return busy;
+  localLocks.add(name);
+  try {
+    return await task();
+  } finally {
+    localLocks.delete(name);
+  }
 }

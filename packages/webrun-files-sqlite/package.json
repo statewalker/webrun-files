@@ -1,6 +1,6 @@
 {
   "name": "@statewalker/webrun-files-sqlite",
-  "version": "0.11.1",
+  "version": "0.12.1",
   "private": false,
   "type": "module",
   "description": "SQLite-backed FilesApi implementations",
@@ -24,9 +24,14 @@
   "exports": {
     ".": {
       "source": "./src/index.ts",
-      "types": "./dist/index.d.ts",
-      "import": "./dist/esm/index.js",
-      "require": "./dist/cjs/index.cjs"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.cts",
+        "default": "./dist/cjs/index.cjs"
+      }
     }
   },
   "files": [
@@ -34,9 +39,11 @@
     "src"
   ],
   "scripts": {
-    "build": "rimraf dist && rolldown -c && tsc --emitDeclarationOnly --declaration",
+    "build": "rimraf dist && rolldown -c && tsc --emitDeclarationOnly --declaration && node ../../scripts/cjs-types.mjs",
     "test": "vitest run",
-    "lint": "biome lint src tests"
+    "lint": "biome lint src tests",
+    "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc -p tsconfig.tests.json"
   },
   "dependencies": {
     "@statewalker/db-api": "catalog:",

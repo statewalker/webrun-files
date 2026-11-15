@@ -24,6 +24,12 @@ export interface MemFilesApiOptions {
  */
 export class MemFilesApi implements FilesApi {
   private entries = new Map<string, Entry>();
+  /**
+   * Paths a `createExclusive` call has claimed and is still collecting content for.
+   * Kept apart from `entries`, so `read`, `stats`, `exists` and `list` do not see a
+   * half-written file; only other `createExclusive` calls consult it.
+   */
+  private reserved = new Set<string>();
 
   constructor(options?: MemFilesApiOptions) {
     // Create root directory
@@ -86,22 +92,40 @@ export class MemFilesApi implements FilesApi {
     content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
   ): Promise<void> {
     const normalizedPath = normalizePath(path);
-    const chunks: Uint8Array[] = [];
-    let totalLength = 0;
+    this.setFile(normalizedPath, await collect(content));
+  }
 
-    for await (const chunk of content) {
-      chunks.push(chunk);
-      totalLength += chunk.length;
+  /**
+   * Exclusive within this instance: the existence check and the reservation run with
+   * no `await` between them, so of concurrent calls on one `MemFilesApi` exactly one
+   * wins. Two instances share nothing, so they never exclude each other.
+   *
+   * The file stays invisible to every other method until its content is complete, then
+   * appears whole. Should `write` or `mkdir` put something at the path meanwhile, that
+   * stays, nothing is written and the call returns false. A file at an ancestor of the
+   * path, before the call or by the time the content is complete, also makes it return
+   * false: a file cannot hold another.
+   *
+   * The reservation is only a name, not an entry: a `remove` or `move` of a parent
+   * directory meanwhile does not touch it, and once the content is complete the file
+   * appears at its path, the parent directories created again.
+   */
+  async createExclusive(
+    path: string,
+    content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  ): Promise<boolean> {
+    const normalizedPath = normalizePath(path);
+    // Synchronous from here to the reservation: no other call can run in between.
+    if (this.reserved.has(normalizedPath) || this.isTaken(normalizedPath)) return false;
+    this.reserved.add(normalizedPath);
+    try {
+      const bytes = await collect(content);
+      if (this.isTaken(normalizedPath)) return false;
+      this.setFile(normalizedPath, bytes);
+      return true;
+    } finally {
+      this.reserved.delete(normalizedPath);
     }
-
-    const result = new Uint8Array(totalLength);
-    let offset = 0;
-    for (const chunk of chunks) {
-      result.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    this.setFile(normalizedPath, result);
   }
 
   async mkdir(path: string): Promise<void> {
@@ -195,7 +219,24 @@ export class MemFilesApi implements FilesApi {
   }
 
   async exists(path: string): Promise<boolean> {
-    const normalizedPath = normalizePath(path);
+    return this.existsSync(normalizePath(path));
+  }
+
+  /** Whether a normalized path exists, or a file sits at one of its ancestors. */
+  private isTaken(normalizedPath: string): boolean {
+    if (this.existsSync(normalizedPath)) return true;
+    for (
+      let i = normalizedPath.lastIndexOf("/");
+      i > 0;
+      i = normalizedPath.lastIndexOf("/", i - 1)
+    ) {
+      if (this.entries.get(normalizedPath.slice(0, i))?.kind === "file") return true;
+    }
+    return false;
+  }
+
+  /** An entry, or an implicit directory holding one, at a normalized path. */
+  private existsSync(normalizedPath: string): boolean {
     if (this.entries.has(normalizedPath)) {
       return true;
     }
@@ -242,19 +283,68 @@ export class MemFilesApi implements FilesApi {
     return true;
   }
 
+  /**
+   * Atomic: the entries are re-keyed in one synchronous step, with no `await` between
+   * checking and changing, so no other call (and no reader) ever sees the source and
+   * the target both present, nor the target missing or half moved. A directory moves
+   * with every entry under it, keeping the entries themselves (content, times).
+   *
+   * An existing target is treated as POSIX `rename(2)` (and so `NodeFilesApi`) treats
+   * it: a file replaces a file, and a directory replaces an empty directory. Everything
+   * else returns false and changes nothing: a file onto a directory, a directory onto a
+   * file or onto a non-empty directory (its own parent included), a directory into its
+   * own subtree, a target below a file, and a missing source. A move onto itself is a
+   * successful no-op.
+   */
   async move(source: string, target: string): Promise<boolean> {
-    const normalizedSource = normalizePath(source);
-    const normalizedTarget = normalizePath(target);
+    return this.moveSync(normalizePath(source), normalizePath(target));
+  }
 
-    if (!(await this.exists(normalizedSource))) {
-      return false;
+  /** {@link move} on normalized paths, in one synchronous step. */
+  private moveSync(from: string, to: string): boolean {
+    const sourceKind = this.kindOf(from);
+    if (!sourceKind) return false;
+    if (from === to) return true;
+    if (from === "/" || to.startsWith(`${from}/`)) return false;
+    for (let i = to.lastIndexOf("/"); i > 0; i = to.lastIndexOf("/", i - 1)) {
+      if (this.entries.get(to.slice(0, i))?.kind === "file") return false;
+    }
+    const targetKind = this.kindOf(to);
+    if (targetKind !== undefined) {
+      if (targetKind !== sourceKind) return false;
+      if (targetKind === "directory" && this.hasChildren(to)) return false;
     }
 
-    const copied = await this.copy(normalizedSource, normalizedTarget);
-    if (copied) {
-      await this.remove(normalizedSource);
+    const prefix = `${from}/`;
+    const moved: [string, Entry][] = [];
+    for (const [key, entry] of this.entries) {
+      if (key === from || key.startsWith(prefix)) moved.push([key, entry]);
     }
-    return copied;
+    this.entries.delete(to);
+    for (const [key] of moved) this.entries.delete(key);
+    this.ensureParentDirs(to);
+    // An implicit directory (only names below it) becomes an explicit one.
+    if (!moved.some(([key]) => key === from)) {
+      this.entries.set(to, { kind: "directory", lastModified: Date.now() });
+    }
+    for (const [key, entry] of moved) this.entries.set(to + key.slice(from.length), entry);
+    return true;
+  }
+
+  /** The kind of the entry at a normalized path, an implicit directory included. */
+  private kindOf(normalizedPath: string): Entry["kind"] | undefined {
+    const entry = this.entries.get(normalizedPath);
+    if (entry) return entry.kind;
+    return this.hasChildren(normalizedPath) ? "directory" : undefined;
+  }
+
+  /** Whether any entry lies below a normalized path. */
+  private hasChildren(normalizedPath: string): boolean {
+    const prefix = normalizedPath === "/" ? "/" : `${normalizedPath}/`;
+    for (const key of this.entries.keys()) {
+      if (key !== normalizedPath && key.startsWith(prefix)) return true;
+    }
+    return false;
   }
 
   async copy(source: string, target: string): Promise<boolean> {
@@ -321,4 +411,21 @@ export class MemFilesApi implements FilesApi {
 
     return true;
   }
+}
+
+/** The chunks of a source, concatenated. */
+async function collect(content: Iterable<Uint8Array> | AsyncIterable<Uint8Array>) {
+  const chunks: Uint8Array[] = [];
+  let totalLength = 0;
+  for await (const chunk of content) {
+    chunks.push(chunk);
+    totalLength += chunk.length;
+  }
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return result;
 }
