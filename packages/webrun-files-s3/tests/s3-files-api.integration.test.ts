@@ -110,7 +110,7 @@ describe("S3FilesApi with RustFS", () => {
       const stats = await api.stats("/large-file.bin");
       expect(stats).toBeDefined();
       expect(stats?.kind).toBe("file");
-      expect(stats?.size).toBe(size);
+      expect(stats?.kind === "file" ? stats.size : undefined).toBe(size);
 
       // Read back and verify content
       const readContent = await readFile(api, "/large-file.bin");
@@ -147,7 +147,7 @@ describe("S3FilesApi with RustFS", () => {
       await api.write("/multi-part-file.bin", [content]);
 
       const stats = await api.stats("/multi-part-file.bin");
-      expect(stats?.size).toBe(size);
+      expect(stats?.kind === "file" ? stats.size : undefined).toBe(size);
 
       // Verify content
       const readContent = await readFile(api, "/multi-part-file.bin");
@@ -181,7 +181,7 @@ describe("S3FilesApi with RustFS", () => {
       await api.write("/streamed-file.bin", generateChunks());
 
       const stats = await api.stats("/streamed-file.bin");
-      expect(stats?.size).toBe(chunkSize * numChunks);
+      expect(stats?.kind === "file" ? stats.size : undefined).toBe(chunkSize * numChunks);
 
       // Verify each chunk was written correctly
       const content = await readFile(api, "/streamed-file.bin");

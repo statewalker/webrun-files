@@ -27,7 +27,8 @@
     "format:check": "biome format .",
     "format:fix": "biome check --write --unsafe .",
     "changeset": "changeset",
-    "typecheck": "pnpm -r run typecheck"
+    "typecheck": "pnpm -r run typecheck",
+    "typecheck:tests": "pnpm -r run typecheck:tests"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",

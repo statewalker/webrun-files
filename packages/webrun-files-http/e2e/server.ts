@@ -12,9 +12,9 @@ import type { AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import type { FilesApi } from "@statewalker/webrun-files";
+import { newServerStub } from "@statewalker/webrun-files-http";
 import { MemFilesApi } from "@statewalker/webrun-files-mem";
 import { Hono } from "hono";
-import { newServerStub } from "../dist/esm/index.js";
 
 export interface TestServer {
   url: string;

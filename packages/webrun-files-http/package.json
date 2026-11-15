@@ -38,7 +38,9 @@
     "test": "vitest run",
     "lint": "biome lint src tests",
     "test:e2e": "pnpm run build && playwright test",
-    "e2e:serve": "pnpm run build && tsx e2e/serve.ts"
+    "e2e:serve": "pnpm run build && tsx e2e/serve.ts",
+    "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc -p tsconfig.tests.json"
   },
   "dependencies": {
     "@statewalker/webrun-files": "workspace:^",
