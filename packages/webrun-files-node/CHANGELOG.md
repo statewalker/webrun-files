@@ -1,5 +1,32 @@
 # @statewalker/webrun-files-node
 
+## 0.12.0
+
+### Minor Changes
+
+- Release of the changes since the last published version:
+  
+  - @statewalker/webrun-files crosses a breaking line
+
+### Patch Changes
+
+- 48e9aac: The CommonJS build has its own type declarations (`dist/cjs/*.d.cts`), and `exports` names them under `require`. TypeScript used to type `require("@statewalker/webrun-files…")` with the ESM declarations ("masquerading as ESM", attw's FalseESM). The API is unchanged.
+- 6e3b14d: Dependencies are no longer bundled into `dist`: `@statewalker/webrun-files`, `@statewalker/webrun-files-mem` and `@statewalker/db-sqlite` are imported, as declared, instead of copied into the build. Consumers no longer get a second copy of the core (whose classes failed `instanceof` checks against the real one), and a compatible update of a dependency no longer republishes these packages. One exception: the CommonJS build of `@statewalker/webrun-files-sqlite` still contains `@statewalker/db-sqlite` and `@statewalker/db-api`, which publish no `require` entry, so that `require("@statewalker/webrun-files-sqlite")` keeps working.
+- ffd746b: Security: `..` segments no longer slip past path filters, guards and composite mounts (#40).
+  
+  `normalizePath` now resolves `..` (`/a/../b` is `/b`) and throws `Path climbs above the root: <path>`
+  when one would climb above the root (`/../x`). Its result never holds a `..`, so `FilteredFilesApi`,
+  `GuardedFilesApi` and `CompositeFilesApi` decide on the same path the backend acts on: over a node
+  backend, `/x/../.git/config` used to pass a `/.git` filter and `/m/../y` used to escape a mount.
+  `joinPath`, `dirname` and `basename` follow. The RPC server refuses an escaping append instead of
+  clamping it; the HTTP client sends `/a/../b` as `/b` instead of refusing it.
+  
+  Migration: keys already stored in mem, S3 or SQLite with a literal `..` segment become unreachable
+  through the API; rename them with a direct tool before upgrading. Rollback: pin the previous minor.
+- Updated dependencies [48e9aac]
+- Updated dependencies [ffd746b]
+  - @statewalker/webrun-files@0.12.0
+
 ## 0.11.0
 
 ### Minor Changes
