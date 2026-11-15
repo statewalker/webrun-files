@@ -8,13 +8,18 @@
 // Run after `pnpm run build`, from the repository root: node scripts/check-bundled-deps.mjs
 import fs from "node:fs";
 import path from "node:path";
+import { cjsBundled } from "./rolldown-external.mjs";
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const MARKER = /^\/\/ (\S+\.(?:[cm]?[jt]sx?))$/gm;
 let checked = 0;
 const problems = [];
 for (const name of fs.readdirSync(path.join(root, "packages")).sort()) {
-  const dist = path.join(root, "packages", name, "dist");
+  const dir = path.join(root, "packages", name);
+  const dist = path.join(dir, "dist");
+  // Dependencies that cannot be `require`d are bundled into the CJS output on purpose
+  // (scripts/rolldown-external.mjs): allowed there, and only there.
+  const allowedInCjs = fs.existsSync(path.join(dir, "package.json")) ? cjsBundled(dir) : [];
   for (const entry of ["esm/index.js", "cjs/index.cjs"]) {
     const file = path.join(dist, entry);
     if (!fs.existsSync(file)) continue;
@@ -24,11 +29,29 @@ for (const name of fs.readdirSync(path.join(root, "packages")).sort()) {
       ...new Set(
         [...fs.readFileSync(file, "utf8").matchAll(MARKER)]
           .map((m) => m[1])
-          .filter((p) => !p.startsWith("src/") && !p.startsWith("\\0rolldown/")),
+          .filter((p) => !p.startsWith("src/") && !p.startsWith("\\0rolldown/"))
+          .filter(
+            (p) =>
+              !(
+                entry.endsWith(".cjs") &&
+                allowedInCjs.some((d) => p.includes(`/node_modules/${d}/`))
+              ),
+          ),
       ),
     ];
     if (foreign.length)
       problems.push(`packages/${name}/dist/${entry} bundles: ${foreign.join(", ")}`);
+    // The other side: a CJS bundle must not `require` a dependency that has no `require` entry,
+    // or loading it throws ERR_PACKAGE_PATH_NOT_EXPORTED.
+    if (entry.endsWith(".cjs")) {
+      const unrequirable = [...fs.readFileSync(file, "utf8").matchAll(/\brequire\("([^"]+)"\)/g)]
+        .map((m) => m[1])
+        .filter((id) => allowedInCjs.some((d) => id === d || id.startsWith(`${d}/`)));
+      if (unrequirable.length)
+        problems.push(
+          `packages/${name}/dist/${entry} requires ${[...new Set(unrequirable)].join(", ")}, which cannot be required (no "require" or "default" export)`,
+        );
+    }
   }
 }
 if (checked === 0) {
