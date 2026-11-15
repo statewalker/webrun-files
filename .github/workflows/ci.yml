@@ -12,6 +12,8 @@ jobs:
       # Required root scripts run without --if-present, every package with a tsconfig.json has a
       # `typecheck`, and every test file is compiled by `typecheck` or `typecheck:tests`.
       baseline: library
+      # publint (errors fail) and attw (default profile esm-only) on every packed public package.
+      package-checks: true
       # gitleaks on the files and on every commit of the pull request, before the install.
       secret-scan: true
       # A publish step anywhere but the `publish` job below fails.
