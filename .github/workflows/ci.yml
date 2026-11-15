@@ -18,6 +18,10 @@ jobs:
       secret-scan: true
       # A publish step anywhere but the `publish` job below fails.
       release-path: true
+      # Each public package's types against npm's latest: a breaking change needs a declared bump
+      # (a minor on 0.x). The L0 projects below this one (statewalker-shared, statewalker-fsm,
+      # statewalker-db, webrun-wire) switched it on first.
+      api-diff: true
 
   # The lockfile-only pull request that .github/workflows/statewalker-update.yml opens:
   # merged once every other check on it passes, after checking it changes pnpm-lock.yaml alone
